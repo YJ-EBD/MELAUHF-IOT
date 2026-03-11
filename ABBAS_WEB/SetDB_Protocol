@@ -1,0 +1,13 @@
+
+(1) MariaDB/MySQL에 스키마 적용
+sudo mariadb < SQL/00_create_database.sql
+sudo mariadb ABBAS < SQL/01_tables.sql
+sudo mariadb ABBAS < SQL/02_indexes.sql
+
+
+적용 후 DB에 테이블 생겼는지:
+sudo mariadb -e "USE ABBAS; SHOW TABLES;"
+
+
+(2)초기 1회) CSV → DB 마이그레이션 [ 초기시작이면 사용 X ]
+python scripts/migrate_csv_to_mysql.py

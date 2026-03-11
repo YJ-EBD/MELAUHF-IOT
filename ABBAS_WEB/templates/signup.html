@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign Up | IMQA</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <link href="{{ url_for('static', path='css/auth.css') }}" rel="stylesheet">
+</head>
+<body class="auth-body">
+  <div class="auth-card signup">
+    <div class="auth-logo">im<span class="dot"></span>qa</div>
+    <h1 class="auth-title">Create an account</h1>
+    <div class="auth-sub">회원가입</div>
+
+    {% if error %}
+      <div class="auth-error" style="max-width: 520px;">{{ error }}</div>
+    {% endif %}
+    {% if ok %}
+      <div class="auth-ok">{{ ok }}</div>
+    {% endif %}
+
+    <form id="signupForm" method="post" action="/signup" autocomplete="off">
+      <input type="hidden" name="email_verify_token" id="email_verify_token" value="">
+
+      <div class="signup-grid">
+        <div>
+          <div class="field-label">ID</div>
+          <div class="row-inline">
+            <input class="auth-input grow" type="text" name="user_id" id="user_id" placeholder="영문/숫자 3~32자">
+            <button class="btn-mini" type="button" id="btnCheckId">ID 중복확인</button>
+          </div>
+          <div class="small-note" style="margin-top:6px;">
+            <span id="idState" class="badge-state">미확인</span>
+          </div>
+        </div>
+
+        <div>
+          <div class="field-label">생년월일</div>
+          <input class="auth-input" type="date" name="birth" id="birth">
+        </div>
+
+        <div>
+          <div class="field-label">비밀번호</div>
+          <input class="auth-input" type="password" name="password" id="password" placeholder="6자 이상">
+        </div>
+
+        <div>
+          <div class="field-label">비밀번호 확인</div>
+          <input class="auth-input" type="password" name="password2" id="password2" placeholder="비밀번호 확인">
+        </div>
+
+        <div class="full">
+          <div class="field-label">이메일(네이버 SMTP 인증)</div>
+          <div class="row-inline">
+            <input class="auth-input grow" type="email" name="email" id="email" placeholder="example@naver.com">
+            <button class="btn-mini" type="button" id="btnSendCode">인증코드 보내기</button>
+          </div>
+          <div class="row-inline" style="margin-top:10px;">
+            <input class="auth-input grow" type="text" id="email_code" placeholder="인증코드 6자리">
+            <button class="btn-mini" type="button" id="btnVerifyCode">코드 확인</button>
+            <span id="emailState" class="badge-state">미인증</span>
+          </div>
+          <div class="small-note" style="margin-top:6px;">
+            메일이 도착하지 않으면 스팸함을 확인해주세요.
+          </div>
+        </div>
+
+        <div>
+          <div class="field-label">이름</div>
+          <input class="auth-input" type="text" name="name" id="name" placeholder="이름">
+        </div>
+
+        <div>
+          <div class="field-label">닉네임</div>
+          <input class="auth-input" type="text" name="nickname" id="nickname" placeholder="닉네임">
+        </div>
+
+        <div class="full" style="display:flex; gap:10px; align-items:center; margin-top:6px;">
+          <button class="auth-btn" type="submit" style="max-width: 220px;">회원가입</button>
+          <a href="/login" style="font-size:12px; color:#2d2df6; text-decoration:none;">로그인으로 돌아가기</a>
+        </div>
+      </div>
+    </form>
+
+    <div class="auth-help">
+      가입 정보는 CSV(1회원=1파일)로 저장되며, 추후 MySQL 전환을 고려한 단순 구조입니다.
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', path='js/signup.js') }}"></script>
+</body>
+</html>

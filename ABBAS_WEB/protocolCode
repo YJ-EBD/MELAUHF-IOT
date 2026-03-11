@@ -1,0 +1,187 @@
+FROM python:3.10-slim
+pip install -r requirements.txt
+1️⃣
+2️⃣ Nginx 설치
+sudo apt update
+sudo apt install -y nginx
+
+상태 확인:
+sudo systemctl status nginx
+
+3️⃣ Nginx 설정
+기존 설정 제거
+sudo rm /etc/nginx/sites-enabled/default
+
+사이트 설정 파일 생성
+sudo nano /etc/nginx/sites-available/yjcooperation
+
+그대로 복붙
+
+server {
+    listen 80;
+    server_name yjcooperation.com www.yjcooperation.com;
+
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+
+설정 활성화
+sudo ln -s /etc/nginx/sites-available/yjcooperation /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+
+4️⃣ 방화벽(UFW) 설정
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw reload
+sudo ufw status
+
+1️⃣ 라즈베리파이에서 SSL 설치
+sudo apt update
+sudo apt install -y certbot python3-certbot-nginx
+
+2️⃣ SSL 인증서 발급 (이게 핵심)
+sudo certbot --nginx -d yjcooperation.com -d www.yjcooperation.com
+
+중간에 질문 나오면 이렇게 선택 👇
+
+이메일 입력 → 아무 이메일 OK
+
+약관 동의 → Y
+
+HTTP → HTTPS 리다이렉트?
+👉 2번 (Redirect) ← 반드시 이거
+
+가장 먼저 해야 할 보안 차단 (Nginx에서 .env 등 차단)
+sudo nano /etc/nginx/sites-available/yjcooperation
+
+server { ... } 블록 안에 이걸 추가해:
+# 절대 노출 금지 파일/경로 차단 (.env, git, 설정파일 등)
+location ~* (^|/)\.(env|git|svn|htaccess|htpasswd) {
+    deny all;
+    return 404;
+}
+
+location ~* \.(bak|old|swp|sql|zip|tar|gz|7z)$ {
+    deny all;
+    return 404;
+}
+
+# Laravel/Node/기타 프레임워크에서 자주 노리는 경로
+location ~* ^/(vendor|storage|bootstrap|config|database|resources|routes|app)/ {
+    deny all;
+    return 404;
+}
+
+저장 후 적용:
+sudo nginx -t
+sudo systemctl reload nginx
+
+
+settings.env가 실제로 로딩되는지 즉시 체크
+ls -al settings.env
+cat settings.env | sed -n '1,120p'
+
+
+Raspberry Pi — MariaDB 설치 & 외부 접속 허용 가이드
+설치
+sudo apt update
+sudo apt install -y mariadb-server
+
+보안 설정
+sudo mysql_secure_installation
+
+MariaDB 콘솔 진입
+sudo mariadb
+
+그 다음에, MariaDB 프롬프트(mariadb>)에서 아래 SQL을 실행:(외부접속 허용)
+CREATE DATABASE ABBAS CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE USER 'abbas'@'%' IDENTIFIED BY 'fori3145!!!';
+
+GRANT ALL PRIVILEGES ON ABBAS.* TO 'abbas'@'%';
+
+FLUSH PRIVILEGES;
+
+===========
+
+1️⃣ MariaDB 콘솔 접속
+sudo mariadb
+
+
+또는
+
+sudo mysql
+
+2️⃣ 현재 사용자 확인 (선택이지만 추천)
+SELECT User, Host FROM mysql.user WHERE User='abbas';
+
+
+아마 이런 게 보일 거야:
+
+abbas | %
+
+3️⃣ 기존 사용자 삭제
+DROP USER IF EXISTS 'abbas'@'%';
+
+
+추가로 혹시 모를 기존 localhost 계정도 같이 정리하려면:
+
+DROP USER IF EXISTS 'abbas'@'localhost';
+
+4️⃣ localhost 전용 사용자 생성
+CREATE USER 'abbas'@'localhost' IDENTIFIED BY 'fori3145!!!';
+
+GRANT ALL PRIVILEGES ON ABBAS.* TO 'abbas'@'localhost';
+
+FLUSH PRIVILEGES;
+
+5️⃣ 정상 생성 확인
+SELECT User, Host FROM mysql.user WHERE User='abbas';
+
+
+이렇게 나와야 정상:
+
+abbas | localhost
+
+6️⃣ 접속 테스트 (중요)
+
+MariaDB 콘솔 종료:
+
+exit;
+
+
+그 다음 테스트:
+
+mysql -h 127.0.0.1 -u abbas -p ABBAS
+
+
+비밀번호 입력 → 접속되면 성공.
+
+✅ 확인:
+SHOW DATABASES;
+SELECT User, Host FROM mysql.user WHERE User='abbas';
+
+끝내기:
+exit;
+
+바인드 0.0.0.0 설정
+
+
+# 레디스 재부팅
+sudo systemctl restart redis-server
+
+# venv
+cd ~/Desktop/ABBAS_WEB && source venv/bin/activate

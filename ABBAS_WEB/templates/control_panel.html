@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row g-3">
+  <div class="col-12">
+    <div class="alert alert-info d-flex align-items-start gap-2" role="alert">
+      <i class="bi bi-info-circle mt-1"></i>
+      <div>
+        <div class="fw-semibold">중앙 명령 큐 기반 제어</div>
+        <div class="small">상용 기본 경로는 직접 TCP 연결이 아니라 서버 명령 큐를 통한 제어입니다. 디바이스는 주기 동기화 시 명령을 수신합니다.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-xl-4">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white fw-semibold"><i class="bi bi-list-check me-2"></i>디바이스 선택</div>
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+          <label class="form-label mb-0">대상 디바이스</label>
+          <div class="d-flex align-items-center gap-2">
+            <select class="form-select form-select-sm" id="customerFilter" style="width:auto; min-width: 140px;">
+              <option value="">전체 거래처</option>
+              {% for c in customers %}
+              <option value="{{ c }}" {% if c == selected_customer %}selected{% endif %}>{{ c }}</option>
+              {% endfor %}
+            </select>
+            <button type="button" class="btn btn-outline-primary btn-sm" id="btnFindDevices">
+              <i class="bi bi-search me-1"></i>찾기
+            </button>
+          </div>
+        </div>
+
+        <select class="form-select" id="deviceSelect">
+          {% for d in devices %}
+          <option value="{{ d.ip }}" data-customer="{{ d.customer }}" data-name="{{ d.name }}" data-saved="1" {% if d.name == selected_device %}selected{% endif %}>{{ d.name }} ({{ d.customer }})</option>
+          {% endfor %}
+        </select>
+
+        <!-- 검색 결과 0개 표시 강화(최소 UI 추가) -->
+        <div class="alert alert-warning py-2 mt-2 d-none" id="noDeviceResult" role="alert">
+          <i class="bi bi-exclamation-circle me-1"></i>
+          <span>검색 결과가 없습니다.</span>
+        </div>
+
+        <div class="mt-2 small text-secondary d-flex align-items-center justify-content-between flex-wrap gap-2">
+          <div>선택된 디바이스 기준으로 제어 화면이 표시됩니다.</div>
+          <div class="small">
+            Power: <span id="metricPower">-</span> | 진행시간: <span id="metricTime">-</span>
+          </div>
+        </div>
+
+        <div class="mt-3 border rounded-3 p-3 d-none" id="saveBox">
+          <div class="fw-semibold mb-2"><i class="bi bi-download me-1"></i>미등록 디바이스 저장</div>
+          <div class="row g-2">
+            <div class="col-12">
+              <label class="form-label">디바이스명</label>
+              <input type="text" class="form-control" id="inputDeviceName" placeholder="예: Device-A01">
+            </div>
+            <div class="col-12">
+              <label class="form-label">거래처</label>
+              <input type="text" class="form-control" id="inputCustomer" placeholder="예: 고객사명">
+            </div>
+          </div>
+          <div class="mt-3 d-flex gap-2 align-items-center">
+            <button type="button" class="btn btn-primary btn-sm" id="btnSaveDevice">
+              <i class="bi bi-plus-circle me-1"></i>저장
+            </button>
+            <div class="small text-secondary" id="saveMsg"></div>
+          </div>
+        </div>
+
+        <!-- 저장 결과/부여된 token 표시(최소 UI 추가) -->
+        <div class="alert alert-success py-2 mt-2 d-none" id="saveResultBanner" role="alert"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-xl-8">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white fw-semibold"><i class="bi bi-toggles2 me-2"></i>제어 항목</div>
+      <div class="card-body">
+        <style>
+          .ctrl-status { display: inline-flex; align-items: center; gap: .5rem; }
+          .ctrl-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+          .ctrl-dot.disconnected { background: #dc3545; }
+          .ctrl-dot.connecting { background: #ffc107; }
+          .ctrl-dot.connected { background: #198754; }
+
+          .ctrl-console { background: #0b1220; color: #e5e7eb; border-radius: .5rem; border: 1px solid rgba(255,255,255,.08); }
+          .ctrl-console pre { margin: 0; padding: .75rem; font-size: .85rem; line-height: 1.35; white-space: pre-wrap; word-break: break-word; }
+          .ctrl-console { max-height: 280px; overflow: auto; }
+        </style>
+
+        <!-- (신규) 명령 전송 콘솔: ping/page1 등 -->
+        <div class="mb-4">
+          <div class="fw-semibold mb-2"><i class="bi bi-terminal me-2"></i>명령 콘솔</div>
+
+          <!-- A) 디바이스 연결 섹션 -->
+          <div class="mb-3">
+            <div class="row g-2 align-items-end">
+              <div class="col-12 col-md-8">
+                <label class="form-label small text-secondary">Online 디바이스</label>
+                <select class="form-select" id="onlineDeviceSelectCmd">
+                  <option value="">Online 디바이스 없음</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-4 d-flex gap-2">
+                <button type="button" class="btn btn-primary w-100" id="btnConnectCmd">
+                  <i class="bi bi-plug me-1"></i>연결하기
+                </button>
+                <button type="button" class="btn btn-outline-secondary" id="btnDisconnectCmd" disabled>
+                  <i class="bi bi-x-circle me-1"></i>해제
+                </button>
+              </div>
+            </div>
+            <div class="mt-2">
+              <div class="ctrl-status small text-secondary">
+                <span class="ctrl-dot disconnected" id="connDotCmd"></span>
+                <span id="connTextCmd">Disconnect</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- B) 콘솔 명령/로그 섹션 -->
+          <div>
+            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+              <div class="small text-secondary">연결 후 `PING`, `PAGE1`, `PAGE2`, `RESET_STATE` 같은 명령을 큐에 등록할 수 있습니다.</div>
+              <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="btnClearCmdConsole">
+                  <i class="bi bi-trash me-1"></i>Clear
+                </button>
+                <span class="badge text-bg-light border" id="cmdConsoleBadge">대기</span>
+              </div>
+            </div>
+
+            <div class="input-group mb-2">
+              <input type="text" class="form-control" id="cmdInputCmd" placeholder="예: PING, PAGE1, RESET_STATE">
+              <button class="btn btn-success" type="button" id="btnSendCmd">
+                <i class="bi bi-send me-1"></i>Send
+              </button>
+            </div>
+
+            <div class="ctrl-console" id="cmdConsoleBox">
+              <pre id="cmdConsolePre"></pre>
+            </div>
+          </div>
+        </div>
+
+        <hr class="my-4"/>
+
+        <!-- (기존 로직) 디바이스 모니터링 로그(찾기/선택/저장 + tail 폴링) -->
+        <div>
+          <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+            <div class="fw-semibold"><i class="bi bi-activity me-2"></i>디바이스 로그(모니터링)</div>
+            <div class="d-flex align-items-center gap-2">
+              <button type="button" class="btn btn-outline-secondary btn-sm" id="btnClearConsole">
+                <i class="bi bi-trash me-1"></i>Clear
+              </button>
+              <span class="badge text-bg-light border" id="consoleBadge">대기</span>
+            </div>
+          </div>
+
+          <div class="ctrl-console" id="consoleBox">
+            <pre id="consolePre"></pre>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', path='js/control_panel.js') }}"></script>
+<script src="{{ url_for('static', path='js/control_console.js') }}"></script>
+{% endblock %}

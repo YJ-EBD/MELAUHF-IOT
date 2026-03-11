@@ -1,0 +1,32 @@
+body {
+    font-size: 0.9rem;
+}
+
+.sidebar {
+    min-height: calc(100vh - 56px);
+    border-right: 1px solid #ddd;
+}
+
+.nav-link {
+    color: #333;
+}
+
+.nav-link.active {
+    font-weight: bold;
+}
+
+.chart-placeholder {
+    height: 250px;
+    background: repeating-linear-gradient(
+        45deg,
+        #f8f9fa,
+        #f8f9fa 10px,
+        #e9ecef 10px,
+        #e9ecef 20px
+    );
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #6c757d;
+    border-radius: 6px;
+}

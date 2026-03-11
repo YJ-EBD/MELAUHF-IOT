@@ -1,0 +1,28 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Virtual environments
+**/venv/
+**/.venv/
+
+# Environment and secret files
+**/*.env
+**/*.pem
+**/*.key
+
+# Logs and local runtime files
+**/*.log
+
+# Local databases
+**/*.db
+**/*.sqlite
+**/*.sqlite3

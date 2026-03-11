@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login | ABBA-S</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <link href="{{ url_for('static', path='css/auth.css') }}" rel="stylesheet">
+</head>
+<body class="auth-body">
+  <div class="auth-card">
+    <div class="auth-logo">ABBA<span class="dot"></span>S</div>
+    <h1 class="auth-title">Welcome to ABBA-S</h1>
+    <div class="auth-sub">Please login</div>
+
+    {% if error %}
+      <div class="auth-error">{{ error }}</div>
+    {% endif %}
+
+    <form id="loginForm" class="auth-form" method="post" action="/login" autocomplete="off">
+      <input type="hidden" name="next" value="{{ next or '/' }}">
+      <input id="userIdInput" class="auth-input" type="text" name="user_id" placeholder="Please enter id" autocomplete="username">
+      <input class="auth-input" type="password" name="password" placeholder="Please enter Password." autocomplete="current-password">
+
+      <div class="auth-options">
+        <!-- 아이디 기억: 브라우저에 ID만 저장(로그인 유지 아님) -->
+        <label><input id="rememberId" type="checkbox" name="remember_id"> 아이디 기억</label>
+        <!-- 자동 로그인: 서버 세션 TTL을 길게 유지 -->
+        <label><input id="autoLogin" type="checkbox" name="auto_login"> 자동 로그인</label>
+      </div>
+
+      <button class="auth-btn" type="submit">LOG-IN</button>
+    </form>
+
+    <div class="auth-links">
+      <a href="#" onclick="alert('Forgot Password 기능은 현재 버전에서 제공되지 않습니다.'); return false;">Forgot Password?</a>
+      <a href="/signup">Create an account!</a>
+    </div>
+
+    <div class="auth-help">
+      A professional consultant can help you with your solution.<br>
+      support@abbas.io &nbsp;|&nbsp; Tel 010-2566-5105
+    </div>
+  </div>
+
+  <script>
+    // 뒤로가기(bfcache)로 로그인 화면이 그대로 보이는 경우가 있어,
+    // pageshow(persisted)에서 강제 reload -> 서버가 /login 접근을 감지해 /로 리다이렉트.
+    window.addEventListener('pageshow', function (e) {
+      try {
+        if (e && e.persisted) {
+          window.location.reload();
+        }
+      } catch (_) {}
+    });
+
+    // 아이디 기억 (localStorage)
+    (function () {
+      const KEY = 'for_rnd_web:remember_id';
+      const KEY_ID = 'for_rnd_web:remember_id_value';
+      const cb = document.getElementById('rememberId');
+      const input = document.getElementById('userIdInput');
+      const form = document.getElementById('loginForm');
+
+      try {
+        const enabled = localStorage.getItem(KEY) === '1';
+        if (cb) cb.checked = enabled;
+        if (enabled && input) {
+          const saved = localStorage.getItem(KEY_ID) || '';
+          if (saved) input.value = saved;
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      function persist() {
+        try {
+          if (cb && cb.checked) {
+            localStorage.setItem(KEY, '1');
+            localStorage.setItem(KEY_ID, (input && input.value ? input.value : '').trim());
+          } else {
+            localStorage.removeItem(KEY);
+            localStorage.removeItem(KEY_ID);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      if (cb) cb.addEventListener('change', persist);
+      if (input) input.addEventListener('blur', persist);
+      if (form) form.addEventListener('submit', persist);
+    })();
+  </script>
+</body>
+</html>

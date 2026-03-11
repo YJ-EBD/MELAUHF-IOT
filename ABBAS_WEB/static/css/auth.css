@@ -1,0 +1,293 @@
+/* Login/Signup (IMQA) UI — 첨부 디자인 기반 */
+
+:root {
+  --imqa-bg: #efe9ff;
+  --imqa-q: #d7cdfc;
+  --imqa-primary: #2d2df6;
+  --imqa-text: #1f1f2d;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body.auth-body {
+  margin: 0;
+  font-family: "Inter", "Noto Sans KR", sans-serif;
+  background: var(--imqa-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* Big "Q" shape background */
+body.auth-body::before {
+  content: "";
+  position: fixed;
+  width: 1350px;
+  height: 1350px;
+  border-radius: 50%;
+  border: 220px solid var(--imqa-q);
+  top: -560px;
+  left: -420px;
+  opacity: 0.55;
+}
+
+body.auth-body::after {
+  content: "";
+  position: fixed;
+  width: 520px;
+  height: 170px;
+  border-radius: 120px;
+  background: var(--imqa-q);
+  top: 530px;
+  left: 840px;
+  transform: rotate(35deg);
+  opacity: 0.55;
+}
+
+.auth-card {
+  width: 420px;
+  height: 420px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 20px 50px rgba(31, 31, 45, 0.12);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 34px 46px;
+  position: relative;
+}
+
+.auth-card.signup {
+  width: 620px;
+  height: auto;
+  border-radius: 24px;
+  padding: 32px 34px;
+}
+
+.auth-logo {
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  font-size: 26px;
+  margin-bottom: 10px;
+}
+
+.auth-logo .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--imqa-primary);
+  transform: translateY(-10px);
+  margin: 0 3px;
+}
+
+.auth-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--imqa-text);
+  margin: 0;
+}
+
+.auth-sub {
+  font-size: 12px;
+  color: #7a7a98;
+  margin-top: 4px;
+  margin-bottom: 12px;
+}
+
+.auth-form {
+  width: 100%;
+  max-width: 280px;
+}
+
+.auth-input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid #dcdcf1;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.auth-input:focus {
+  border-color: var(--imqa-primary);
+  box-shadow: 0 0 0 3px rgba(45, 45, 246, 0.12);
+}
+
+.auth-input + .auth-input {
+  margin-top: 10px;
+}
+
+.auth-btn {
+  width: 100%;
+  height: 34px;
+  border: none;
+  border-radius: 18px;
+  background: var(--imqa-primary);
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+  margin-top: 12px;
+  cursor: pointer;
+}
+
+.auth-btn:active {
+  transform: translateY(1px);
+}
+
+.auth-options {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  margin-top: 10px;
+  font-size: 11px;
+  color: #6b6b8c;
+}
+
+.auth-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.auth-links {
+  width: 100%;
+  max-width: 280px;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 14px;
+  font-size: 11px;
+}
+
+.auth-links a {
+  color: #2d2df6;
+  text-decoration: none;
+}
+
+.auth-links a:hover {
+  text-decoration: underline;
+}
+
+.auth-error {
+  width: 100%;
+  max-width: 280px;
+  color: #b00020;
+  font-size: 11px;
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.auth-ok {
+  width: 100%;
+  max-width: 520px;
+  color: #0b6b3a;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.auth-help {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 10px;
+  color: #8a8aa5;
+}
+
+/* === FIX: auth-card must be always on top (clickable) === */
+.auth-card,
+.auth-card.signup {
+  position: relative;       /* z-index가 먹게 */
+  z-index: 999999;          /* 무조건 최상단 */
+}
+
+/* auth 페이지에서 카드보다 위에 뜰 수 있는 레이어들 방지 */
+.auth-page .auth-card,
+.auth-page .auth-card.signup {
+  position: relative;
+  z-index: 999999;
+}
+
+/* Signup form layout */
+.signup-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.signup-grid .full {
+  grid-column: 1 / -1;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2b2b3a;
+  margin-bottom: 6px;
+}
+
+.small-note {
+  font-size: 11px;
+  color: #7a7a98;
+}
+
+.btn-mini {
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid #dcdcf1;
+  background: #f7f7ff;
+  color: #2b2b3a;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 10px;
+}
+
+.btn-mini:hover {
+  background: #efefff;
+}
+
+.row-inline {
+  display: flex;
+  gap: 10px;
+}
+
+.row-inline .grow {
+  flex: 1;
+}
+
+.badge-state {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid #dcdcf1;
+  background: #f7f7ff;
+  color: #2b2b3a;
+}
+
+.badge-state.ok {
+  border-color: rgba(18, 120, 66, 0.25);
+  background: rgba(18, 120, 66, 0.08);
+  color: #0b6b3a;
+}
+
+.badge-state.err {
+  border-color: rgba(176, 0, 32, 0.25);
+  background: rgba(176, 0, 32, 0.08);
+  color: #b00020;
+}
+
+@media (max-width: 700px) {
+  .auth-card.signup {
+    width: calc(100vw - 28px);
+  }
+  .signup-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,626 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-12 col-md-4">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <div class="text-secondary small">활성</div>
+            <div class="fs-3 fw-semibold" id="planCntActive">{{ counts.active }}</div>
+          </div>
+          <div class="icon-chip bg-success-subtle text-success"><i class="bi bi-check2-circle"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-4">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <div class="text-secondary small">만료</div>
+            <div class="fs-3 fw-semibold" id="planCntExpired">{{ counts.expired }}</div>
+          </div>
+          <div class="icon-chip bg-danger-subtle text-danger"><i class="bi bi-x-circle"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-4">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <div class="text-secondary small">만료(회수)</div>
+            <div class="fs-3 fw-semibold" id="planCntRestricted">{{ counts.expired }}</div>
+          </div>
+          <div class="icon-chip bg-danger-subtle text-danger"><i class="bi bi-x-octagon"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-header bg-white fw-semibold"><i class="bi bi-shield-check me-2"></i>디바이스별 구독 상태</div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th class="ps-3">디바이스명</th>
+            <th>구독 상태</th>
+            <th>만료일</th>
+            <th>권한</th>
+            <th>플랜 E</th>
+            <th>사용 E</th>
+            <th>잔여 E</th>
+            <th class="pe-3">조치</th>
+          </tr>
+        </thead>
+        <tbody id="planTbody">
+          {% for d in devices %}
+          <tr
+            class="subscription-row"
+            data-device-id="{{ d.device_id }}"
+            data-device-name="{{ d.name }}"
+            data-status="{{ d.status }}"
+            data-plan="{{ '' if d.plan == '-' else d.plan }}"
+            data-start-date="{{ '' if d.start_date == '-' else d.start_date }}"
+            data-expiry-date="{{ '' if d.expiry_date == '-' else d.expiry_date }}"
+            data-remaining-days="{{ d.remaining_days }}"
+            data-energy-j="{{ d.energy_j }}"
+            data-used-energy-j="{{ d.used_energy_j }}"
+            data-remaining-energy-j="{{ d.remaining_energy_j }}"
+            data-custom-duration-minutes=""
+            data-selected-plan="{{ '' if d.plan == '-' else d.plan }}"
+          >
+            <td class="ps-3 fw-semibold"><i class="bi bi-cpu me-2 text-secondary"></i>{{ d.name }}</td>
+            <td class="col-status">
+              {% if d.status_code == 'active' %}
+                <span class="badge text-bg-success-subtle border border-success-subtle text-success-emphasis">활성</span>
+              {% elif d.status_code == 'expired' %}
+                <span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">만료</span>
+              {% else %}
+                <span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">만료</span>
+              {% endif %}
+            </td>
+            <td class="text-secondary col-expiry">{{ d.expiry_date }}</td>
+            <td class="col-plan">{{ d.plan }}</td>
+            <td class="text-nowrap col-plan-energy">{{ d.energy_j }} J</td>
+            <td class="text-nowrap col-used-energy">{{ d.used_energy_j }} J</td>
+            <td class="text-nowrap col-remaining-energy">{{ d.remaining_energy_j }} J</td>
+            <td class="pe-3">
+              <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-outline-success btn-sm btn-grant" type="button">
+                  <i class="bi bi-person-check me-1"></i>부여
+                </button>
+                <button class="btn btn-outline-danger btn-sm btn-revoke" type="button">
+                  <i class="bi bi-person-x me-1"></i>회수
+                </button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script>
+(function () {
+  const PLAN_OPTIONS = ['Test Plan', 'BASIC 6M', 'BASIC 9M', 'BASIC 1Y'];
+  const TEST_PLAN = 'Test Plan';
+  const MIN_TEST_MINUTES = 1;
+  const MAX_TEST_MINUTES = 525600;
+  // [NEW FEATURE] Fixed energy by non-test plan.
+  const FIXED_PLAN_ENERGY_J = {
+    'BASIC 6M': 22000000,
+    'BASIC 9M': 14000000,
+    'BASIC 1Y': 8000000,
+  };
+
+  const tbody = document.getElementById('planTbody');
+  const cntActive = document.getElementById('planCntActive');
+  const cntExpired = document.getElementById('planCntExpired');
+  const cntRestricted = document.getElementById('planCntRestricted');
+
+  if (!tbody) return;
+
+  function escHtml(v) {
+    return String(v === null || v === undefined ? '' : v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function statusBadgeHtml(statusKor) {
+    if (statusKor === '활성') {
+      return '<span class="badge text-bg-success-subtle border border-success-subtle text-success-emphasis">활성</span>';
+    }
+    if (statusKor === '만료') {
+      return '<span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">만료</span>';
+    }
+    return '<span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">만료</span>';
+  }
+
+  function parseEnergyJ(v) {
+    const n = parseInt(String(v ?? ''), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function formatEnergyJ(v) {
+    return parseEnergyJ(v).toLocaleString('ko-KR') + ' J';
+  }
+
+  function updateSummaryCards(counts) {
+    counts = counts || {};
+    if (cntActive) cntActive.textContent = String(counts.active ?? '-');
+    if (cntExpired) cntExpired.textContent = String(counts.expired ?? '-');
+    if (cntRestricted) cntRestricted.textContent = String(counts.restricted ?? '-');
+  }
+
+  function buildPlanRowHtml(device) {
+    const status = String(device.status || '만료');
+    const plan = String(device.plan || '-');
+    const startDate = String(device.start_date || '');
+    const expiryDate = String(device.expiry_date || '-');
+    const remainingDays = parseInt(String(device.remaining_days ?? 0), 10) || 0;
+    const energyJ = parseEnergyJ(device.energyJ ?? device.energy_j);
+    const usedEnergyJ = parseEnergyJ(device.usedEnergyJ ?? device.used_energy_j);
+    const remainingEnergyJ = parseEnergyJ(device.remainingEnergyJ ?? device.remaining_energy_j ?? Math.max(energyJ - usedEnergyJ, 0));
+
+    return '' +
+      '<tr class="subscription-row"' +
+        ' data-device-id="' + escHtml(device.device_id || '') + '"' +
+        ' data-device-name="' + escHtml(device.name || '') + '"' +
+        ' data-status="' + escHtml(status) + '"' +
+        ' data-plan="' + escHtml(plan === '-' ? '' : plan) + '"' +
+        ' data-start-date="' + escHtml(startDate === '-' ? '' : startDate) + '"' +
+        ' data-expiry-date="' + escHtml(expiryDate === '-' ? '' : expiryDate) + '"' +
+        ' data-remaining-days="' + escHtml(String(remainingDays)) + '"' +
+        ' data-energy-j="' + escHtml(String(energyJ)) + '"' +
+        ' data-used-energy-j="' + escHtml(String(usedEnergyJ)) + '"' +
+        ' data-remaining-energy-j="' + escHtml(String(remainingEnergyJ)) + '"' +
+        ' data-custom-duration-minutes=""' +
+        ' data-selected-plan="' + escHtml(plan === '-' ? '' : plan) + '"' +
+      '>' +
+        '<td class="ps-3 fw-semibold"><i class="bi bi-cpu me-2 text-secondary"></i>' + escHtml(device.name || '') + '</td>' +
+        '<td class="col-status">' + statusBadgeHtml(status) + '</td>' +
+        '<td class="text-secondary col-expiry">' + escHtml(expiryDate || '-') + '</td>' +
+        '<td class="col-plan">' + escHtml(plan || '-') + '</td>' +
+        '<td class="text-nowrap col-plan-energy">' + escHtml(formatEnergyJ(energyJ)) + '</td>' +
+        '<td class="text-nowrap col-used-energy">' + escHtml(formatEnergyJ(usedEnergyJ)) + '</td>' +
+        '<td class="text-nowrap col-remaining-energy">' + escHtml(formatEnergyJ(remainingEnergyJ)) + '</td>' +
+        '<td class="pe-3">' +
+          '<div class="d-flex gap-2 flex-wrap">' +
+            '<button class="btn btn-outline-success btn-sm btn-grant" type="button">' +
+              '<i class="bi bi-person-check me-1"></i>부여' +
+            '</button>' +
+            '<button class="btn btn-outline-danger btn-sm btn-revoke" type="button">' +
+              '<i class="bi bi-person-x me-1"></i>회수' +
+            '</button>' +
+          '</div>' +
+        '</td>' +
+      '</tr>';
+  }
+
+  function renderPlanTable(payload) {
+    const devices = Array.isArray(payload && payload.devices) ? payload.devices : [];
+    updateSummaryCards((payload && payload.counts) || {});
+    tbody.innerHTML = devices.map(buildPlanRowHtml).join('');
+  }
+
+  function getRowInfo(tr) {
+    const statusCell = tr.querySelector('.col-status');
+    const expiryCell = tr.querySelector('.col-expiry');
+    const planCell = tr.querySelector('.col-plan');
+    const planEnergyCell = tr.querySelector('.col-plan-energy');
+    const usedEnergyCell = tr.querySelector('.col-used-energy');
+    const remainingEnergyCell = tr.querySelector('.col-remaining-energy');
+    return {
+      tr,
+      statusCell,
+      expiryCell,
+      planCell,
+      planEnergyCell,
+      usedEnergyCell,
+      remainingEnergyCell,
+      deviceId: tr.getAttribute('data-device-id') || '',
+      deviceName: tr.getAttribute('data-device-name') || '',
+      status: tr.getAttribute('data-status') || '만료',
+      plan: tr.getAttribute('data-plan') || '',
+      selectedPlan: tr.getAttribute('data-selected-plan') || '',
+      startDate: tr.getAttribute('data-start-date') || '',
+      expiryDate: tr.getAttribute('data-expiry-date') || '',
+      energyJ: tr.getAttribute('data-energy-j') || '',
+      usedEnergyJ: tr.getAttribute('data-used-energy-j') || '',
+      remainingEnergyJ: tr.getAttribute('data-remaining-energy-j') || '',
+      customDurationMinutes: tr.getAttribute('data-custom-duration-minutes') || '',
+    };
+  }
+
+  function applySubscriptionToRow(tr, sub) {
+    const status = sub.status || '만료';
+    const plan = sub.plan || '';
+    const startDate = sub.start_date || '';
+    const expiryDate = sub.expiry_date || '';
+    const remainingDays = String(sub.remaining_days || 0);
+
+    tr.setAttribute('data-status', status);
+    tr.setAttribute('data-plan', plan);
+    tr.setAttribute('data-selected-plan', plan);
+    tr.setAttribute('data-start-date', startDate);
+    tr.setAttribute('data-expiry-date', expiryDate);
+    tr.setAttribute('data-remaining-days', remainingDays);
+    const currentUsedEnergyJ = parseEnergyJ(tr.getAttribute('data-used-energy-j'));
+    const energyJ = parseEnergyJ(sub && (sub.energyJ ?? sub.energy_j ?? 0));
+    const usedEnergyJ = parseEnergyJ(sub && (sub.usedEnergyJ ?? sub.used_energy_j ?? currentUsedEnergyJ));
+    const remainingEnergyJ = parseEnergyJ(
+      sub && (sub.remainingEnergyJ ?? sub.remaining_energy_j ?? Math.max(energyJ - usedEnergyJ, 0))
+    );
+    tr.setAttribute('data-energy-j', String(energyJ));
+    tr.setAttribute('data-used-energy-j', String(usedEnergyJ));
+    tr.setAttribute('data-remaining-energy-j', String(remainingEnergyJ));
+    if (plan !== TEST_PLAN) {
+      tr.setAttribute('data-custom-duration-minutes', '');
+    }
+
+    const statusCell = tr.querySelector('.col-status');
+    const expiryCell = tr.querySelector('.col-expiry');
+    const planCell = tr.querySelector('.col-plan');
+    const planEnergyCell = tr.querySelector('.col-plan-energy');
+    const usedEnergyCell = tr.querySelector('.col-used-energy');
+    const remainingEnergyCell = tr.querySelector('.col-remaining-energy');
+    if (statusCell) statusCell.innerHTML = statusBadgeHtml(status);
+    if (expiryCell) expiryCell.textContent = expiryDate || '-';
+    if (planCell) planCell.textContent = plan || '-';
+    if (planEnergyCell) planEnergyCell.textContent = formatEnergyJ(energyJ);
+    if (usedEnergyCell) usedEnergyCell.textContent = formatEnergyJ(usedEnergyJ);
+    if (remainingEnergyCell) remainingEnergyCell.textContent = formatEnergyJ(remainingEnergyJ);
+  }
+
+  async function requestJson(url, options) {
+    try {
+      const res = await fetch(url, options);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { ok: false, status: res.status, data };
+      }
+      return { ok: true, data };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  async function refreshPlanTable(force) {
+    if (!force && window.Swal && typeof Swal.isVisible === 'function' && Swal.isVisible()) {
+      return;
+    }
+    const resp = await requestJson('/api/plan/payload', { cache: 'no-store' });
+    if (!resp.ok) return;
+    renderPlanTable(resp.data || {});
+  }
+
+  function broadcastSummaryUpdate() {
+    try {
+      localStorage.setItem('subscription_update_ts', String(Date.now()));
+    } catch (_) {}
+  }
+
+  function openPlanSelector(tr) {
+    const info = getRowInfo(tr);
+    if (!info.deviceId) {
+      Swal.fire({ icon: 'warning', title: '디바이스 ID 없음', text: 'device_id가 없는 장비는 권한을 부여할 수 없습니다.' });
+      return;
+    }
+
+    const currentStatus = info.status || '만료';
+    const currentPlan = info.selectedPlan || info.plan || '';
+    const selectedInit = PLAN_OPTIONS.includes(currentPlan) ? currentPlan : PLAN_OPTIONS[0];
+
+    const optionsHtml = PLAN_OPTIONS.map((p) => {
+      const selected = p === selectedInit ? 'selected' : '';
+      return '<option value="' + escHtml(p) + '" ' + selected + '>' + escHtml(p) + '</option>';
+    }).join('');
+
+    Swal.fire({
+      title: '구독 플랜 설정',
+      width: 560,
+      html:
+        '<div class="text-start">' +
+          '<div class="mb-2">' +
+            '<label class="form-label mb-1">Device Name</label>' +
+            '<input type="text" id="swalDeviceName" class="form-control" readonly value="' + escHtml(info.deviceName) + '">' +
+          '</div>' +
+          '<div class="mb-2">' +
+            '<label class="form-label mb-1">Current Subscription Status</label>' +
+            '<input type="text" id="swalCurrentStatus" class="form-control" readonly value="' + escHtml(currentStatus) + '">' +
+          '</div>' +
+          '<div class="mb-2" id="swalPlanSelectWrap">' +
+            '<label class="form-label mb-1">Plan Selector</label>' +
+            '<select id="swalPlanSelect" class="form-select">' + optionsHtml + '</select>' +
+          '</div>' +
+          '<div class="row g-2 mb-2 d-none" id="swalTestWrap">' +
+            '<div class="col-7">' +
+              '<label class="form-label mb-1">Duration</label>' +
+              '<input type="number" id="swalDurationInput" class="form-control" min="1" max="525600" value="60">' +
+            '</div>' +
+            '<div class="col-5">' +
+              '<label class="form-label mb-1">Unit</label>' +
+              '<select id="swalDurationUnit" class="form-select">' +
+                '<option value="minutes">Minutes</option>' +
+                '<option value="hours">Hours</option>' +
+                '<option value="days">Days</option>' +
+              '</select>' +
+            '</div>' +
+          '</div>' +
+          // [NEW FEATURE] Test Plan manual energy input field.
+          '<div class="mb-2 d-none" id="swalEnergyEditWrap">' +
+            '<label class="form-label mb-1">에너지(J)</label>' +
+            '<input type="number" id="swalEnergyInput" class="form-control" step="1" placeholder="정수 입력">' +
+          '</div>' +
+          // [NEW FEATURE] Fixed plan energy display (read-only).
+          '<div class="mb-2 d-none" id="swalEnergyReadonlyWrap">' +
+            '<label class="form-label mb-1">에너지(J)</label>' +
+            '<input type="text" id="swalEnergyReadonly" class="form-control" readonly>' +
+          '</div>' +
+          '<div class="mb-2 d-none" id="swalPlanReadonlyWrap">' +
+            '<label class="form-label mb-1">Applied Plan</label>' +
+            '<input type="text" id="swalPlanReadonly" class="form-control" readonly>' +
+          '</div>' +
+          '<button type="button" class="btn btn-primary w-100 mt-2" id="swalApplyBtn">적용</button>' +
+          '<div id="swalApplyDone" class="small text-success mt-2 d-none">권한이 적용되었습니다. 이제 부여 버튼을 누르세요.</div>' +
+        '</div>',
+      showConfirmButton: true,
+      confirmButtonText: '닫기',
+      didOpen: function () {
+        const planSelect = document.getElementById('swalPlanSelect');
+        const testWrap = document.getElementById('swalTestWrap');
+        const durationInput = document.getElementById('swalDurationInput');
+        const durationUnit = document.getElementById('swalDurationUnit');
+        const applyBtn = document.getElementById('swalApplyBtn');
+        const planSelectWrap = document.getElementById('swalPlanSelectWrap');
+        const planReadonlyWrap = document.getElementById('swalPlanReadonlyWrap');
+        const planReadonly = document.getElementById('swalPlanReadonly');
+        const energyEditWrap = document.getElementById('swalEnergyEditWrap');
+        const energyInput = document.getElementById('swalEnergyInput');
+        const energyReadonlyWrap = document.getElementById('swalEnergyReadonlyWrap');
+        const energyReadonly = document.getElementById('swalEnergyReadonly');
+        const applyDone = document.getElementById('swalApplyDone');
+
+        // [NEW FEATURE] Toggle duration + energy input modes by selected plan.
+        function updatePlanVisibility() {
+          if (!planSelect || !testWrap) return;
+          const selectedPlan = planSelect.value;
+          const isTest = selectedPlan === TEST_PLAN;
+
+          if (isTest) {
+            testWrap.classList.remove('d-none');
+            if (energyEditWrap) energyEditWrap.classList.remove('d-none');
+            if (energyReadonlyWrap) energyReadonlyWrap.classList.add('d-none');
+            if (energyInput && !energyInput.value) {
+              const current = parseInt(info.energyJ || '', 10);
+              if (Number.isFinite(current) && current !== 0) energyInput.value = String(current);
+            }
+            return;
+          }
+
+          testWrap.classList.add('d-none');
+          if (energyEditWrap) energyEditWrap.classList.add('d-none');
+          if (energyReadonlyWrap) energyReadonlyWrap.classList.remove('d-none');
+          if (energyReadonly) {
+            const fixed = FIXED_PLAN_ENERGY_J[selectedPlan] || 0;
+            energyReadonly.value = fixed.toLocaleString('ko-KR') + ' J';
+          }
+        }
+
+        updatePlanVisibility();
+        if (planSelect) {
+          planSelect.addEventListener('change', updatePlanVisibility);
+        }
+
+        if (!applyBtn) return;
+        applyBtn.addEventListener('click', function () {
+          if (!planSelect) return;
+          const plan = planSelect.value;
+          if (!plan) {
+            Swal.showValidationMessage('플랜을 선택해 주세요.');
+            return;
+          }
+
+          let customMinutes = '';
+          let energyJ = 0;
+          if (plan === TEST_PLAN) {
+            const raw = parseInt((durationInput && durationInput.value) || '', 10);
+            const unit = (durationUnit && durationUnit.value) || 'minutes';
+            if (!Number.isFinite(raw) || raw < 1) {
+              Swal.showValidationMessage('Test Plan 시간은 1 이상이어야 합니다.');
+              return;
+            }
+            const mul = unit === 'days' ? 1440 : (unit === 'hours' ? 60 : 1);
+            const totalMin = raw * mul;
+            if (totalMin < MIN_TEST_MINUTES || totalMin > MAX_TEST_MINUTES) {
+              Swal.showValidationMessage('Test Plan은 1~525,600분 범위만 허용됩니다.');
+              return;
+            }
+            customMinutes = String(totalMin);
+            // [NEW FEATURE] Test Plan allows manual integer energy input.
+            const energyRaw = parseInt((energyInput && energyInput.value) || '', 10);
+            if (!Number.isInteger(energyRaw)) {
+              Swal.showValidationMessage('에너지(J)는 정수로 입력해 주세요.');
+              return;
+            }
+            energyJ = energyRaw;
+          } else {
+            // [NEW FEATURE] Non-test plans use server-defined fixed energy values.
+            energyJ = FIXED_PLAN_ENERGY_J[plan] || 0;
+          }
+
+          tr.setAttribute('data-selected-plan', plan);
+          tr.setAttribute('data-plan', plan);
+          tr.setAttribute('data-custom-duration-minutes', customMinutes);
+          tr.setAttribute('data-energy-j', String(energyJ));
+          const usedEnergyJ = parseEnergyJ(tr.getAttribute('data-used-energy-j'));
+          const remainingEnergyJ = Math.max(energyJ - usedEnergyJ, 0);
+          tr.setAttribute('data-remaining-energy-j', String(remainingEnergyJ));
+
+          const planCell = tr.querySelector('.col-plan');
+          const planEnergyCell = tr.querySelector('.col-plan-energy');
+          const remainingEnergyCell = tr.querySelector('.col-remaining-energy');
+          if (planCell) {
+            planCell.textContent = plan;
+          }
+          if (planEnergyCell) {
+            planEnergyCell.textContent = formatEnergyJ(energyJ);
+          }
+          if (remainingEnergyCell) {
+            remainingEnergyCell.textContent = formatEnergyJ(remainingEnergyJ);
+          }
+
+          if (planReadonly) planReadonly.value = plan;
+          if (planSelectWrap) planSelectWrap.classList.add('d-none');
+          if (testWrap) testWrap.classList.add('d-none');
+          if (planReadonlyWrap) planReadonlyWrap.classList.remove('d-none');
+          if (applyDone) applyDone.classList.remove('d-none');
+          applyBtn.disabled = true;
+        });
+      },
+    });
+  }
+
+  async function handleGrant(tr) {
+    const info = getRowInfo(tr);
+    if (!info.deviceId) {
+      Swal.fire({ icon: 'warning', title: '부여 실패', text: 'device_id가 없는 장비입니다.' });
+      return;
+    }
+
+    const plan = info.selectedPlan || info.plan;
+    if (!plan || !PLAN_OPTIONS.includes(plan)) {
+      Swal.fire({ icon: 'warning', title: '플랜 미선택', text: '행을 클릭해 먼저 플랜을 적용해 주세요.' });
+      return;
+    }
+
+    let customDurationMinutes = null;
+    let energyJ = parseInt(info.energyJ || '', 10);
+    if (plan === TEST_PLAN) {
+      const v = parseInt(info.customDurationMinutes || '', 10);
+      if (!Number.isFinite(v) || v < MIN_TEST_MINUTES || v > MAX_TEST_MINUTES) {
+        Swal.fire({ icon: 'warning', title: '시간 설정 필요', text: 'Test Plan 시간(1~525,600분)을 적용해 주세요.' });
+        return;
+      }
+      customDurationMinutes = v;
+      if (!Number.isInteger(energyJ)) {
+        Swal.fire({ icon: 'warning', title: '에너지 설정 필요', text: 'Test Plan 에너지(J) 정수를 적용해 주세요.' });
+        return;
+      }
+    } else {
+      // [NEW FEATURE] Enforce fixed energy for non-test plan at transmission time.
+      energyJ = FIXED_PLAN_ENERGY_J[plan] || 0;
+    }
+
+    const resp = await requestJson('/api/devices/' + encodeURIComponent(info.deviceId) + '/subscription/grant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plan: plan,
+        custom_duration_minutes: customDurationMinutes,
+        // [NEW FEATURE] Include assigned energy(J) in grant payload.
+        energyJ: energyJ,
+      }),
+    });
+
+    if (!resp.ok) {
+      const msg = (resp.data && (resp.data.detail || resp.data.message)) || resp.error || '요청 실패';
+      Swal.fire({ icon: 'error', title: '부여 실패', text: String(msg) });
+      return;
+    }
+
+    applySubscriptionToRow(tr, resp.data || {});
+    await refreshPlanTable(true);
+    broadcastSummaryUpdate();
+    Swal.fire({ icon: 'success', title: '부여 완료', text: '구독 권한이 서버에 반영되었습니다.' });
+  }
+
+  async function handleRevoke(tr) {
+    const info = getRowInfo(tr);
+    if (!info.deviceId) {
+      Swal.fire({ icon: 'warning', title: '회수 실패', text: 'device_id가 없는 장비입니다.' });
+      return;
+    }
+
+    const confirm = await Swal.fire({
+      icon: 'warning',
+      title: '정말로 회수하시겠습니까?',
+      html:
+        '<div class="text-start small">' +
+          '<div><strong>디바이스명:</strong> ' + escHtml(info.deviceName || '-') + '</div>' +
+          '<div><strong>구독상태:</strong> ' + escHtml(info.status || '-') + '</div>' +
+          '<div><strong>만료일:</strong> ' + escHtml(info.expiryDate || '-') + '</div>' +
+          '<div><strong>권한:</strong> ' + escHtml(info.plan || '-') + '</div>' +
+        '</div>',
+      showCancelButton: true,
+      confirmButtonText: '회수',
+      cancelButtonText: '취소',
+      reverseButtons: true,
+    });
+
+    if (!confirm.isConfirmed) return;
+
+    const resp = await requestJson('/api/devices/' + encodeURIComponent(info.deviceId) + '/subscription/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    if (!resp.ok) {
+      const msg = (resp.data && (resp.data.detail || resp.data.message)) || resp.error || '요청 실패';
+      Swal.fire({ icon: 'error', title: '회수 실패', text: String(msg) });
+      return;
+    }
+
+    applySubscriptionToRow(tr, resp.data || {});
+    tr.setAttribute('data-custom-duration-minutes', '');
+    await refreshPlanTable(true);
+    broadcastSummaryUpdate();
+    Swal.fire({ icon: 'success', title: '회수 완료', text: '구독 권한이 만료 상태로 변경되었습니다.' });
+  }
+
+  tbody.addEventListener('click', function (ev) {
+    const target = ev.target;
+    if (!(target instanceof Element)) return;
+    const tr = target.closest('tr.subscription-row');
+    if (!tr) return;
+
+    const actionBtn = target.closest('button');
+    if (actionBtn) {
+      if (actionBtn.classList.contains('btn-grant')) {
+        handleGrant(tr);
+      } else if (actionBtn.classList.contains('btn-revoke')) {
+        handleRevoke(tr);
+      }
+      return;
+    }
+
+    openPlanSelector(tr);
+  });
+
+  refreshPlanTable(true);
+  window.setInterval(function () { refreshPlanTable(false); }, 15000);
+  window.addEventListener('storage', function (ev) {
+    if (ev.key === 'subscription_update_ts') {
+      refreshPlanTable(true);
+    }
+  });
+})();
+</script>
+{% endblock %}

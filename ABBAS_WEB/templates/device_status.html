@@ -1,0 +1,419 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-12 col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <div class="text-secondary small">전체 기기</div>
+            <div class="fs-3 fw-semibold" id="cntTotal">{{ counts.total }}</div>
+          </div>
+          <div class="icon-chip bg-primary-subtle text-primary"><i class="bi bi-hdd-stack"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <div class="text-secondary small">Online</div>
+            <div class="fs-3 fw-semibold" id="cntOnline">{{ counts.online }}</div>
+          </div>
+          <div class="icon-chip bg-success-subtle text-success"><i class="bi bi-wifi"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <div class="text-secondary small">오프라인</div>
+            <div class="fs-3 fw-semibold" id="cntOffline">{{ counts.offline }}</div>
+          </div>
+          <div class="icon-chip bg-secondary-subtle text-secondary"><i class="bi bi-wifi-off"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between">
+          <div>
+            <div class="text-secondary small">구독 만료</div>
+            <div class="fs-3 fw-semibold" id="cntExpired">{{ counts.expired }}</div>
+          </div>
+          <div class="icon-chip bg-danger-subtle text-danger"><i class="bi bi-exclamation-triangle"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-header bg-white d-flex align-items-center justify-content-between">
+    <div class="fw-semibold"><i class="bi bi-hdd-network me-2"></i>디바이스 목록</div>
+    <div class="small d-flex align-items-center gap-2">
+      <span class="text-secondary">거래처</span>
+      <select class="form-select form-select-sm" id="customerFilter" style="width:auto; min-width: 160px;">
+        <option value="">전체</option>
+        {% for c in customers %}
+        <option value="{{ c }}" {% if c == selected_customer %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+      <button type="button" class="btn btn-outline-primary btn-sm" id="btnApplyCustomer">적용</button>
+    </div>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th class="ps-3">디바이스명</th>
+            <th>상태</th>
+            <th>마지막 통신</th>
+            <th>구독 상태</th>
+            <th>만료일</th>
+            <th>IP</th>
+            <th>거래처</th>
+            <th>Power</th>
+            <th>진행시간(time_sec)</th>
+            <th>SD카드</th>
+            <th class="pe-3">최근 로그</th>
+            <th class="pe-3">관리</th>
+          </tr>
+        </thead>
+        <tbody id="deviceTbody">
+          {% for d in devices %}
+          <tr data-token="{{ d.token }}" data-ip="{{ d.ip }}" data-customer="{{ d.customer }}" data-device-id="{{ d.device_id }}">
+            <td class="ps-3 fw-semibold">
+              <i class="bi bi-cpu me-2 text-secondary"></i>{{ d.name }}
+            </td>
+            <td>
+              {% if d.status == 'Online' %}
+                <span class="badge text-bg-success">Online</span>
+              {% elif d.status == 'Error' %}
+                <span class="badge text-bg-danger">Error</span>
+              {% else %}
+                <span class="badge text-bg-secondary">오프라인</span>
+              {% endif %}
+            </td>
+            <td class="text-secondary">{{ d.last_seen }}</td>
+            <td>
+              {% if d.plan_status == 'active' %}
+                <span class="badge text-bg-success-subtle border border-success-subtle text-success-emphasis">활성</span>
+              {% elif d.plan_status == 'expired' %}
+                <span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">만료</span>
+              {% else %}
+                <span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">만료</span>
+              {% endif %}
+            </td>
+            <td>{{ d.plan_expiry }}</td>
+            <td class="text-secondary">{{ d.ip }}</td>
+            <td class="text-secondary">{{ d.customer }}</td>
+            <td class="fw-semibold">{{ d.power }}</td>
+            <td class="text-secondary">{{ d.time_sec }}</td>
+            <td class="fw-semibold">{{ 'O' if d.sd_inserted else 'X' }}</td>
+            <td class="pe-3">
+              <div class="text-truncate" style="max-width: 280px;">{{ d.last_log }}</div>
+            </td>
+            <td class="pe-3">
+              <div class="d-flex gap-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm btn-device-edit">수정</button>
+                <button type="button" class="btn btn-outline-danger btn-sm btn-device-delete">삭제</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 수정 모달 (최소 UI 추가) -->
+<div class="modal fade" id="deviceEditModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">디바이스 수정</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-2">
+          <label class="form-label">Token</label>
+          <input type="text" class="form-control" id="editToken" readonly>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">IP</label>
+          <input type="text" class="form-control" id="editIp" readonly>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">디바이스명</label>
+          <input type="text" class="form-control" id="editName">
+        </div>
+        <div class="mb-2">
+          <label class="form-label">거래처</label>
+          <input type="text" class="form-control" id="editCustomer">
+          <div class="form-text">거래처 변경 시 token/customer 분리 규칙에 맞게 token map(setToken.env)이 함께 갱신됩니다.</div>
+        </div>
+        <div class="small text-danger" id="editErr" style="display:none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">닫기</button>
+        <button type="button" class="btn btn-primary" id="btnEditSave">저장</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function () {
+  const btn = document.getElementById('btnApplyCustomer');
+  if (!btn) return;
+  btn.addEventListener('click', function () {
+    const sel = document.getElementById('customerFilter');
+    const v = sel ? sel.value : '';
+    const url = new URL(window.location.href);
+    if (v) url.searchParams.set('customer', v);
+    else url.searchParams.delete('customer');
+    window.location.href = url.toString();
+  });
+})();
+</script>
+
+<script>
+(function () {
+  const tbody = document.getElementById('deviceTbody');
+  if (!tbody) return;
+
+  const cntTotal = document.getElementById('cntTotal');
+  const cntOnline = document.getElementById('cntOnline');
+  const cntOffline = document.getElementById('cntOffline');
+  const cntExpired = document.getElementById('cntExpired');
+
+  const selCustomer = document.getElementById('customerFilter');
+  const selectedCustomer = selCustomer ? (selCustomer.value || '') : '';
+
+  const modalEl = document.getElementById('deviceEditModal');
+  const modal = (modalEl && window.bootstrap) ? new bootstrap.Modal(modalEl) : null;
+  const editToken = document.getElementById('editToken');
+  const editIp = document.getElementById('editIp');
+  const editName = document.getElementById('editName');
+  const editCustomer = document.getElementById('editCustomer');
+  const editErr = document.getElementById('editErr');
+  const btnEditSave = document.getElementById('btnEditSave');
+
+  let editingRow = null;
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function badgeHtml(status) {
+    if (status === 'Online') {
+      return '<span class="badge text-bg-success">Online</span>';
+    }
+    if (status === 'Error') {
+      return '<span class="badge text-bg-danger">Error</span>';
+    }
+    return '<span class="badge text-bg-secondary">오프라인</span>';
+  }
+
+  function planHtml(plan) {
+    if (plan === 'expired') {
+      return '<span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">만료</span>';
+    }
+    if (plan === 'restricted') {
+      return '<span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">만료</span>';
+    }
+    return '<span class="badge text-bg-success-subtle border border-success-subtle text-success-emphasis">활성</span>';
+  }
+
+  function renderRows(devices) {
+    const rows = [];
+    for (const d of (devices || [])) {
+      const token = esc(d.token || '');
+      const ip = esc(d.ip || '');
+      const customer = esc(d.customer || '-');
+      const name = esc(d.name || ip);
+      const lastSeen = esc(d.last_seen || '-');
+      const power = esc(d.power || '-');
+      const timeSec = esc(d.time_sec || '-');
+      const sdCard = (d.sd_inserted === true || d.sd_inserted === 'true' || d.sd_inserted === 1) ? 'O' : 'X';
+      const lastLog = esc(d.last_log || '');
+
+      rows.push(
+        `<tr data-token="${token}" data-ip="${ip}" data-customer="${customer}" data-device-id="${esc(d.device_id || '')}">
+          <td class="ps-3 fw-semibold"><i class="bi bi-cpu me-2 text-secondary"></i>${name}</td>
+          <td>${badgeHtml(d.status)}</td>
+          <td class="text-secondary">${lastSeen}</td>
+          <td>${planHtml(d.plan_status || 'active')}</td>
+          <td>${esc(d.plan_expiry || '-')}</td>
+          <td class="text-secondary">${ip}</td>
+          <td class="text-secondary">${customer}</td>
+          <td class="fw-semibold">${power}</td>
+          <td class="text-secondary">${timeSec}</td>
+          <td class="fw-semibold">${sdCard}</td>
+          <td class="pe-3"><div class="text-truncate" style="max-width: 280px;">${lastLog}</div></td>
+          <td class="pe-3">
+            <div class="d-flex gap-2">
+              <button type="button" class="btn btn-outline-secondary btn-sm btn-device-edit">수정</button>
+              <button type="button" class="btn btn-outline-danger btn-sm btn-device-delete">삭제</button>
+            </div>
+          </td>
+        </tr>`
+      );
+    }
+    tbody.innerHTML = rows.join('');
+  }
+
+  async function fetchJSON(url, options) {
+    try {
+      const res = await fetch(url, options);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { ok: false, status: res.status, data };
+      }
+      return data;
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  async function refreshStatus() {
+    const url = selectedCustomer ? (`/api/device-status?customer=${encodeURIComponent(selectedCustomer)}`) : '/api/device-status';
+    const resp = await fetchJSON(url);
+    if (!resp || resp.ok === false) {
+      return;
+    }
+
+    if (cntTotal) cntTotal.textContent = String((resp.counts && resp.counts.total) ?? '-');
+    if (cntOnline) cntOnline.textContent = String((resp.counts && resp.counts.online) ?? '-');
+    if (cntOffline) cntOffline.textContent = String((resp.counts && resp.counts.offline) ?? '-');
+    if (cntExpired) cntExpired.textContent = String((resp.counts && resp.counts.expired) ?? '-');
+
+    renderRows(resp.devices || []);
+  }
+
+  function showEditError(msg) {
+    if (!editErr) return;
+    if (!msg) {
+      editErr.style.display = 'none';
+      editErr.textContent = '';
+      return;
+    }
+    editErr.style.display = 'block';
+    editErr.textContent = msg;
+  }
+
+  function openEditModal(tr) {
+    if (!modal || !tr) return;
+    editingRow = tr;
+    const token = tr.getAttribute('data-token') || '';
+    const ip = tr.getAttribute('data-ip') || '';
+    const customer = tr.getAttribute('data-customer') || '-';
+    const nameCell = tr.querySelector('td');
+    const name = nameCell ? (nameCell.textContent || '').trim() : '';
+
+    if (editToken) editToken.value = token;
+    if (editIp) editIp.value = ip;
+    if (editName) editName.value = name;
+    if (editCustomer) editCustomer.value = customer;
+    showEditError('');
+
+    modal.show();
+  }
+
+  async function submitEdit() {
+    if (!editingRow) return;
+    const token = editToken ? (editToken.value || '').trim() : '';
+    const ip = editIp ? (editIp.value || '').trim() : '';
+    const customerOld = editingRow.getAttribute('data-customer') || '-';
+    const name = editName ? (editName.value || '').trim() : '';
+    const customerNew = editCustomer ? (editCustomer.value || '').trim() : customerOld;
+
+    const deviceId = editingRow.getAttribute('data-device-id') || '';
+    const payload = {
+      device_id: deviceId,
+      token,
+      ip,
+      customer_old: customerOld,
+      name,
+      customer_new: customerNew,
+    };
+
+    const resp = await fetchJSON('/api/devices/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp || resp.ok === false) {
+      const msg = (resp && resp.data && resp.data.detail) ? String(resp.data.detail) : '수정 실패';
+      showEditError(msg);
+      return;
+    }
+
+    modal.hide();
+    editingRow = null;
+    await refreshStatus();
+  }
+
+  tbody.addEventListener('click', async function (e) {
+    const t = e.target;
+    if (!(t instanceof Element)) return;
+
+    const tr = t.closest('tr');
+    if (!tr) return;
+
+    if (t.classList.contains('btn-device-edit')) {
+      openEditModal(tr);
+      return;
+    }
+
+    if (t.classList.contains('btn-device-delete')) {
+      const deviceId = tr.getAttribute('data-device-id') || '';
+      const token = tr.getAttribute('data-token') || '';
+      const ip = tr.getAttribute('data-ip') || '';
+      const customer = tr.getAttribute('data-customer') || '-';
+      if (!confirm(`삭제하시겠습니까?\n${ip} (${customer})`)) return;
+
+      const resp = await fetchJSON('/api/devices/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: deviceId, token, ip, customer }),
+      });
+
+      if (!resp || resp.ok === false) {
+        alert('삭제 실패');
+        return;
+      }
+
+      await refreshStatus();
+    }
+  });
+
+  if (btnEditSave) {
+    btnEditSave.addEventListener('click', submitEdit);
+  }
+
+  // Online/Offline 상시 자동 반영(폴링)
+  refreshStatus();
+  setInterval(refreshStatus, 4000);
+})();
+</script>
+{% endblock %}

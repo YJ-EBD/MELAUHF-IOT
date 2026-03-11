@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ko" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title }} | for_rnd 관리자 콘솔</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" rel="stylesheet">
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Bootstrap Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+
+  <link href="{{ url_for('static', path='css/admin.css') }}" rel="stylesheet">
+
+  {% block extra_head %}{% endblock %}
+</head>
+<body class="app page-{{ nav_active }}">
+{% if not logged_in %}
+<script>window.location.replace("/login");</script>
+{% endif %}
+
+
+<div class="app-shell">
+  <!-- 좌측 사이드바 -->
+  <aside class="sidebar sidebar--dark">
+    <div class="sidebar-header px-3 py-3">
+      <a href="/" class="d-flex align-items-center gap-2 text-decoration-none">
+        <img
+          src="{{ url_for('static', path='img/logo.png') }}"
+          alt="for_rnd"
+          class="brand-logo"
+          loading="lazy"
+        >
+        <div class="brand-text">
+          <div class="brand-title">for_rnd</div>
+          <div class="brand-sub">Admin Console</div>
+        </div>
+      </a>
+    </div>
+
+    <nav class="px-2 py-2">
+      <ul class="nav nav-pills flex-column gap-1">
+        {% for item in nav_items %}
+          <li class="nav-item">
+            <a class="nav-link d-flex align-items-center gap-2 {% if nav_active == item.key %}active{% endif %}"
+               href="{{ item.path }}">
+              <span class="nav-ico">
+                {% if item.key == 'dashboard' %}<i class="bi bi-speedometer2"></i>{% endif %}
+                {% if item.key == 'device_status' %}<i class="bi bi-hdd-network"></i>{% endif %}
+                {% if item.key == 'control_panel' %}<i class="bi bi-toggles2"></i>{% endif %}
+                {% if item.key == 'logs' %}<i class="bi bi-journal-text"></i>{% endif %}
+                {% if item.key == 'data' %}<i class="bi bi-database"></i>{% endif %}
+                {% if item.key == 'plan' %}<i class="bi bi-shield-check"></i>{% endif %}
+                {% if item.key == 'settings' %}<i class="bi bi-gear"></i>{% endif %}
+              </span>
+              <span class="nav-text">{{ item.label }}</span>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    </nav>
+
+    <div class="mt-auto px-3 py-3 sidebar-footer">
+      <div class="small text-secondary-emphasis">Industrial Control × Modern SaaS</div>
+      <div class="small text-secondary">v0.1 (UI)</div>
+    </div>
+  </aside>
+
+  <!-- 본문 -->
+  <main class="content">
+    <header class="content-header topbar">
+      <div class="container-fluid py-3">
+        <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
+          <div class="d-flex align-items-center gap-3">
+            <div>
+              <h1 class="h4 mb-0 topbar-title">{{ page_title }}</h1>
+              <div class="small text-secondary topbar-sub">다수 기기 조회 · 상태 모니터링 · 제어</div>
+            </div>
+          </div>
+
+          <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+            <div class="status-pill" id="apiConnPill" title="API 연결 상태">
+              <span class="led led--pending" id="apiConnDot"></span>
+              <span class="status-text" id="apiConnText">API 확인 중</span>
+            </div>
+
+            <div class="status-pill status-pill--muted" title="현재 시간">
+              <i class="bi bi-clock me-1"></i><span id="clockNow">--:--:--</span>
+            </div>
+
+            <button class="btn btn-sm btn-icon btn-outline-secondary" id="themeToggle" type="button" aria-label="테마 전환">
+              <i class="bi bi-moon-stars"></i>
+            </button>
+
+            <a class="btn btn-sm btn-icon btn-outline-secondary" href="/logout" title="로그아웃" aria-label="로그아웃">
+              <i class="bi bi-box-arrow-right"></i>
+            </a>
+
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="container-fluid py-4 page-enter">
+      {% block content %}{% endblock %}
+    </section>
+
+    <footer class="content-footer py-3">
+      <div class="container-fluid small text-secondary">
+        © for_rnd 관리자 콘솔
+      </div>
+    </footer>
+  </main>
+</div>
+
+<!-- Global loading overlay (optional) -->
+<div class="app-loading d-none" id="appLoadingOverlay" aria-hidden="true">
+  <div class="app-loading__inner">
+    <div class="spinner-border" role="status" aria-label="Loading"></div>
+    <div class="small mt-2 text-secondary">처리 중...</div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', path='js/common.js') }}"></script>
+{% block extra_scripts %}{% endblock %}
+</body>
+</html>
