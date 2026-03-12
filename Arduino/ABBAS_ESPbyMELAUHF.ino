@@ -19,6 +19,8 @@ static void melauhfPowerSet(bool on);
 
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <Update.h>
+#include "mbedtls/sha256.h"
 
 #ifndef DWIN_RX_PIN
 #define DWIN_RX_PIN 6
@@ -58,6 +60,9 @@ static void webRegisterTick(bool force);
 static void webLogUploadTick();
 static void webMarkLogUploadDirty(const char* path);
 static void atmegaPublishSubscriptionActive(const char* planLabel, const char* range, int remainingDays);
+static void notifyAtmegaWifiConnectResult(bool ok);
+static void webScheduleImmediateFirmwareCheck(const char* reason);
+static void webFirmwareImmediateCheckTick();
 
 static const uint16_t CRC_TABLE[256] PROGMEM = {
   0x0000,0xc0c1,0xc181,0x0140,0xc301,0x03c0,0x0280,0xc241,
@@ -1190,6 +1195,16 @@ static uint8_t g_page63LastStatusConnected = 0xFF;
 #define WEB_SERVER_BASE_URL "https://www.yjcooperation.com"
 #endif
 
+#ifndef FIRMWARE_FAMILY
+#define FIRMWARE_FAMILY "ABBAS_ESP32C5_MELAUHF"
+#endif
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "2026.03.12.9"
+#endif
+#ifndef FIRMWARE_BUILD_ID
+#define FIRMWARE_BUILD_ID "ota-base"
+#endif
+
 #ifndef DEVICE_MODEL
 #define DEVICE_MODEL "ABBA-S"
 #endif
@@ -1214,6 +1229,7 @@ static const char* WEB_REGISTER_PATH = "/api/device/register";
 static const char* WEB_HEARTBEAT_PATH = "/api/device/heartbeat";
 static const char* WEB_TELEMETRY_PATH = "/api/device/telemetry";
 static const char* WEB_LOG_UPLOAD_PATH = "/api/device/log-upload";
+static const char* WEB_OTA_REPORT_PATH = "/api/device/ota/report";
 static const uint32_t WEB_REGISTER_PERIOD_MS = 600000;
 static const uint32_t WEB_HEARTBEAT_PERIOD_MS = 30000;
 static const uint32_t WEB_TELEMETRY_PERIOD_MS = 60000;
@@ -1221,11 +1237,16 @@ static const uint32_t WEB_TELEMETRY_FORCE_PERIOD_MS = 300000;
 static const uint32_t WEB_SUBSCRIPTION_SYNC_PERIOD_MS = 600000;
 static const uint32_t WEB_DEVICE_REGISTERED_SYNC_PERIOD_MS = 21600000;
 static const uint32_t WEB_DEVICE_REGISTERED_RECHECK_PERIOD_MS = 5000;
+static const uint32_t WEB_FIRMWARE_CHECK_PERIOD_MS = 1800000;
+static const uint32_t WEB_OTA_BOOT_REPORT_RETRY_MS = 15000;
+static const uint32_t WEB_OTA_POST_CONNECT_DELAY_MS = 15000;
 static const uint32_t WEB_LOG_UPLOAD_STEP_MS = 250;
 static const uint32_t WEB_LOG_UPLOAD_RETRY_MS = 5000;
 static const uint16_t WEB_LOG_UPLOAD_CHUNK_BYTES = 384;
 static const uint16_t WEB_HTTP_CONNECT_TIMEOUT_MS = 2000;
 static const uint16_t WEB_HTTP_RESPONSE_TIMEOUT_MS = 2500;
+static const uint16_t WEB_OTA_HTTP_CONNECT_TIMEOUT_MS = 5000;
+static const uint16_t WEB_OTA_HTTP_RESPONSE_TIMEOUT_MS = 30000;
 
 static const uint16_t TCP_PORT = 5000;
 static const uint16_t DISCOVERY_PORT = 4210;
@@ -1318,6 +1339,24 @@ bool netServicesStarted = false;
 WiFiClient webPlainClient;
 WiFiClientSecure webSecureClient;
 bool webSecureClientReady = false;
+static uint8_t g_otaDownloadBuf[2048] = {0};
+static uint8_t g_otaShaRaw[32] = {0};
+static char g_otaShaHex[65] = {0};
+static char g_otaDidEnc[96] = {0};
+static char g_otaPath[320] = {0};
+static char g_otaUrl[512] = {0};
+static char g_otaTargetFamily[96] = {0};
+static char g_otaTargetVersion[64] = {0};
+static char g_otaTargetBuildId[64] = {0};
+static char g_otaDownloadPath[192] = {0};
+static char g_otaExpectedSha256[80] = {0};
+static char g_otaErrorMsg[96] = {0};
+static uint32_t g_lastStaConnectedMs = 0;
+static bool g_webFirmwareImmediateCheckPending = false;
+static uint32_t g_webFirmwareImmediateCheckAtMs = 0;
+static uint32_t g_webFirmwareSkipLogMs = 0;
+static char g_webFirmwareLastSkipReason[40] = {0};
+static mbedtls_sha256_context g_otaShaCtx;
 
 uint32_t lastWebRegisterMs = 0;
 uint32_t lastWebHeartbeatMs = 0;
@@ -1325,6 +1364,8 @@ uint32_t lastWebTelemetryMs = 0;
 uint32_t lastWebTelemetryForceMs = 0;
 uint32_t lastWebSubscriptionSyncMs = 0;
 uint32_t lastWebDeviceRegisteredSyncMs = 0;
+uint32_t lastWebFirmwareCheckMs = 0;
+uint32_t lastWebOtaBootReportMs = 0;
 static char cachedDeviceId[18] = {0};
 static char cachedDeviceToken[33] = {0};
 uint32_t lastWebOkMs = 0;
@@ -1334,6 +1375,8 @@ static bool g_webDeviceRegistered = true;
 static bool g_webTelemetryDirty = true;
 static uint64_t g_lastHandledCommandId = 0;
 static bool g_lastHandledCommandLoaded = false;
+static bool g_webOtaPendingBootReport = false;
+static uint64_t g_webOtaPendingReleaseId = 0;
 
 wl_status_t lastStaStatus = WL_IDLE_STATUS;
 
@@ -2191,6 +2234,70 @@ static const char* deviceTokenC() {
   return cachedDeviceToken;
 }
 
+static const char* firmwareFamilyC() {
+  return FIRMWARE_FAMILY;
+}
+
+static const char* firmwareVersionC() {
+  return FIRMWARE_VERSION;
+}
+
+static const char* firmwareBuildIdC() {
+  return FIRMWARE_BUILD_ID;
+}
+
+static void otaSetPendingBootReport(bool pending, uint64_t releaseId = 0) {
+  prefs.begin("abba-s", false);
+  prefs.putBool("ota_pending", pending);
+  if (pending && releaseId > 0) {
+    prefs.putString("ota_release_id", String((unsigned long long)releaseId));
+  } else {
+    prefs.remove("ota_release_id");
+  }
+  prefs.end();
+  g_webOtaPendingBootReport = pending;
+  g_webOtaPendingReleaseId = (pending && releaseId > 0) ? releaseId : 0;
+}
+
+static bool otaLoadPendingBootReport() {
+  prefs.begin("abba-s", true);
+  bool pending = prefs.getBool("ota_pending", false);
+  String releaseIdText = prefs.getString("ota_release_id", "");
+  prefs.end();
+  g_webOtaPendingBootReport = pending;
+  g_webOtaPendingReleaseId = 0;
+  if (pending && releaseIdText.length() > 0) {
+    char* endPtr = nullptr;
+    unsigned long long rid = strtoull(releaseIdText.c_str(), &endPtr, 10);
+    if (endPtr && endPtr != releaseIdText.c_str()) {
+      g_webOtaPendingReleaseId = (uint64_t)rid;
+    }
+  }
+  return pending;
+}
+
+static void webLogFirmwareSkip(const char* reason) {
+  if (!reason || !reason[0]) reason = "unknown";
+
+  uint32_t now = millis();
+  if ((strcmp(g_webFirmwareLastSkipReason, reason) == 0) &&
+      g_webFirmwareSkipLogMs != 0 &&
+      (uint32_t)(now - g_webFirmwareSkipLogMs) < 5000U) {
+    return;
+  }
+
+  snprintf(g_webFirmwareLastSkipReason, sizeof(g_webFirmwareLastSkipReason), "%s", reason);
+  g_webFirmwareSkipLogMs = now;
+  Serial.printf("[OTA] skip: %s\n", reason);
+}
+
+static bool webOtaNetworkReady() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (portalMode) return false;
+  if (g_lastStaConnectedMs == 0) return false;
+  return (uint32_t)(millis() - g_lastStaConnectedMs) >= WEB_OTA_POST_CONNECT_DELAY_MS;
+}
+
 static bool webPrepareSecureClient() {
   if (webSecureClientReady) return true;
 #if WEB_TLS_INSECURE
@@ -2638,6 +2745,389 @@ static bool jsonExtractUint64Value(const String& body, const char* key, uint64_t
   if (!jsonExtractStringValue(body, key, tmp, sizeof(tmp))) return false;
   out = teParseU64(tmp, out);
   return true;
+}
+
+static void jsonAppendFirmwareFields(String& out) {
+  jsonAppendQuotedField(out, "fw", firmwareFamilyC());
+  jsonAppendQuotedField(out, "fw_version", firmwareVersionC());
+  jsonAppendQuotedField(out, "fw_build_id", firmwareBuildIdC());
+}
+
+static bool webPostOtaReport(const char* state, uint64_t releaseId, const char* message) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  char ip[16];
+  ipToStr(WiFi.localIP(), ip, sizeof(ip));
+
+  String json;
+  json.reserve(384);
+  json = "{";
+  jsonAppendQuotedField(json, "ip", ip);
+  jsonAppendQuotedField(json, "device_id", deviceIdC());
+  jsonAppendQuotedField(json, "customer", DEVICE_CUSTOMER);
+  jsonAppendQuotedField(json, "token", deviceTokenC());
+  jsonAppendQuotedField(json, "state", (state && state[0]) ? state : "idle");
+  jsonAppendQuotedField(json, "message", (message && message[0]) ? message : "");
+  jsonAppendUint64Field(json, "release_id", releaseId);
+  jsonAppendFirmwareFields(json);
+  json += "}";
+
+  String body;
+  int code = 0;
+  bool ok = webPostJson(WEB_OTA_REPORT_PATH, json.c_str(), json.length(), &body, &code);
+  if (!ok) {
+    Serial.printf("[OTA] report failed state=%s code=%d\n", (state ? state : "-"), code);
+  }
+  return ok;
+}
+
+static bool webDownloadAndApplyFirmware(
+    const char* downloadPath,
+    uint64_t releaseId,
+    const char* targetFamily,
+    const char* targetVersion,
+    const char* targetBuildId,
+    uint64_t expectedSize,
+    const char* expectedSha256,
+    char* errorOut,
+    size_t errorOutSz) {
+  if (errorOut && errorOutSz > 0) errorOut[0] = 0;
+  if (!downloadPath || !downloadPath[0]) {
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "download_path_missing");
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "wifi_not_connected");
+    return false;
+  }
+
+  urlEncodeValue(deviceIdC(), g_otaDidEnc, sizeof(g_otaDidEnc));
+  snprintf(g_otaPath, sizeof(g_otaPath), "%s%sdevice_id=%s",
+           downloadPath,
+           strchr(downloadPath, '?') ? "&" : "?",
+           g_otaDidEnc);
+
+  snprintf(g_otaUrl, sizeof(g_otaUrl), "%s%s", WEB_SERVER_BASE_URL, g_otaPath);
+
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setConnectTimeout((int32_t)WEB_OTA_HTTP_CONNECT_TIMEOUT_MS);
+  http.setTimeout((uint16_t)WEB_OTA_HTTP_RESPONSE_TIMEOUT_MS);
+
+  const bool isHttps = (strncmp(g_otaUrl, "https://", 8) == 0);
+  bool begun = false;
+  if (isHttps) {
+    if (!webPrepareSecureClient()) {
+      if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "secure_client_prepare_failed");
+      return false;
+    }
+    begun = http.begin(webSecureClient, g_otaUrl);
+  } else {
+    begun = http.begin(webPlainClient, g_otaUrl);
+  }
+
+  if (!begun) {
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "http_begin_failed");
+    return false;
+  }
+
+  http.addHeader("X-Auth-Token", deviceTokenC());
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "http_status_%d", code);
+    http.end();
+    return false;
+  }
+
+  int contentLength = http.getSize();
+  if (contentLength > 0 && expectedSize > 0 && (uint64_t)contentLength != expectedSize) {
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "size_mismatch_header");
+    http.end();
+    return false;
+  }
+
+  size_t updateSize = (expectedSize > 0 && expectedSize <= 0xFFFFFFFFULL) ? (size_t)expectedSize : UPDATE_SIZE_UNKNOWN;
+  if (!Update.begin(updateSize)) {
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "update_begin_failed");
+    http.end();
+    return false;
+  }
+
+  WiFiClient* stream = http.getStreamPtr();
+  if (!stream) {
+    Update.abort();
+    http.end();
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "stream_missing");
+    return false;
+  }
+
+  mbedtls_sha256_init(&g_otaShaCtx);
+  mbedtls_sha256_starts(&g_otaShaCtx, 0);
+
+  uint64_t written = 0;
+  uint32_t lastDataMs = millis();
+  uint32_t lastProgressMs = 0;
+
+  while (http.connected() || stream->available() > 0) {
+    size_t avail = stream->available();
+    if (avail == 0) {
+      if ((uint32_t)(millis() - lastDataMs) > WEB_OTA_HTTP_RESPONSE_TIMEOUT_MS) {
+        break;
+      }
+      delay(1);
+      continue;
+    }
+
+    size_t toRead = avail;
+    if (toRead > sizeof(g_otaDownloadBuf)) toRead = sizeof(g_otaDownloadBuf);
+    int readLen = stream->readBytes(g_otaDownloadBuf, toRead);
+    if (readLen <= 0) {
+      delay(1);
+      continue;
+    }
+
+    lastDataMs = millis();
+    mbedtls_sha256_update(&g_otaShaCtx, g_otaDownloadBuf, (size_t)readLen);
+
+    size_t writeLen = Update.write(g_otaDownloadBuf, (size_t)readLen);
+    if (writeLen != (size_t)readLen) {
+      mbedtls_sha256_free(&g_otaShaCtx);
+      Update.abort();
+      http.end();
+      if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "update_write_failed");
+      return false;
+    }
+
+    written += (uint64_t)writeLen;
+    if ((uint32_t)(millis() - lastProgressMs) >= 1000U) {
+      lastProgressMs = millis();
+      Serial.printf("[OTA] downloading release=%llu bytes=%llu\n",
+                    (unsigned long long)releaseId,
+                    (unsigned long long)written);
+    }
+  }
+
+  memset(g_otaShaRaw, 0, sizeof(g_otaShaRaw));
+  memset(g_otaShaHex, 0, sizeof(g_otaShaHex));
+  mbedtls_sha256_finish(&g_otaShaCtx, g_otaShaRaw);
+  mbedtls_sha256_free(&g_otaShaCtx);
+  for (size_t i = 0; i < sizeof(g_otaShaRaw); i++) {
+    snprintf(&g_otaShaHex[i * 2], 3, "%02x", (unsigned int)g_otaShaRaw[i]);
+  }
+
+  if (expectedSize > 0 && written != expectedSize) {
+    Update.abort();
+    http.end();
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "size_mismatch_body");
+    return false;
+  }
+  if (contentLength > 0 && written != (uint64_t)contentLength) {
+    Update.abort();
+    http.end();
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "content_length_mismatch");
+    return false;
+  }
+  if (expectedSha256 && expectedSha256[0] && strcasecmp(expectedSha256, g_otaShaHex) != 0) {
+    Update.abort();
+    http.end();
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "sha256_mismatch");
+    return false;
+  }
+
+  if (!Update.end()) {
+    http.end();
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "update_end_failed");
+    return false;
+  }
+  if (!Update.isFinished()) {
+    http.end();
+    if (errorOut && errorOutSz > 0) snprintf(errorOut, errorOutSz, "update_not_finished");
+    return false;
+  }
+
+  http.end();
+
+  Serial.printf("[OTA] ready to reboot release=%llu target=%s %s (%s)\n",
+                (unsigned long long)releaseId,
+                (targetFamily && targetFamily[0]) ? targetFamily : "-",
+                (targetVersion && targetVersion[0]) ? targetVersion : "-",
+                (targetBuildId && targetBuildId[0]) ? targetBuildId : "-");
+
+  otaSetPendingBootReport(true, releaseId);
+  webPostOtaReport("rebooting", releaseId, "ota image applied; rebooting");
+  notifyAtmegaWifiConnectResult(true);
+  delay(600);
+  ESP.restart();
+  return true;
+}
+
+static void webOtaBootReportTick() {
+  if (!g_webOtaPendingBootReport) return;
+  if (!webOtaNetworkReady()) return;
+
+  uint32_t now = millis();
+  if ((uint32_t)(now - lastWebOtaBootReportMs) < WEB_OTA_BOOT_REPORT_RETRY_MS) return;
+  lastWebOtaBootReportMs = now;
+
+  Serial.printf("[OTA] reporting boot success release=%llu\n",
+                (unsigned long long)g_webOtaPendingReleaseId);
+  if (webPostOtaReport("success", g_webOtaPendingReleaseId, "booted updated firmware")) {
+    otaSetPendingBootReport(false);
+  }
+}
+
+static void webScheduleImmediateFirmwareCheck(const char* reason) {
+  uint32_t dueMs = millis() + WEB_OTA_POST_CONNECT_DELAY_MS;
+  bool shouldLog = !g_webFirmwareImmediateCheckPending;
+
+  g_webFirmwareImmediateCheckPending = true;
+  g_webFirmwareImmediateCheckAtMs = dueMs;
+
+  if (shouldLog) {
+    Serial.printf("[OTA] immediate check scheduled in %lu ms (%s)\n",
+                  (unsigned long)WEB_OTA_POST_CONNECT_DELAY_MS,
+                  (reason && reason[0]) ? reason : "-");
+  }
+}
+
+static void webFirmwareCheckTick(bool force) {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (force) webLogFirmwareSkip("wifi_not_connected");
+    return;
+  }
+  if (portalMode) {
+    if (force) webLogFirmwareSkip("portal_mode");
+    return;
+  }
+  if (g_lastStaConnectedMs == 0) {
+    if (force) webLogFirmwareSkip("sta_connect_time_unknown");
+    return;
+  }
+  if (!webOtaNetworkReady()) {
+    if (force) webLogFirmwareSkip("post_connect_delay");
+    return;
+  }
+  if (g_webOtaPendingBootReport) {
+    if (force) webLogFirmwareSkip("awaiting_boot_report");
+    return;
+  }
+  if (g_runActive) {
+    webLogFirmwareSkip("run_active");
+    return;
+  }
+  if (g_webDeviceRegisteredKnown && !g_webDeviceRegistered) {
+    webLogFirmwareSkip("device_unregistered");
+    return;
+  }
+
+  uint32_t now = millis();
+  if (!force && (uint32_t)(now - lastWebFirmwareCheckMs) < WEB_FIRMWARE_CHECK_PERIOD_MS) return;
+  lastWebFirmwareCheckMs = now;
+
+  memset(g_otaTargetFamily, 0, sizeof(g_otaTargetFamily));
+  memset(g_otaTargetVersion, 0, sizeof(g_otaTargetVersion));
+  memset(g_otaTargetBuildId, 0, sizeof(g_otaTargetBuildId));
+  memset(g_otaDownloadPath, 0, sizeof(g_otaDownloadPath));
+  memset(g_otaExpectedSha256, 0, sizeof(g_otaExpectedSha256));
+  memset(g_otaErrorMsg, 0, sizeof(g_otaErrorMsg));
+
+  urlEncodeValue(deviceIdC(), g_otaDidEnc, sizeof(g_otaDidEnc));
+  snprintf(g_otaPath, sizeof(g_otaPath), "/api/device/ota/check?device_id=%s", g_otaDidEnc);
+  Serial.printf("[OTA] checking %s\n", g_otaPath);
+
+  String body;
+  int code = 0;
+  if (!webGetPath(g_otaPath, body, code)) {
+    Serial.printf("[OTA] check failed code=%d path=%s\n", code, g_otaPath);
+    return;
+  }
+
+  bool updateAvailable = false;
+  if (!jsonExtractBoolValue(body, "update_available", updateAvailable)) {
+    Serial.println("[OTA] invalid check response: update_available missing");
+    return;
+  }
+  if (!updateAvailable) {
+    Serial.println("[OTA] no update available");
+    return;
+  }
+
+  uint64_t releaseId = 0;
+  uint64_t sizeBytes = 0;
+  bool forceUpdate = false;
+
+  jsonExtractUint64Value(body, "release_id", releaseId);
+  jsonExtractUint64Value(body, "release_size_bytes", sizeBytes);
+  jsonExtractBoolValue(body, "release_force_update", forceUpdate);
+  jsonExtractStringValue(body, "release_family", g_otaTargetFamily, sizeof(g_otaTargetFamily));
+  jsonExtractStringValue(body, "release_version", g_otaTargetVersion, sizeof(g_otaTargetVersion));
+  jsonExtractStringValue(body, "release_build_id", g_otaTargetBuildId, sizeof(g_otaTargetBuildId));
+  jsonExtractStringValue(body, "release_download_path", g_otaDownloadPath, sizeof(g_otaDownloadPath));
+  jsonExtractStringValue(body, "release_sha256", g_otaExpectedSha256, sizeof(g_otaExpectedSha256));
+
+  if (releaseId == 0 || !g_otaDownloadPath[0]) {
+    Serial.println("[OTA] invalid check response");
+    return;
+  }
+  if (g_otaTargetFamily[0] && strcmp(g_otaTargetFamily, firmwareFamilyC()) != 0) {
+    Serial.printf("[OTA] skipped family mismatch target=%s current=%s\n", g_otaTargetFamily, firmwareFamilyC());
+    webPostOtaReport("failed", releaseId, "family_mismatch");
+    return;
+  }
+
+  Serial.printf("[OTA] update available release=%llu force=%u target=%s %s (%s)\n",
+                (unsigned long long)releaseId,
+                forceUpdate ? 1U : 0U,
+                g_otaTargetFamily[0] ? g_otaTargetFamily : "-",
+                g_otaTargetVersion[0] ? g_otaTargetVersion : "-",
+                g_otaTargetBuildId[0] ? g_otaTargetBuildId : "-");
+
+  webPostOtaReport("downloading", releaseId, "ota download started");
+
+  if (!webDownloadAndApplyFirmware(
+          g_otaDownloadPath,
+          releaseId,
+          g_otaTargetFamily,
+          g_otaTargetVersion,
+          g_otaTargetBuildId,
+          sizeBytes,
+          g_otaExpectedSha256,
+          g_otaErrorMsg,
+          sizeof(g_otaErrorMsg))) {
+    Serial.printf("[OTA] apply failed release=%llu reason=%s\n",
+                  (unsigned long long)releaseId,
+                  g_otaErrorMsg[0] ? g_otaErrorMsg : "unknown");
+    webPostOtaReport("failed", releaseId, g_otaErrorMsg[0] ? g_otaErrorMsg : "ota_apply_failed");
+  }
+}
+
+static void webFirmwareImmediateCheckTick() {
+  if (!g_webFirmwareImmediateCheckPending) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  uint32_t now = millis();
+  if ((int32_t)(now - g_webFirmwareImmediateCheckAtMs) < 0) return;
+
+  if (portalMode) {
+    webLogFirmwareSkip("portal_mode");
+    return;
+  }
+  if (g_runActive) {
+    webLogFirmwareSkip("run_active");
+    return;
+  }
+  if (g_webDeviceRegisteredKnown && !g_webDeviceRegistered) {
+    webLogFirmwareSkip("device_unregistered");
+    return;
+  }
+  if (g_webOtaPendingBootReport) {
+    webLogFirmwareSkip("awaiting_boot_report");
+    return;
+  }
+
+  g_webFirmwareImmediateCheckPending = false;
+  Serial.println("[OTA] running scheduled immediate check");
+  webFirmwareCheckTick(true);
 }
 
 static void webUpdateRegisteredState(bool registered) {
@@ -4533,7 +5023,7 @@ static void webRegisterTick(bool force) {
   jsonAppendQuotedField(json, "device_id", deviceIdC());
   jsonAppendQuotedField(json, "customer", DEVICE_CUSTOMER);
   jsonAppendQuotedField(json, "token", deviceTokenC());
-  jsonAppendQuotedField(json, "fw", "ABBAS_ESP32C5_MELAUHF");
+  jsonAppendFirmwareFields(json);
   jsonAppendBoolField(json, "sd_inserted", g_sdInserted);
   jsonAppendUint64Field(json, "sd_total_mb", g_sdTotalMB);
   jsonAppendUint64Field(json, "sd_used_mb", g_sdUsedMB);
@@ -4569,7 +5059,7 @@ static void webHeartbeatTick() {
   jsonAppendQuotedField(json, "device_id", deviceIdC());
   jsonAppendQuotedField(json, "customer", DEVICE_CUSTOMER);
   jsonAppendQuotedField(json, "token", deviceTokenC());
-  jsonAppendQuotedField(json, "fw", "ABBAS_ESP32C5_MELAUHF");
+  jsonAppendFirmwareFields(json);
   jsonAppendBoolField(json, "sd_inserted", g_sdInserted);
   jsonAppendUint64Field(json, "sd_total_mb", g_sdTotalMB);
   jsonAppendUint64Field(json, "sd_used_mb", g_sdUsedMB);
@@ -4610,6 +5100,7 @@ static void webTelemetryTick() {
   jsonAppendQuotedField(json, "device_id", deviceIdC());
   jsonAppendQuotedField(json, "customer", DEVICE_CUSTOMER);
   jsonAppendQuotedField(json, "token", deviceTokenC());
+  jsonAppendFirmwareFields(json);
   jsonAppendQuotedField(json, "line", lastOutLine);
   jsonAppendQuotedField(json, "power", power);
   jsonAppendQuotedField(json, "time_sec", timeSec);
@@ -5561,10 +6052,12 @@ void setup() {
   sdSetup();
   // [NEW FEATURE] Restore persisted subscription energy + ledger totals.
   tePrefsLoad();
+  otaLoadPendingBootReport();
   // [NEW FEATURE] Force ledger bootstrap at boot when SD is present.
   teEnsureLedgerFileReady();
   // [NEW FEATURE] Runtime marker to verify this energy-enabled build is flashed.
-  Serial.println("[TE] build marker: energy-sync+ledger v2");
+  Serial.printf("[TE] build marker: energy-sync+ledger v2 | fw=%s %s (%s)\n",
+                firmwareFamilyC(), firmwareVersionC(), firmwareBuildIdC());
 
   Serial.println();
   Serial.println("=== ESP32-C5 ABBA-S WiFi Provisioning (Scan Dropdown) v2 + BOOT RESET ===");
@@ -5596,10 +6089,14 @@ void setup() {
 
       booting = false;
       bootDoneMs = millis();
+      g_lastStaConnectedMs = millis();
       startNetServicesIfNeeded();
       lastWebHeartbeatMs = 0;
       lastWebTelemetryMs = 0;
       g_webTelemetryDirty = true;
+      lastWebFirmwareCheckMs = 0;
+      lastWebOtaBootReportMs = 0;
+      webScheduleImmediateFirmwareCheck("boot_sta_connected");
       webRegisterTick(true);
       webDeviceRegisteredSyncTick(true);
       webSubscriptionSyncTick(true);
@@ -5657,14 +6154,21 @@ void loop() {
     lastStaStatus = st;
     Serial.printf("[STA] status changed -> %s (%d)\n", wlStatusStr(st), (int)st);
     if (st == WL_CONNECTED) {
+      g_lastStaConnectedMs = millis();
       printStaInfoOnce();
 
       lastWebHeartbeatMs = 0;
       lastWebTelemetryMs = 0;
       g_webTelemetryDirty = true;
+      lastWebFirmwareCheckMs = 0;
+      lastWebOtaBootReportMs = 0;
+      webScheduleImmediateFirmwareCheck("sta_status_connected");
       webRegisterTick(true);
       webDeviceRegisteredSyncTick(true);
       webSubscriptionSyncTick(true);
+    } else {
+      g_lastStaConnectedMs = 0;
+      g_webFirmwareImmediateCheckPending = false;
     }
   }
 
@@ -5679,6 +6183,9 @@ void loop() {
     webPingTick();
     webDeviceRegisteredSyncTick(false);
     webSubscriptionSyncTick(false);
+    webOtaBootReportTick();
+    webFirmwareImmediateCheckTick();
+    webFirmwareCheckTick(false);
     webLogUploadTick();
   } else {
     stopNetServicesIfNeeded();

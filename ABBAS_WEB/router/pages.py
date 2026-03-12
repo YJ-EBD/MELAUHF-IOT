@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import secrets
 import socket
 import time
@@ -9,13 +11,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from DB import data_repo
 from DB import device_repo
 from DB import device_ops_repo
+from DB import firmware_repo
 from DB.runtime import get_mysql
 from services.log_store import read_logs as db_read_logs
 from redis.session import SESSION_COOKIE_NAME, read_session_user
@@ -23,6 +26,10 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 DEVICE_LOG_ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage", "device_logs")
 DEVICE_LOG_UPLOAD_MAX_CHUNK_BYTES = 4096
+FIRMWARE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage", "firmware")
+FIRMWARE_FAMILY_DEFAULT = (os.getenv("ABBAS_FIRMWARE_FAMILY_DEFAULT", "ABBAS_ESP32C5_MELAUHF").strip() or "ABBAS_ESP32C5_MELAUHF")
+DEVICE_FIRMWARE_CHECK_INTERVAL_SEC = int(os.getenv("ABBAS_DEVICE_FIRMWARE_CHECK_SEC", "1800"))
+FIRMWARE_MAX_UPLOAD_BYTES = int(os.getenv("ABBAS_FIRMWARE_MAX_UPLOAD_BYTES", "3342336"))
 
 
 def _fmt(dt: datetime) -> str:
@@ -96,6 +103,83 @@ def _format_capacity_label(mb: float) -> str:
     return f"{mb:.0f} MB"
 
 
+def _sanitize_firmware_token(value: Any, default: str = "") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = default
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("._-")
+    return cleaned or default
+
+
+def _format_firmware_identity(family: str, version: str = "", build_id: str = "") -> str:
+    family = str(family or "").strip()
+    version = str(version or "").strip()
+    build_id = str(build_id or "").strip()
+    out = family or "-"
+    if version:
+        out += f" {version}"
+    if build_id:
+        out += f" ({build_id})"
+    return out
+
+
+def _extract_firmware_fields(payload: dict[str, Any]) -> tuple[str, str, str, str]:
+    family = str(payload.get("fw") or payload.get("fw_family") or payload.get("fwFamily") or "").strip()
+    version = str(payload.get("fw_version") or payload.get("fwVersion") or "").strip()
+    build_id = str(payload.get("fw_build_id") or payload.get("fwBuildId") or "").strip()
+    display = _format_firmware_identity(family, version, build_id)
+    return family, version, build_id, display
+
+
+def _release_download_path(release_id: int) -> str:
+    return f"/api/device/ota/download/{int(release_id)}"
+
+
+def _build_firmware_summary(releases: list[dict[str, Any]], devices: list[dict[str, Any]]) -> dict[str, int]:
+    assigned = sum(1 for row in devices if int(row.get("target_release_id") or 0) > 0)
+    failures = sum(1 for row in devices if str(row.get("ota_state") or "").strip().lower() in {"failed", "error"})
+    current_known = sum(1 for row in devices if str(row.get("current_version") or "").strip())
+    return {
+        "release_count": len(releases),
+        "device_count": len(devices),
+        "assigned_count": assigned,
+        "failure_count": failures,
+        "current_known_count": current_known,
+    }
+
+
+def _build_firmware_payload() -> dict[str, Any]:
+    releases = firmware_repo.list_releases()
+    devices = firmware_repo.list_device_rows()
+    families = sorted(
+        {
+            str(row.get("family") or "").strip()
+            for row in releases
+            if str(row.get("family") or "").strip()
+        }
+        | {
+            str(row.get("current_family") or "").strip()
+            for row in devices
+            if str(row.get("current_family") or "").strip()
+        }
+        | {FIRMWARE_FAMILY_DEFAULT}
+    )
+    return {
+        "summary": _build_firmware_summary(releases, devices),
+        "releases": [
+            {
+                **row,
+                "download_path": _release_download_path(int(row.get("id") or 0)),
+            }
+            for row in releases
+        ],
+        "devices": devices,
+        "families": families,
+        "max_upload_bytes": int(FIRMWARE_MAX_UPLOAD_BYTES),
+        "default_family": FIRMWARE_FAMILY_DEFAULT,
+    }
+
+
 def _merge_sd_payload(payload: dict[str, Any], prev: dict[str, Any] | None = None) -> tuple[bool, float, float, float]:
     prev = prev or {}
 
@@ -129,6 +213,7 @@ def _nav_items() -> list[dict[str, str]]:
         {"key": "logs", "label": "로그", "path": "/logs"},
         {"key": "data", "label": "데이터", "path": "/data"},
         {"key": "plan", "label": "플랜", "path": "/plan"},
+        {"key": "firmware_manage", "label": "Firmware Manage", "path": "/firmware-manage"},
         {"key": "settings", "label": "설정", "path": "/settings"},
     ]
 
@@ -417,6 +502,7 @@ def _device_polling_policy() -> dict[str, int]:
         "telemetry_interval_sec": DEVICE_TELEMETRY_INTERVAL_SEC,
         "subscription_sync_interval_sec": DEVICE_SUBSCRIPTION_SYNC_INTERVAL_SEC,
         "register_refresh_sec": DEVICE_REGISTER_REFRESH_SEC,
+        "firmware_check_interval_sec": DEVICE_FIRMWARE_CHECK_INTERVAL_SEC,
         "online_window_sec": ONLINE_WINDOW_SEC,
     }
 
@@ -1341,6 +1427,25 @@ def settings(request: Request):
     return templates.TemplateResponse("settings.html", _base_context(request, "settings", page_title="설정"))
 
 
+@router.get("/firmware-manage", name="firmware_manage")
+def firmware_manage_page(request: Request):
+    payload = _build_firmware_payload()
+    return templates.TemplateResponse(
+        "firmware_manage.html",
+        _base_context(
+            request,
+            "firmware_manage",
+            page_title="Firmware Manage",
+            summary=payload.get("summary") or {},
+            releases=payload.get("releases") or [],
+            devices=payload.get("devices") or [],
+            families=payload.get("families") or [],
+            max_upload_bytes=int(payload.get("max_upload_bytes") or FIRMWARE_MAX_UPLOAD_BYTES),
+            default_family=str(payload.get("default_family") or FIRMWARE_FAMILY_DEFAULT),
+        ),
+    )
+
+
 @router.get("/data", name="data")
 def data_page(request: Request):
     # 저장된 디바이스 리스트 기반으로 데이터 조회 UI 제공
@@ -1377,6 +1482,134 @@ def plan_page(request: Request):
 def api_plan_payload():
     payload = _build_plan_payload()
     return {"ok": True, **payload}
+
+
+@router.get("/api/firmware/payload")
+def api_firmware_payload():
+    return {"ok": True, **_build_firmware_payload()}
+
+
+@router.post("/api/firmware/releases")
+async def api_firmware_create_release(
+    request: Request,
+    family: str = Form(...),
+    version: str = Form(...),
+    build_id: str = Form(""),
+    notes: str = Form(""),
+    force_update: str = Form("0"),
+    firmware_file: UploadFile = File(...),
+):
+    family_value = _sanitize_firmware_token(family, FIRMWARE_FAMILY_DEFAULT)
+    version_value = _sanitize_firmware_token(version)
+    build_value = _sanitize_firmware_token(build_id, "build")
+    if not version_value:
+        raise HTTPException(status_code=400, detail="version required")
+
+    filename = str(firmware_file.filename or "firmware.bin").strip() or "firmware.bin"
+    if not filename.lower().endswith(".bin"):
+        raise HTTPException(status_code=400, detail="firmware file must be .bin")
+
+    raw = await firmware_file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="firmware file required")
+    if len(raw) > FIRMWARE_MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"firmware exceeds OTA slot limit ({len(raw)} > {FIRMWARE_MAX_UPLOAD_BYTES} bytes)",
+        )
+
+    sha256 = hashlib.sha256(raw).hexdigest()
+    release_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target_dir = os.path.join(FIRMWARE_STORAGE_DIR, family_value)
+    os.makedirs(target_dir, exist_ok=True)
+    stored_name = f"{family_value}__{version_value}__{build_value}__{release_ts}.bin"
+    file_path = os.path.join(target_dir, stored_name)
+
+    with open(file_path, "wb") as fh:
+        fh.write(raw)
+
+    try:
+        release = firmware_repo.create_release(
+            family=family_value,
+            version=version_value,
+            build_id=build_value,
+            filename=filename,
+            stored_name=stored_name,
+            file_path=file_path,
+            sha256=sha256,
+            size_bytes=len(raw),
+            notes=notes,
+            uploaded_by=_request_user_id(request) or "admin",
+            force_update=_payload_bool(force_update, False),
+        )
+    except ValueError as exc:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
+        raise
+
+    return {
+        "ok": True,
+        "release": {
+            **release,
+            "download_path": _release_download_path(int(release.get("id") or 0)),
+        },
+    }
+
+
+@router.post("/api/firmware/releases/delete")
+def api_firmware_delete_releases(payload: dict[str, Any] = Body(...)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+    release_ids_raw = payload.get("release_ids")
+    if not isinstance(release_ids_raw, list):
+        raise HTTPException(status_code=400, detail="release_ids must be a list")
+    try:
+        result = firmware_repo.delete_releases(release_ids=release_ids_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **result}
+
+
+@router.post("/api/firmware/releases/{release_id}/assign")
+def api_firmware_assign_release(request: Request, release_id: int, payload: dict[str, Any] = Body(...)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+    device_ids_raw = payload.get("device_ids")
+    if not isinstance(device_ids_raw, list):
+        raise HTTPException(status_code=400, detail="device_ids must be a list")
+    try:
+        assigned = firmware_repo.assign_release_to_devices(
+            release_id=int(release_id),
+            device_ids=[str(v or "").strip() for v in device_ids_raw],
+            assigned_by=_request_user_id(request) or "admin",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "assigned": int(assigned)}
+
+
+@router.post("/api/firmware/devices/clear-target")
+def api_firmware_clear_targets(payload: dict[str, Any] = Body(...)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+    device_ids_raw = payload.get("device_ids")
+    if not isinstance(device_ids_raw, list):
+        raise HTTPException(status_code=400, detail="device_ids must be a list")
+    try:
+        cleared = firmware_repo.clear_targets(device_ids=[str(v or "").strip() for v in device_ids_raw])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "cleared": int(cleared)}
 
 
 @router.get("/api/health/live")
@@ -1539,6 +1772,139 @@ def api_device_registered(request: Request, device_id: str = ""):
     return payload
 
 
+@router.get("/api/device/ota/check")
+def api_device_ota_check(request: Request, device_id: str = ""):
+    did = _norm_device_id(device_id)
+    token = _extract_auth_token(request, {})
+    if not did:
+        raise HTTPException(status_code=400, detail="device_id required")
+    _device_record_or_403(did, token)
+
+    firmware_repo.record_device_check(device_id=did)
+    info = firmware_repo.get_target_release_for_device(device_id=did) or {}
+
+    current_family = str(info.get("current_family") or "").strip()
+    current_version = str(info.get("current_version") or "").strip()
+    current_build_id = str(info.get("current_build_id") or "").strip()
+    current_fw_text = str(info.get("current_fw_text") or "").strip()
+    target_release_id = int(info.get("target_release_id") or 0)
+    target_family = str(info.get("target_family") or "").strip()
+    target_version = str(info.get("target_version") or "").strip()
+    target_build_id = str(info.get("target_build_id") or "").strip()
+    file_path = str(info.get("file_path") or "").strip()
+    enabled = bool(info.get("is_enabled"))
+    file_ready = bool(file_path and os.path.exists(file_path))
+
+    same_release = (
+        bool(current_family and target_family and current_version and target_version)
+        and current_family == target_family
+        and current_version == target_version
+        and ((not target_build_id) or (current_build_id == target_build_id))
+    )
+    update_available = bool(target_release_id > 0 and enabled and file_ready and not same_release)
+
+    if same_release and target_release_id > 0:
+        firmware_repo.report_device_ota(
+            device_id=did,
+            state="up_to_date",
+            message="current firmware already matches assigned release",
+            release_id=target_release_id,
+            current_family=current_family,
+            current_version=current_version,
+            current_build_id=current_build_id,
+            current_fw_text=current_fw_text,
+        )
+
+    payload = {
+        "ok": True,
+        "device_id": did,
+        "update_available": update_available,
+        "current": {
+            "family": current_family,
+            "version": current_version,
+            "build_id": current_build_id,
+            "fw": current_fw_text,
+        },
+        "polling": _device_polling_policy(),
+    }
+
+    if update_available:
+        payload["release"] = {
+            "release_id": target_release_id,
+            "release_family": target_family,
+            "release_version": target_version,
+            "release_build_id": target_build_id,
+            "release_sha256": str(info.get("sha256") or "").strip().lower(),
+            "release_size_bytes": int(info.get("size_bytes") or 0),
+            "release_force_update": bool(info.get("force_update")),
+            "release_download_path": _release_download_path(target_release_id),
+        }
+
+    return payload
+
+
+@router.get("/api/device/ota/download/{release_id}")
+def api_device_ota_download(request: Request, release_id: int, device_id: str = ""):
+    did = _norm_device_id(device_id)
+    token = _extract_auth_token(request, {})
+    if not did:
+        raise HTTPException(status_code=400, detail="device_id required")
+    _device_record_or_403(did, token)
+
+    info = firmware_repo.get_target_release_for_device(device_id=did) or {}
+    target_release_id = int(info.get("target_release_id") or 0)
+    file_path = str(info.get("file_path") or "").strip()
+    filename = str(info.get("filename") or "").strip() or "firmware.bin"
+
+    if int(release_id or 0) <= 0 or target_release_id != int(release_id):
+        raise HTTPException(status_code=404, detail="release not assigned")
+    if not bool(info.get("is_enabled")):
+        raise HTTPException(status_code=409, detail="release disabled")
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="firmware file not found")
+
+    return FileResponse(file_path, media_type="application/octet-stream", filename=filename)
+
+
+@router.post("/api/device/ota/report")
+def api_device_ota_report(request: Request, payload: dict[str, Any] = Body(...)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+
+    token, device_id, rec = _require_device_identity(request, payload)
+    _ = token
+    customer = _auth_customer(request, payload) or str((rec or {}).get("customer") or "-")
+    public_ip = _request_client_ip(request)
+    ip = str(payload.get("ip") or "").strip() or public_ip or str((rec or {}).get("ip") or "")
+    state = str(payload.get("state") or "").strip().lower()
+    if not state:
+        raise HTTPException(status_code=400, detail="state required")
+    message = str(payload.get("message") or payload.get("result_message") or "").strip()
+    try:
+        release_id = int(payload.get("release_id") or 0)
+    except Exception:
+        release_id = 0
+
+    family, version, build_id, fw_display = _extract_firmware_fields(payload)
+    if not fw_display or fw_display == "-":
+        fw_display = _format_firmware_identity(family, version, build_id)
+
+    firmware_repo.report_device_ota(
+        device_id=device_id,
+        customer=customer,
+        device_name=str((rec or {}).get("name") or device_id),
+        ip=ip,
+        state=state,
+        message=message,
+        release_id=release_id,
+        current_family=family,
+        current_version=version,
+        current_build_id=build_id,
+        current_fw_text=fw_display,
+    )
+    return {"ok": True, "device_id": device_id, "state": state}
+
+
 @router.post("/api/device/register")
 def api_device_register(request: Request, payload: dict[str, Any] = Body(...)):
     if not isinstance(payload, dict):
@@ -1548,7 +1914,7 @@ def api_device_register(request: Request, payload: dict[str, Any] = Body(...)):
     customer = _auth_customer(request, payload)
     public_ip = _request_client_ip(request)
     ip = str(payload.get("ip") or "").strip() or public_ip
-    fw = str(payload.get("fw") or "").strip()
+    fw_family, fw_version, fw_build_id, fw = _extract_firmware_fields(payload)
     name = str(payload.get("name") or payload.get("model") or device_id).strip() or device_id
     now = datetime.now()
 
@@ -1624,6 +1990,19 @@ def api_device_register(request: Request, payload: dict[str, Any] = Body(...)):
         detail = str(e)
         status_code = 403 if ("invalid device token" in detail or "device not provisioned" in detail) else 400
         raise HTTPException(status_code=status_code, detail=detail) from e
+    try:
+        firmware_repo.touch_device_state(
+            device_id=device_id,
+            customer=customer,
+            device_name=name,
+            ip=ip,
+            current_family=fw_family,
+            current_version=fw_version,
+            current_build_id=fw_build_id,
+            current_fw_text=fw,
+        )
+    except Exception:
+        pass
 
     body = {"ok": True, "customer": customer, "registered": True, "device_id": device_id}
     body.update(_device_api_meta(device_id, ip, customer))
@@ -1640,7 +2019,7 @@ def api_device_heartbeat(request: Request, payload: dict[str, Any] = Body(...)):
     customer = _auth_customer(request, payload)
     public_ip = _request_client_ip(request)
     ip = str(payload.get("ip") or "").strip() or public_ip
-    fw = str(payload.get("fw") or "").strip()
+    fw_family, fw_version, fw_build_id, fw = _extract_firmware_fields(payload)
     name = str(payload.get("name") or payload.get("model") or device_id).strip() or device_id
     now = datetime.now()
 
@@ -1695,6 +2074,19 @@ def api_device_heartbeat(request: Request, payload: dict[str, Any] = Body(...)):
         detail = str(e)
         status_code = 403 if ("invalid device token" in detail or "device not provisioned" in detail) else 400
         raise HTTPException(status_code=status_code, detail=detail) from e
+    try:
+        firmware_repo.touch_device_state(
+            device_id=device_id,
+            customer=customer,
+            device_name=name,
+            ip=ip,
+            current_family=fw_family,
+            current_version=fw_version,
+            current_build_id=fw_build_id,
+            current_fw_text=fw,
+        )
+    except Exception:
+        pass
 
     body = {"ok": True, "device_id": device_id}
     body.update(_device_api_meta(device_id, ip, customer))
@@ -1710,7 +2102,7 @@ def api_device_telemetry(request: Request, payload: dict[str, Any] = Body(...)):
     customer = _auth_customer(request, payload)
     public_ip = _request_client_ip(request)
     ip = str(payload.get("ip") or "").strip() or public_ip
-    fw = str(payload.get("fw") or "").strip()
+    fw_family, fw_version, fw_build_id, fw = _extract_firmware_fields(payload)
     name = str(payload.get("name") or payload.get("model") or device_id).strip() or device_id
 
     line = payload.get("line")
@@ -1798,6 +2190,19 @@ def api_device_telemetry(request: Request, payload: dict[str, Any] = Body(...)):
         detail = str(e)
         status_code = 403 if ("invalid device token" in detail or "device not provisioned" in detail) else 400
         raise HTTPException(status_code=status_code, detail=detail) from e
+    try:
+        firmware_repo.touch_device_state(
+            device_id=device_id,
+            customer=customer,
+            device_name=name,
+            ip=ip,
+            current_family=fw_family,
+            current_version=fw_version,
+            current_build_id=fw_build_id,
+            current_fw_text=fw,
+        )
+    except Exception:
+        pass
 
     body = {"ok": True, "device_id": device_id}
     body.update(_device_api_meta(device_id, ip, customer))

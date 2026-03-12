@@ -23,3 +23,47 @@
 - 간단한 설명
   - 등록된 장비라도 플랜 정보가 비어 있으면 READY 성격으로 해석될 수 있는 서버 응답 경로를 확인했다.
   - 이 영향으로 ATmega 부팅 분기를 강화하는 방향으로 대응했다.
+
+## 4. OTA 릴리스 저장소/상태 스키마 추가
+- 수정코드
+  - `DB/firmware_repo.py`
+  - `main.py`
+- 간단한 설명
+  - `firmware_releases`, `device_firmware_state` 기준으로 OTA 릴리스 메타데이터와 장비별 현재/목표 펌웨어 상태를 저장하는 경로를 추가했다.
+  - 서버 시작 시 OTA 스키마를 자동 보장하도록 초기화 경로를 연결했다.
+
+## 5. Firmware Manage 페이지와 OTA 관리 UI 추가
+- 수정코드
+  - `router/pages.py`
+  - `templates/base.html`
+  - `templates/firmware_manage.html`
+  - `static/js/firmware_manage.js`
+- 간단한 설명
+  - `/firmware-manage` 페이지, payload API, 릴리스 목록, 장비별 현재 펌웨어/목표 릴리스/OTA 상태를 한 화면에서 관리하는 UI를 추가했다.
+  - BIN 업로드, 릴리스 선택, 장비 배정/배정 해제 흐름을 프론트와 백엔드에 연결했다.
+
+## 6. 장비 Pull-OTA API 추가
+- 수정코드
+  - `router/pages.py`
+  - `DB/firmware_repo.py`
+- 간단한 설명
+  - 장비용 `/api/device/ota/check`, `/api/device/ota/download/{release_id}`, `/api/device/ota/report` 경로를 추가했다.
+  - 현재 펌웨어와 목표 릴리스를 비교해 update 여부를 판단하고, 성공 보고나 same-release 판정 시 목표 릴리스를 자동 해제하도록 정리했다.
+
+## 7. OTA 릴리스 업로드/배정 규칙 추가
+- 수정코드
+  - `router/pages.py`
+  - `DB/firmware_repo.py`
+- 간단한 설명
+  - 업로드된 BIN을 `storage/firmware/<family>/...` 구조로 저장하고, sha256/size/build_id/force_update 정보를 함께 관리하도록 만들었다.
+  - 장비별 목표 릴리스를 배정하면 OTA 상태를 `available`로 두고 장비가 주기적으로 pull 하도록 서버 경로를 정리했다.
+
+## 8. Firmware Manage 릴리스 다중 삭제 기능 추가
+- 수정코드
+  - `templates/firmware_manage.html`
+  - `static/js/firmware_manage.js`
+  - `router/pages.py`
+  - `DB/firmware_repo.py`
+- 간단한 설명
+  - 릴리스 목록에 개별 체크/전체 선택/삭제 버튼을 추가하고, SweetAlert2 확인 모달에서 선택된 릴리스 목록을 스크롤로 검토한 뒤 삭제하도록 구현했다.
+  - 릴리스 삭제 시 장비에 걸린 `target_release_id`도 함께 정리해 OTA 상태가 꼬이지 않도록 처리했다.

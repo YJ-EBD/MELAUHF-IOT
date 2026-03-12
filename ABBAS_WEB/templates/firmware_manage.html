@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div id="firmwareManageRoot" data-default-family="{{ default_family }}" data-max-upload-bytes="{{ max_upload_bytes }}">
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="small text-secondary">등록 릴리스</div>
+          <div class="fs-3 fw-semibold" id="fwReleaseCount">{{ summary.release_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="small text-secondary">관리 대상 장비</div>
+          <div class="fs-3 fw-semibold" id="fwDeviceCount">{{ summary.device_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="small text-secondary">배정된 업데이트</div>
+          <div class="fs-3 fw-semibold" id="fwAssignedCount">{{ summary.assigned_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="small text-secondary">실패 보고</div>
+          <div class="fs-3 fw-semibold" id="fwFailureCount">{{ summary.failure_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-xl-5">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-white fw-semibold">
+          <i class="bi bi-cloud-arrow-up me-2"></i>펌웨어 업로드
+        </div>
+        <div class="card-body">
+          <form id="firmwareUploadForm" enctype="multipart/form-data">
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <label class="form-label">Family</label>
+                <input class="form-control" id="fwFamily" name="family" list="fwFamilyList" value="{{ default_family }}" required>
+                <datalist id="fwFamilyList">
+                  {% for family in families %}
+                  <option value="{{ family }}"></option>
+                  {% endfor %}
+                </datalist>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label">Version</label>
+                <input class="form-control" id="fwVersion" name="version" placeholder="예: 2026.03.12.1" required>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label">Build ID</label>
+                <input class="form-control" id="fwBuildId" name="build_id" placeholder="예: ota-r1">
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label">BIN 파일</label>
+                <input class="form-control" id="fwFile" name="firmware_file" type="file" accept=".bin" required>
+              </div>
+              <div class="col-12">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" id="fwForceUpdate" name="force_update" type="checkbox" value="1">
+                  <label class="form-check-label" for="fwForceUpdate">강제 업데이트 릴리스로 등록</label>
+                </div>
+                <div class="small text-secondary mt-1">
+                  최대 업로드 크기: {{ max_upload_bytes }} bytes
+                </div>
+              </div>
+              <div class="col-12">
+                <label class="form-label">노트</label>
+                <textarea class="form-control" id="fwNotes" name="notes" rows="3" placeholder="변경 내용, 대상 장비, 주의사항"></textarea>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-end mt-3">
+              <button type="submit" class="btn btn-primary" id="fwUploadBtn">
+                <i class="bi bi-upload me-1"></i>업로드
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-xl-7">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-white fw-semibold">
+          <i class="bi bi-info-circle me-2"></i>운영 규칙
+        </div>
+        <div class="card-body small text-secondary">
+          <div class="mb-2">1. 릴리스를 업로드한 뒤 대상 장비에 배정합니다.</div>
+          <div class="mb-2">2. 장비는 자체 OTA 체크 주기에 따라 새 릴리스를 확인하고 pull 방식으로 업데이트합니다.</div>
+          <div class="mb-2">3. 장비가 새 버전으로 부팅 후 성공 보고를 보내면 배정 상태가 자동 해제됩니다.</div>
+          <div class="mb-2">4. 운전 중 장비에는 OTA를 적용하지 않도록 펌웨어에서 차단합니다.</div>
+          <div class="mb-0">5. 이 페이지는 OTA 관련 기능만 다루며, 기존 제어/구독 로직은 건드리지 않습니다.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-white fw-semibold d-flex align-items-center justify-content-between gap-2 flex-wrap">
+      <div><i class="bi bi-box-seam me-2"></i>릴리스 목록</div>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <button class="btn btn-sm btn-outline-danger" id="fwDeleteBtn" type="button">
+          <i class="bi bi-trash me-1"></i>삭제
+        </button>
+        <div class="small text-secondary" id="fwSelectedReleaseText">선택된 릴리스 없음</div>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th class="ps-3"><input id="fwSelectAllReleases" type="checkbox" aria-label="릴리스 전체 선택"></th>
+              <th class="ps-3">선택</th>
+              <th>Family</th>
+              <th>Version</th>
+              <th>Build</th>
+              <th>파일</th>
+              <th>크기</th>
+              <th>해시</th>
+              <th>옵션</th>
+              <th class="pe-3">등록시각</th>
+            </tr>
+          </thead>
+          <tbody id="fwReleaseTbody">
+            {% for row in releases %}
+            <tr data-release-id="{{ row.id }}">
+              <td class="ps-3"><input class="fwReleaseDeleteCheck" type="checkbox" value="{{ row.id }}"></td>
+              <td class="ps-3"><input type="radio" name="selectedRelease" value="{{ row.id }}"></td>
+              <td>{{ row.family }}</td>
+              <td>{{ row.version }}</td>
+              <td>{{ row.build_id or '-' }}</td>
+              <td>{{ row.filename }}</td>
+              <td>{{ row.size_bytes }}</td>
+              <td><code>{{ row.sha256[:12] }}...</code></td>
+              <td>
+                {% if row.force_update %}
+                <span class="badge text-bg-danger-subtle border border-danger-subtle text-danger-emphasis">force</span>
+                {% else %}
+                <span class="badge text-bg-light border">normal</span>
+                {% endif %}
+              </td>
+              <td class="pe-3">{{ row.created_at }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-header bg-white fw-semibold d-flex align-items-center justify-content-between gap-2 flex-wrap">
+      <div><i class="bi bi-cpu me-2"></i>장비별 펌웨어 상태</div>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <input class="form-control form-control-sm" id="fwDeviceFilter" style="width: 240px;" placeholder="장비명 / device_id / version 검색">
+        <button class="btn btn-sm btn-outline-secondary" id="fwRefreshBtn" type="button">
+          <i class="bi bi-arrow-repeat me-1"></i>새로고침
+        </button>
+        <button class="btn btn-sm btn-primary" id="fwAssignBtn" type="button">
+          <i class="bi bi-send-check me-1"></i>선택 장비에 배정
+        </button>
+        <button class="btn btn-sm btn-outline-danger" id="fwClearTargetBtn" type="button">
+          <i class="bi bi-x-circle me-1"></i>배정 해제
+        </button>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th class="ps-3"><input id="fwSelectAllDevices" type="checkbox"></th>
+              <th>장비명</th>
+              <th>Device ID</th>
+              <th>현재 펌웨어</th>
+              <th>목표 릴리스</th>
+              <th>상태</th>
+              <th>최근 체크</th>
+              <th class="pe-3">최근 보고</th>
+            </tr>
+          </thead>
+          <tbody id="fwDeviceTbody">
+            {% for row in devices %}
+            <tr data-device-id="{{ row.device_id }}">
+              <td class="ps-3"><input class="fwDeviceCheck" type="checkbox" value="{{ row.device_id }}"></td>
+              <td>
+                <div class="fw-semibold">{{ row.device_name }}</div>
+                <div class="small text-secondary">{{ row.customer }}</div>
+              </td>
+              <td><code>{{ row.device_id }}</code></td>
+              <td>{{ row.current_fw_text or '-' }}</td>
+              <td>
+                {% if row.target_release_id %}
+                {{ row.target_family }} {{ row.target_version }}{% if row.target_build_id %} ({{ row.target_build_id }}){% endif %}
+                {% else %}
+                -
+                {% endif %}
+              </td>
+              <td>{{ row.ota_state }}</td>
+              <td>{{ row.last_check_at or '-' }}</td>
+              <td class="pe-3">{{ row.last_report_at or '-' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="{{ url_for('static', path='js/firmware_manage.js') }}"></script>
+{% endblock %}

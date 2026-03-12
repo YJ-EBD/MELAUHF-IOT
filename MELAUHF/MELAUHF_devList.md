@@ -40,3 +40,29 @@
 - 간단한 설명
   - 62페이지에 머무르는 상태에서 WEB 플랜 페이지의 회수 처리로 READY만 들어오면 기존에는 화면이 그대로 유지될 수 있었다.
   - READY 뒤에 ACTIVE가 짧은 유예 시간 안에 오지 않으면 59페이지 만료 잠금으로 전환하도록 런타임 분기를 보강했다.
+
+## 6. OTA 직접 구현 주체를 ESP32로 유지하는 구조 확인
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`, `common.h`
+- 간단한 설명
+  - MELAUHF 쪽에는 HTTP 다운로드/이미지 검증/재부팅 기반 OTA 로직을 넣지 않고, ESP32가 WEB과 통신하며 pull-OTA를 수행하는 구조를 유지한다.
+  - 이 디렉토리는 OTA 적용 엔진 자체보다는 운전/에너지 상태를 ESP에 넘겨 OTA 판정에 간접 참여하는 역할로 정리했다.
+
+## 7. 운전 상태 UART 이벤트로 ESP OTA 차단 판단 지원
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/common.h`
+- 간단한 설명
+  - `energy_uart_publish_run_event()` 경로로 run start/stop과 totalEnergy를 ESP32에 전달해, ESP가 운전 중에는 OTA를 건너뛰도록 연동했다.
+  - OTA 자체는 ESP가 수행하지만, 실제 장비가 가동 중인지 판정하는 신호는 MELAUHF 런타임이 제공하도록 역할을 나눴다.
+
+## 8. totalEnergy 리셋 시 ESP 쪽 OTA/에너지 상태 동기화 보강
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/brf_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/hic_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/nam_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/tron_mode.c`
+- 간단한 설명
+  - 에너지 리셋 후 `old_totalEnergy` 표시값과 UART run-event를 함께 0으로 맞춰 ESP 쪽 세션/원격 상태가 stale 값으로 남지 않도록 보강했다.
+  - 이 동기화 덕분에 ESP의 원격 telemetry, 로그, OTA 전제조건 판정이 장비 내부 에너지 상태와 어긋나지 않게 정리했다.
