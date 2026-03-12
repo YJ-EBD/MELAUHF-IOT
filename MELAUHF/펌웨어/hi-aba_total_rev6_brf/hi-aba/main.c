@@ -151,6 +151,9 @@ char sub_dday_text[11] = "D-0";
 #define SUB_STATE_OFFLINE 5
 static volatile U08 sub_state_seen = 0;
 static volatile U08 sub_state_code = SUB_STATE_UNKNOWN;
+static volatile U08 sub_ready_pending = 0;
+static uint32_t sub_ready_pending_sec = 0;
+#define SUB_READY_GRACE_SEC 1U
 // [NEW FEATURE] Energy metrics received from ESP for page57/page71 rendering.
 static uint32_t g_energy_assigned_j = 0;
 static uint32_t g_energy_used_j = 0;
@@ -192,6 +195,9 @@ static void energy_clear_subscription_snapshot(void);
 static void energy_reset_sync_state(void);
 static U08 energy_sync_ready(void);
 static U08 energy_subscription_exhausted(void);
+static void subscription_ready_pending_arm(void);
+static void subscription_ready_pending_cancel(void);
+static void subscription_ready_pending_tick(void);
 
 static volatile U08 p63_scan_req = 0;
 static volatile U08 p63_prev_req = 0;
@@ -1588,6 +1594,7 @@ static void sub_apply_active(const char *planTok, const char *rangeTok, int rema
 	sub_dirty = 1;
 	sub_state_seen = 1U;
 	sub_state_code = SUB_STATE_ACTIVE;
+	subscription_ready_pending_cancel();
 	// Always push text VPs (0x3100/0x3300) as soon as SUB line is parsed.
 	// Icon VPs are still page-scoped inside SUBSCRIPTION_Render57().
 	SUBSCRIPTION_Render57(sub_plan_text, sub_range_text, sub_dday_text, sub_remain_days);
@@ -1626,6 +1633,49 @@ static void energy_clear_subscription_snapshot(void)
 	g_energy_local_expired_lock = 0U;
 	g_energy_dirty = 1U;
 	energy_reset_sync_state();
+}
+
+static void subscription_ready_pending_cancel(void)
+{
+	sub_ready_pending = 0U;
+	sub_ready_pending_sec = 0U;
+}
+
+static void subscription_ready_pending_arm(void)
+{
+	sub_ready_pending = 1U;
+	sub_ready_pending_sec = p63_now_sec();
+}
+
+static void subscription_ready_pending_tick(void)
+{
+	uint32_t nowSec;
+	U08 page = dwin_page_now;
+
+	if (!sub_ready_pending)
+	{
+		return;
+	}
+	if (sub_state_code != SUB_STATE_READY)
+	{
+		subscription_ready_pending_cancel();
+		return;
+	}
+	if ((page == WIFI_PAGE_BOOT_CHECK) || (page == WIFI_PAGE_CONNECTING))
+	{
+		return;
+	}
+
+	nowSec = p63_now_sec();
+	if ((uint32_t)(nowSec - sub_ready_pending_sec) < SUB_READY_GRACE_SEC)
+	{
+		return;
+	}
+
+	subscription_ready_pending_cancel();
+	sub_state_seen = 1U;
+	sub_state_code = SUB_STATE_EXPIRED;
+	subscription_enter_lock_page(WIFI_PAGE_SUB_EXPIRED);
 }
 
 static void subscription_show_connected_page(void)
@@ -1989,12 +2039,14 @@ static void sub_parse_line(char *line)
 		energy_clear_subscription_snapshot();
 		sub_state_seen = 1U;
 		sub_state_code = SUB_STATE_READY;
+		subscription_ready_pending_arm();
 		subscription_restore_ready_page();
 		return;
 	}
 
 	if ((strcmp(tok, "U") == 0) || (strcmp(tok, "UNREGISTERED") == 0))
 	{
+		subscription_ready_pending_cancel();
 		sub_state_seen = 1U;
 		sub_state_code = SUB_STATE_UNREGISTERED;
 		if (reg_gate_status_seen && reg_gate_registered)
@@ -2008,6 +2060,7 @@ static void sub_parse_line(char *line)
 
 	if ((strcmp(tok, "E") == 0) || (strcmp(tok, "EXPIRED") == 0) || (strcmp(tok, "RESTRICTED") == 0))
 	{
+		subscription_ready_pending_cancel();
 		sub_state_seen = 1U;
 		sub_state_code = SUB_STATE_EXPIRED;
 		subscription_enter_lock_page(WIFI_PAGE_SUB_EXPIRED);
@@ -2016,6 +2069,7 @@ static void sub_parse_line(char *line)
 
 	if ((strcmp(tok, "O") == 0) || (strcmp(tok, "OFFLINE") == 0))
 	{
+		subscription_ready_pending_cancel();
 		sub_state_seen = 1U;
 		sub_state_code = SUB_STATE_OFFLINE;
 		subscription_enter_lock_page(WIFI_PAGE_SUB_OFFLINE);
@@ -3034,6 +3088,7 @@ static U08 page68_run_boot_checks(U08 resumePage)
 	p63_wifi_last_seen_sec = 0;
 	sub_state_seen = 0;
 	sub_state_code = SUB_STATE_UNKNOWN;
+	subscription_ready_pending_cancel();
 	energy_reset_sync_state();
 	g_energy_local_expired_lock = 0U;
 	// Grace window: give ESP heartbeat (@P63|W|1) one more chance before deciding.
@@ -3272,6 +3327,7 @@ void subscription_ui_tick(void)
 	p63_wifi_boot_tick();
 	p63_ui_tick();
 	registration_gate_tick();
+	subscription_ready_pending_tick();
 	page67_anim_update();
 
 	if (prev_page != dwin_page_now)
