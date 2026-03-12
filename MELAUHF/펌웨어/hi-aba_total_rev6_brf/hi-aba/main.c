@@ -161,6 +161,9 @@ static uint16_t g_energy_elapsed_days = 1;
 static uint16_t g_energy_remaining_days = 0;
 static volatile U08 g_energy_dirty = 1;
 static volatile U08 g_energy_local_expired_lock = 0;
+static volatile U08 g_energy_sync_seen_mask = 0;
+#define ENERGY_SYNC_SEEN_ASSIGNED 0x01
+#define ENERGY_SYNC_SEEN_USED     0x02
 
 static volatile U08 sub_uart_active = 0;
 static volatile U08 sub_uart_ready = 0;
@@ -185,6 +188,10 @@ static inline void UART1_TX_STR(const char* s);
 static void subscription_enter_lock_page(U08 page);
 static U08 subscription_resolve_connected_target_page(U08 resumePage, U08 *targetPage);
 static void subscription_restore_ready_page(void);
+static void energy_clear_subscription_snapshot(void);
+static void energy_reset_sync_state(void);
+static U08 energy_sync_ready(void);
+static U08 energy_subscription_exhausted(void);
 
 static volatile U08 p63_scan_req = 0;
 static volatile U08 p63_prev_req = 0;
@@ -291,6 +298,7 @@ static volatile U08 p63_boot_waiting_status = 0;
 #define PAGE68_STEP_MIN_MS 100
 #define PAGE68_REG_STATUS_WAIT_MS 3200
 #define PAGE68_SUB_STATUS_WAIT_MS 3200
+#define PAGE68_ENERGY_STATUS_WAIT_MS 3200
 #define PAGE68_FAIL_PAGE 10
 #define PAGE68_ERROR_VP 0x1200
 #define PAGE68_ERROR_TEXT_LEN 16
@@ -1595,6 +1603,31 @@ static void sub_clear_state(void)
 	sub_dirty = 0;
 }
 
+static void energy_reset_sync_state(void)
+{
+	g_energy_sync_seen_mask = 0U;
+}
+
+static U08 energy_sync_ready(void)
+{
+	return ((g_energy_sync_seen_mask & (ENERGY_SYNC_SEEN_ASSIGNED | ENERGY_SYNC_SEEN_USED)) ==
+	        (ENERGY_SYNC_SEEN_ASSIGNED | ENERGY_SYNC_SEEN_USED)) ? 1U : 0U;
+}
+
+static void energy_clear_subscription_snapshot(void)
+{
+	g_energy_assigned_j = 0U;
+	g_energy_used_j = 0U;
+	g_energy_daily_avg_j = 0U;
+	g_energy_monthly_avg_j = 0U;
+	g_energy_projected_j = 0U;
+	g_energy_elapsed_days = 1U;
+	g_energy_remaining_days = 0U;
+	g_energy_local_expired_lock = 0U;
+	g_energy_dirty = 1U;
+	energy_reset_sync_state();
+}
+
 static void subscription_show_connected_page(void)
 {
 	if (dwin_page_now == WIFI_PAGE_BOOT_CHECK)
@@ -1646,7 +1679,21 @@ static void subscription_restore_ready_page(void)
 
 	if ((dwin_page_now == WIFI_PAGE_SUB_EXPIRED) || (dwin_page_now == WIFI_PAGE_SUB_OFFLINE))
 	{
-		subscription_show_connected_page();
+		if (!wifiConnected)
+		{
+			return;
+		}
+		if (subscription_resolve_connected_target_page(p63_boot_resume_page, &targetPage))
+		{
+			if (targetPage == WIFI_PAGE_CONNECTED)
+			{
+				subscription_show_connected_page();
+			}
+			else
+			{
+				subscription_enter_lock_page(targetPage);
+			}
+		}
 		return;
 	}
 	registration_restore_registered_page();
@@ -1699,8 +1746,20 @@ static U08 subscription_resolve_connected_target_page(U08 resumePage, U08 *targe
 	switch (sub_state_code)
 	{
 		case SUB_STATE_ACTIVE:
-		case SUB_STATE_READY:
+			if (!energy_sync_ready())
+			{
+				return 0U;
+			}
+			if ((g_energy_assigned_j == 0U) || g_energy_local_expired_lock || energy_subscription_exhausted())
+			{
+				*targetPage = WIFI_PAGE_SUB_EXPIRED;
+				return 1U;
+			}
 			*targetPage = target;
+			return 1U;
+
+		case SUB_STATE_READY:
+			*targetPage = WIFI_PAGE_SUB_EXPIRED;
 			return 1U;
 
 		case SUB_STATE_EXPIRED:
@@ -1925,6 +1984,9 @@ static void sub_parse_line(char *line)
 			subscription_enter_lock_page(WIFI_PAGE_SUB_EXPIRED);
 			return;
 		}
+		// READY is only a provisional boot state. Clear local mirrors so revoked/no-plan
+		// boots do not reuse stale usage/plan figures from a previous session.
+		energy_clear_subscription_snapshot();
 		sub_state_seen = 1U;
 		sub_state_code = SUB_STATE_READY;
 		subscription_restore_ready_page();
@@ -2213,10 +2275,12 @@ static void energy_parse_line(char *line)
 	if ((cmdTok[0] == 'A') && (cmdTok[1] == 0))
 	{
 		g_energy_assigned_j = val;
+		g_energy_sync_seen_mask |= ENERGY_SYNC_SEEN_ASSIGNED;
 	}
 	else if ((cmdTok[0] == 'U') && (cmdTok[1] == 0))
 	{
 		g_energy_used_j = val;
+		g_energy_sync_seen_mask |= ENERGY_SYNC_SEEN_USED;
 	}
 	else if ((cmdTok[0] == 'D') && (cmdTok[1] == 0))
 	{
@@ -2245,6 +2309,12 @@ static void energy_parse_line(char *line)
 
 	g_energy_dirty = 1;
 	energy_apply_local_expired_lock();
+	if ((dwin_page_now != WIFI_PAGE_CONNECTING) &&
+	    sub_state_seen &&
+	    ((sub_state_code == SUB_STATE_ACTIVE) || (sub_state_code == SUB_STATE_READY)))
+	{
+		subscription_restore_ready_page();
+	}
 }
 
 // [NEW FEATURE] Local ATmega fail-safe: exhausted plan energy forces expired page on run key.
@@ -2930,6 +3000,7 @@ static U08 page68_run_boot_checks(U08 resumePage)
 	U08 wifiConnected;
 	uint16_t regWaitMs;
 	uint16_t subWaitMs;
+	uint16_t energyWaitMs;
 	uint32_t nowSec;
 	char errCode[PAGE68_ERROR_TEXT_LEN + 1];
 
@@ -2963,6 +3034,8 @@ static U08 page68_run_boot_checks(U08 resumePage)
 	p63_wifi_last_seen_sec = 0;
 	sub_state_seen = 0;
 	sub_state_code = SUB_STATE_UNKNOWN;
+	energy_reset_sync_state();
+	g_energy_local_expired_lock = 0U;
 	// Grace window: give ESP heartbeat (@P63|W|1) one more chance before deciding.
 	if (!p63_wifi_status_seen)
 	{
@@ -3004,10 +3077,11 @@ static U08 page68_run_boot_checks(U08 resumePage)
 		}
 	}
 
-	if (wifiConnected && reg_gate_status_seen && reg_gate_registered && !sub_state_seen)
+	if (wifiConnected && reg_gate_status_seen && reg_gate_registered &&
+	    ((!sub_state_seen) || (sub_state_code == SUB_STATE_READY)))
 	{
 		subWaitMs = PAGE68_SUB_STATUS_WAIT_MS;
-		while ((subWaitMs > 0) && (!sub_state_seen))
+		while ((subWaitMs > 0) && ((!sub_state_seen) || (sub_state_code == SUB_STATE_READY)))
 		{
 			asm("wdr");
 			subscription_uart_pump_lines();
@@ -3019,6 +3093,26 @@ static U08 page68_run_boot_checks(U08 resumePage)
 			else
 			{
 				subWaitMs = 0;
+			}
+		}
+	}
+
+	if (wifiConnected && reg_gate_status_seen && reg_gate_registered &&
+	    (sub_state_seen && (sub_state_code == SUB_STATE_ACTIVE)) && !energy_sync_ready())
+	{
+		energyWaitMs = PAGE68_ENERGY_STATUS_WAIT_MS;
+		while ((energyWaitMs > 0) && (!energy_sync_ready()))
+		{
+			asm("wdr");
+			subscription_uart_pump_lines();
+			_delay_ms(10);
+			if (energyWaitMs >= 10)
+			{
+				energyWaitMs = (uint16_t)(energyWaitMs - 10);
+			}
+			else
+			{
+				energyWaitMs = 0;
 			}
 		}
 	}
