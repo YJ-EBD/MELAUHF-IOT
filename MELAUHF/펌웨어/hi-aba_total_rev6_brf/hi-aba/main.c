@@ -2869,6 +2869,20 @@ static void ota_parse_line(char *line)
 		return;
 	}
 
+	if ((strcmp(cmdTok, "RST") == 0) || (strcmp(cmdTok, "RESET") == 0))
+	{
+		if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) && (dwin_page_now == OTA_PAGE_FIRMWARE_UPDATE))
+		{
+			if ((ota_prev_page != 0) && (ota_prev_page != OTA_PAGE_FIRMWARE_UPDATE))
+			{
+				pageChange(ota_prev_page);
+			}
+		}
+		ota_prompt_flags = 0;
+		ota_prev_page = 0;
+		return;
+	}
+
 	if ((strcmp(cmdTok, "Q") == 0) || (strcmp(cmdTok, "PROMPT") == 0))
 	{
 		currentTok = strtok_r(0, "|", &savep);
@@ -3570,6 +3584,7 @@ static inline void subscription_uart_isr_feed(uint8_t c)
 	//   @REG|<0|1>\n
 	//   @ENG|A|<assigned_j>, @ENG|U|<used_j>, ... @ENG|R|<remaining_days>\n
 	//   @OTA|Q|<current_version>|<target_version>\n
+	//   @OTA|RST\n
 	if (!sub_uart_active)
 	{
 		if (c == '@')

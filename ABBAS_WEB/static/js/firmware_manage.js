@@ -63,8 +63,14 @@
     let klass = "text-bg-light border";
     if (stateText === "success" || stateText === "up_to_date" || stateText === "idle") {
       klass = "text-bg-success-subtle border border-success-subtle text-success-emphasis";
+    } else if (stateText === "pending_user") {
+      klass = "text-bg-info-subtle border border-info-subtle text-info-emphasis";
+    } else if (stateText === "approved") {
+      klass = "text-bg-primary-subtle border border-primary-subtle text-primary-emphasis";
     } else if (stateText === "available" || stateText === "downloading" || stateText === "applying" || stateText === "rebooting") {
       klass = "text-bg-warning-subtle border border-warning-subtle text-warning-emphasis";
+    } else if (stateText === "skipped") {
+      klass = "text-bg-secondary-subtle border border-secondary-subtle text-secondary-emphasis";
     } else if (stateText === "failed" || stateText === "error") {
       klass = "text-bg-danger-subtle border border-danger-subtle text-danger-emphasis";
     }

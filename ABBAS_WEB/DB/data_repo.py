@@ -240,7 +240,7 @@ def paginate_procedure(
                 cur.execute(
                     f"""
                     SELECT id AS __id, source_filename AS __file,
-                           COALESCE(saved_at_raw, DATE_FORMAT(saved_at_kst, '%Y-%m-%d %H:%i:%s')) AS saved_at_kst,
+                           COALESCE(saved_at_raw, DATE_FORMAT(saved_at_kst, '%%Y-%%m-%%d %%H:%%i:%%s')) AS saved_at_kst,
                            customer_name, gender, phone,
                            complaint_face, complaint_body, treatment_area,
                            treatment_time_min, treatment_power_w
@@ -255,7 +255,7 @@ def paginate_procedure(
                 cur.execute(
                     f"""
                     SELECT id AS __id, source_filename AS __file,
-                           COALESCE(saved_at_raw, DATE_FORMAT(saved_at_kst, '%Y-%m-%d %H:%i:%s')) AS saved_at_kst,
+                           COALESCE(saved_at_raw, DATE_FORMAT(saved_at_kst, '%%Y-%%m-%%d %%H:%%i:%%s')) AS saved_at_kst,
                            customer_name, gender, phone,
                            complaint_face, complaint_body, treatment_area,
                            treatment_time_min, treatment_power_w
@@ -315,7 +315,7 @@ def paginate_survey(
                 cur.execute(
                     f"""
                     SELECT id AS __id, source_filename AS __file,
-                           COALESCE(saved_at_raw, DATE_FORMAT(saved_at_kst, '%Y-%m-%d %H:%i:%s')) AS saved_at_kst,
+                           COALESCE(saved_at_raw, DATE_FORMAT(saved_at_kst, '%%Y-%%m-%%d %%H:%%i:%%s')) AS saved_at_kst,
                            customer_name, post_effect, satisfaction
                     FROM survey_records
                     WHERE device_pk=%s {cursor_sql} {filter_sql}
@@ -328,7 +328,7 @@ def paginate_survey(
                 cur.execute(
                     f"""
                     SELECT id AS __id, source_filename AS __file,
-                           COALESCE(saved_at_raw, DATE_FORMAT(saved_at_kst, '%Y-%m-%d %H:%i:%s')) AS saved_at_kst,
+                           COALESCE(saved_at_raw, DATE_FORMAT(saved_at_kst, '%%Y-%%m-%%d %%H:%%i:%%s')) AS saved_at_kst,
                            customer_name, post_effect, satisfaction
                     FROM survey_records
                     WHERE device_pk=%s {filter_sql}

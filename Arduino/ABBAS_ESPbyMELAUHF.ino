@@ -2329,10 +2329,22 @@ static void otaSanitizeLineField(const char* src, char* out, size_t outSz) {
   out[oi] = 0;
 }
 
+static void atmegaPublishOtaSessionReset() {
+  static const char* kResetLine = "@OTA|RST\n";
+  const size_t n = strlen(kResetLine);
+  if (n == 0) return;
+  ATMEGA.write((const uint8_t*)kResetLine, n);
+  ATMEGA.flush();
+  Serial.println("[ESP->AT] OTA session reset");
+}
+
 static void atmegaPublishOtaPrompt(const char* currentVersion, const char* targetVersion) {
   char currentSafe[32];
   char targetSafe[32];
   char line[96];
+
+  // If only ESP rebooted (ATmega stayed up), clear ATmega prompt-session flags first.
+  atmegaPublishOtaSessionReset();
 
   otaSanitizeLineField(currentVersion, currentSafe, sizeof(currentSafe));
   otaSanitizeLineField(targetVersion, targetSafe, sizeof(targetSafe));
@@ -3060,10 +3072,6 @@ static void webFirmwareCheckTick(bool force) {
     if (force) webLogFirmwareSkip("awaiting_boot_report");
     return;
   }
-  if (g_webOtaSessionSkipUntilReboot) {
-    webLogFirmwareSkip("ota_session_skip_until_reboot");
-    return;
-  }
   if (g_webOtaAwaitingUserDecision) {
     webLogFirmwareSkip("awaiting_user_ota_decision");
     return;
@@ -3126,10 +3134,19 @@ static void webFirmwareCheckTick(bool force) {
     Serial.println("[OTA] invalid check response");
     return;
   }
+  if (g_webOtaSessionSkipUntilReboot && !forceUpdate) {
+    webLogFirmwareSkip("ota_session_skip_until_reboot");
+    return;
+  }
   if (g_otaTargetFamily[0] && strcmp(g_otaTargetFamily, firmwareFamilyC()) != 0) {
     Serial.printf("[OTA] skipped family mismatch target=%s current=%s\n", g_otaTargetFamily, firmwareFamilyC());
     webPostOtaReport("failed", releaseId, "family_mismatch");
     return;
+  }
+  if (g_webOtaSessionSkipUntilReboot && forceUpdate) {
+    g_webOtaSessionSkipUntilReboot = false;
+    Serial.printf("[OTA] force update overrides session skip release=%llu\n",
+                  (unsigned long long)releaseId);
   }
 
   Serial.printf("[OTA] update available release=%llu force=%u target=%s %s (%s)\n",
@@ -3138,6 +3155,18 @@ static void webFirmwareCheckTick(bool force) {
                 g_otaTargetFamily[0] ? g_otaTargetFamily : "-",
                 g_otaTargetVersion[0] ? g_otaTargetVersion : "-",
                 g_otaTargetBuildId[0] ? g_otaTargetBuildId : "-");
+
+  if (forceUpdate) {
+    g_webOtaPromptShownThisBoot = true;
+    g_webOtaAwaitingUserDecision = true;
+    g_webOtaApprovedByUser = true;
+    g_webOtaDecisionReqValue = -1;
+    g_webOtaPromptReleaseId = releaseId;
+    g_webOtaPromptSizeBytes = sizeBytes;
+    webPostOtaReport("approved", releaseId, "force_update_auto_approved");
+    Serial.printf("[OTA] force update auto-approved release=%llu\n", (unsigned long long)releaseId);
+    return;
+  }
 
   if (!g_webOtaPromptShownThisBoot) {
     g_webOtaPromptShownThisBoot = true;
@@ -3189,6 +3218,7 @@ static void webFirmwareDecisionTick() {
     g_webOtaAwaitingUserDecision = false;
     g_webOtaApprovedByUser = false;
     g_webOtaSessionSkipUntilReboot = true;
+    atmegaRequestPageChange(DWIN_PAGE_DEVICE_READY);
     return;
   }
 
@@ -3213,6 +3243,7 @@ static void webFirmwareDecisionTick() {
     g_webOtaAwaitingUserDecision = false;
     g_webOtaApprovedByUser = false;
     g_webOtaSessionSkipUntilReboot = true;
+    atmegaRequestPageChange(DWIN_PAGE_DEVICE_READY);
   }
 }
 

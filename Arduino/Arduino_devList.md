@@ -65,3 +65,11 @@
 - 간단한 설명
   - OTA 상위 버전 감지 시 즉시 `webDownloadAndApplyFirmware()`를 실행하지 않고 `@OTA|Q|<현재버전>|<대상버전>` 프롬프트를 ATmega로 전달한 뒤 사용자 결정을 대기하도록 변경했다.
   - ATmega에서 `@OTA|DEC|1` 수신 시에만 OTA를 진행하고, `@OTA|DEC|0` 수신 시에는 현재 부팅 세션에서 OTA를 재시도하지 않도록 `g_webOtaSessionSkipUntilReboot` 게이트를 추가했다.
+
+## 10. Force OTA 적용/ATmega 세션 리셋/실패 시 화면 복귀 보강
+- 수정코드
+  - `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - `release_force_update` 릴리스는 사용자 입력 대기 없이 자동 승인 경로로 OTA를 진행하도록 분기를 추가하고, 기존 session-skip 상태와 충돌하지 않도록 force-update 우선 처리를 보강했다.
+  - OTA 프롬프트 전 `@OTA|RST`를 ATmega에 전송해 ESP 단독 재부팅 후에도 ATmega의 이전 프롬프트 세션 플래그 때문에 자동 skip 되지 않도록 정리했다.
+  - 승인 후 메타데이터 오류/적용 실패 시 `@PAGE|61` 복귀를 요청해 DWIN 74페이지 고정 상태를 완화했다.

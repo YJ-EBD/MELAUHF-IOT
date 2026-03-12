@@ -75,3 +75,11 @@
 - 간단한 설명
   - 이번 작업에서는 WEB API 스펙을 변경하지 않고, ESP/ATmega가 기존 OTA check/report 인터페이스 위에서 사용자 승인 게이트를 수행하도록 유지했다.
   - 결과적으로 서버는 기존 릴리스 배정/상태 보고 구조를 그대로 사용하고, 즉시 업데이트 여부는 펌웨어 단에서 제어하도록 분리했다.
+
+## 10. Firmware Manage 상태 배지 확장 및 데이터 쿼리 포맷 이스케이프 정리
+- 수정코드
+  - `static/js/firmware_manage.js`
+  - `DB/data_repo.py`
+- 간단한 설명
+  - OTA 상태 배지에 `pending_user`, `approved`, `skipped`를 추가해 사용자 승인 기반 OTA 진행 상태가 화면에서 즉시 구분되도록 정리했다.
+  - `data_repo.py`의 `DATE_FORMAT` 문자열을 Python f-string 환경에 맞게 `%%` 이스케이프 처리해 쿼리 포맷 문자가 안전하게 전달되도록 보강했다.
