@@ -58,3 +58,10 @@
 - 간단한 설명
   - 운전 중(`g_runActive`)에는 OTA를 건너뛰고 skip reason을 남기도록 해서 장비 동작 중 펌웨어 교체를 막도록 했다.
   - MELAUHF/ATmega에서 올라오는 `ENG|R` run event와 fallback telemetry를 활용해 OTA 차단 판단이 실제 운전 상태를 따라가도록 정리했다.
+
+## 9. OTA 자동 적용을 사용자 승인 게이트로 변경
+- 수정코드
+  - `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - OTA 상위 버전 감지 시 즉시 `webDownloadAndApplyFirmware()`를 실행하지 않고 `@OTA|Q|<현재버전>|<대상버전>` 프롬프트를 ATmega로 전달한 뒤 사용자 결정을 대기하도록 변경했다.
+  - ATmega에서 `@OTA|DEC|1` 수신 시에만 OTA를 진행하고, `@OTA|DEC|0` 수신 시에는 현재 부팅 세션에서 OTA를 재시도하지 않도록 `g_webOtaSessionSkipUntilReboot` 게이트를 추가했다.

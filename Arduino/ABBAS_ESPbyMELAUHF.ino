@@ -63,6 +63,7 @@ static void atmegaPublishSubscriptionActive(const char* planLabel, const char* r
 static void notifyAtmegaWifiConnectResult(bool ok);
 static void webScheduleImmediateFirmwareCheck(const char* reason);
 static void webFirmwareImmediateCheckTick();
+static void webFirmwareDecisionTick();
 
 static const uint16_t CRC_TABLE[256] PROGMEM = {
   0x0000,0xc0c1,0xc181,0x0140,0xc301,0x03c0,0x0280,0xc241,
@@ -372,6 +373,14 @@ static bool     g_atmegaPendingHaveSsid = false;
 static bool     g_atmegaPendingHavePass = false;
 static volatile bool g_atmegaPendingConnectReq = false;
 static bool     g_atmegaConnectFlowActive = false;
+// OTA prompt/session state for this boot cycle (driven by ATmega decision).
+static bool     g_webOtaPromptShownThisBoot = false;
+static bool     g_webOtaAwaitingUserDecision = false;
+static bool     g_webOtaApprovedByUser = false;
+static bool     g_webOtaSessionSkipUntilReboot = false;
+static volatile int8_t g_webOtaDecisionReqValue = -1; // -1:none, 0:skip, 1:accept
+static uint64_t g_webOtaPromptReleaseId = 0;
+static uint64_t g_webOtaPromptSizeBytes = 0;
 static uint8_t  g_lastRkcPage = 0xFF;
 static uint16_t g_lastRkcKey = 0x0000;
 static uint32_t g_lastRkcMs = 0;
@@ -562,6 +571,14 @@ static bool atmegaHandleAsciiByte(uint8_t b) {
           Serial.printf("[AT->ESP] WIFI|G ignored (haveSsid=%u, havePass=%u)\n",
                         g_atmegaPendingHaveSsid ? 1U : 0U,
                         g_atmegaPendingHavePass ? 1U : 0U);
+        }
+      } else if (strncmp(g_atmegaLineBuf, "OTA|DEC|", 8) == 0) {
+        unsigned long dec = strtoul(&g_atmegaLineBuf[8], nullptr, 10);
+        if (dec <= 1UL) {
+          g_webOtaDecisionReqValue = (int8_t)dec;
+          Serial.printf("[AT->ESP] OTA decision=%lu\n", dec);
+        } else {
+          Serial.printf("[AT->ESP] OTA decision ignored (raw=%s)\n", g_atmegaLineBuf);
         }
       }
     }
@@ -2298,6 +2315,38 @@ static bool webOtaNetworkReady() {
   return (uint32_t)(millis() - g_lastStaConnectedMs) >= WEB_OTA_POST_CONNECT_DELAY_MS;
 }
 
+static void otaSanitizeLineField(const char* src, char* out, size_t outSz) {
+  if (!out || outSz == 0) return;
+  out[0] = 0;
+  if (!src) return;
+
+  size_t oi = 0;
+  for (size_t i = 0; src[i] != 0 && oi + 1 < outSz; i++) {
+    uint8_t c = (uint8_t)src[i];
+    if (c < 0x20 || c > 0x7E || c == '|' || c == '\r' || c == '\n') c = '?';
+    out[oi++] = (char)c;
+  }
+  out[oi] = 0;
+}
+
+static void atmegaPublishOtaPrompt(const char* currentVersion, const char* targetVersion) {
+  char currentSafe[32];
+  char targetSafe[32];
+  char line[96];
+
+  otaSanitizeLineField(currentVersion, currentSafe, sizeof(currentSafe));
+  otaSanitizeLineField(targetVersion, targetSafe, sizeof(targetSafe));
+  if (currentSafe[0] == 0) strlcpy(currentSafe, "-", sizeof(currentSafe));
+  if (targetSafe[0] == 0) strlcpy(targetSafe, "-", sizeof(targetSafe));
+
+  int n = snprintf(line, sizeof(line), "@OTA|Q|%s|%s\n", currentSafe, targetSafe);
+  if (n <= 0) return;
+  if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
+  ATMEGA.write((const uint8_t*)line, (size_t)n);
+  ATMEGA.flush();
+  Serial.printf("[ESP->AT] OTA prompt cur=%s target=%s\n", currentSafe, targetSafe);
+}
+
 static bool webPrepareSecureClient() {
   if (webSecureClientReady) return true;
 #if WEB_TLS_INSECURE
@@ -3011,6 +3060,14 @@ static void webFirmwareCheckTick(bool force) {
     if (force) webLogFirmwareSkip("awaiting_boot_report");
     return;
   }
+  if (g_webOtaSessionSkipUntilReboot) {
+    webLogFirmwareSkip("ota_session_skip_until_reboot");
+    return;
+  }
+  if (g_webOtaAwaitingUserDecision) {
+    webLogFirmwareSkip("awaiting_user_ota_decision");
+    return;
+  }
   if (g_runActive) {
     webLogFirmwareSkip("run_active");
     return;
@@ -3082,6 +3139,61 @@ static void webFirmwareCheckTick(bool force) {
                 g_otaTargetVersion[0] ? g_otaTargetVersion : "-",
                 g_otaTargetBuildId[0] ? g_otaTargetBuildId : "-");
 
+  if (!g_webOtaPromptShownThisBoot) {
+    g_webOtaPromptShownThisBoot = true;
+    g_webOtaAwaitingUserDecision = true;
+    g_webOtaApprovedByUser = false;
+    g_webOtaDecisionReqValue = -1;
+    g_webOtaPromptReleaseId = releaseId;
+    g_webOtaPromptSizeBytes = sizeBytes;
+    atmegaPublishOtaPrompt(firmwareVersionC(), g_otaTargetVersion);
+    webPostOtaReport("pending_user", releaseId, "awaiting_user_decision");
+    Serial.printf("[OTA] waiting user decision release=%llu\n", (unsigned long long)releaseId);
+    return;
+  }
+
+  webLogFirmwareSkip("ota_prompt_already_shown");
+}
+
+static void webFirmwareDecisionTick() {
+  int8_t decision = g_webOtaDecisionReqValue;
+  if (decision >= 0) {
+    g_webOtaDecisionReqValue = -1;
+    if (!g_webOtaAwaitingUserDecision || g_webOtaPromptReleaseId == 0) {
+      Serial.printf("[OTA] decision ignored value=%d (no pending prompt)\n", (int)decision);
+    } else if (decision == 0) {
+      uint64_t releaseId = g_webOtaPromptReleaseId;
+      g_webOtaAwaitingUserDecision = false;
+      g_webOtaApprovedByUser = false;
+      g_webOtaSessionSkipUntilReboot = true;
+      webPostOtaReport("skipped", releaseId, "user_skipped_until_reboot");
+      Serial.printf("[OTA] user skipped release=%llu (blocked until reboot)\n",
+                    (unsigned long long)releaseId);
+    } else {
+      g_webOtaApprovedByUser = true;
+      webPostOtaReport("approved", g_webOtaPromptReleaseId, "user_approved_update");
+      Serial.printf("[OTA] user approved release=%llu\n",
+                    (unsigned long long)g_webOtaPromptReleaseId);
+    }
+  }
+
+  if (!g_webOtaAwaitingUserDecision || !g_webOtaApprovedByUser) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (portalMode) return;
+  if (!webOtaNetworkReady()) return;
+  if (g_webOtaPendingBootReport) return;
+  if (g_runActive) return;
+  if (g_webDeviceRegisteredKnown && !g_webDeviceRegistered) return;
+  if (g_webOtaPromptReleaseId == 0 || !g_otaDownloadPath[0]) {
+    Serial.println("[OTA] pending metadata missing after approval");
+    g_webOtaAwaitingUserDecision = false;
+    g_webOtaApprovedByUser = false;
+    g_webOtaSessionSkipUntilReboot = true;
+    return;
+  }
+
+  uint64_t releaseId = g_webOtaPromptReleaseId;
+  uint64_t sizeBytes = g_webOtaPromptSizeBytes;
   webPostOtaReport("downloading", releaseId, "ota download started");
 
   if (!webDownloadAndApplyFirmware(
@@ -3098,6 +3210,9 @@ static void webFirmwareCheckTick(bool force) {
                   (unsigned long long)releaseId,
                   g_otaErrorMsg[0] ? g_otaErrorMsg : "unknown");
     webPostOtaReport("failed", releaseId, g_otaErrorMsg[0] ? g_otaErrorMsg : "ota_apply_failed");
+    g_webOtaAwaitingUserDecision = false;
+    g_webOtaApprovedByUser = false;
+    g_webOtaSessionSkipUntilReboot = true;
   }
 }
 
@@ -3497,7 +3612,6 @@ static void teInvalidatePublishedMetrics() {
   g_teLastPushMs = 0;
 }
 
-// [NEW FEATURE] Clear subscription state and plan energy ledger on revoke while preserving general SD logs.
 static void teResetSubscriptionState() {
   g_assignedEnergyJ = 0;
   g_planStartDate[0] = 0;
@@ -3536,14 +3650,12 @@ static void teResetSubscriptionState() {
   }
 
   tePrefsSaveState();
-
   teInvalidatePublishedMetrics();
   teEnsureLedgerFileReady();
-  if (g_webDeviceRegisteredKnown) {
-    if (g_webDeviceRegistered) applyRegisteredReadyPage("subscription_reset");
-    else subscriptionApplyUnregistered();
+  if (g_webDeviceRegisteredKnown && !g_webDeviceRegistered) {
+    subscriptionApplyUnregistered();
   } else {
-    applyRegisteredReadyPage("subscription_reset");
+    subscriptionApplyExpired();
   }
   tePublishMetricsToAtmega(true);
   webMarkLogUploadDirty(SD_TOTAL_ENERGY_FILE_PATH);
@@ -6184,6 +6296,7 @@ void loop() {
     webDeviceRegisteredSyncTick(false);
     webSubscriptionSyncTick(false);
     webOtaBootReportTick();
+    webFirmwareDecisionTick();
     webFirmwareImmediateCheckTick();
     webFirmwareCheckTick(false);
     webLogUploadTick();

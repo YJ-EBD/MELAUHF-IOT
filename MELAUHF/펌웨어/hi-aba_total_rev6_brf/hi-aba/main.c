@@ -188,6 +188,8 @@ static volatile U08 esp_bridge_uart0_seen = 0;
 static char sub_uart_queue[SUB_UART_Q_DEPTH][SUB_UART_LINE_MAX];
 static inline void UART1_TX(uint8_t b);
 static inline void UART1_TX_STR(const char* s);
+static inline void UART0_TX(uint8_t b);
+static inline void UART0_TX_STR(const char* s);
 static void subscription_enter_lock_page(U08 page);
 static U08 subscription_resolve_connected_target_page(U08 resumePage, U08 *targetPage);
 static void subscription_restore_ready_page(void);
@@ -287,6 +289,19 @@ static volatile U08 p63_boot_waiting_status = 0;
 #define WIFI_PAGE_REGISTER_WAIT 73
 #define WIFI_PAGE_SUB_EXPIRED 59
 #define WIFI_PAGE_SUB_OFFLINE 20
+#define OTA_PAGE_FIRMWARE_UPDATE 74
+
+#define OTA_KEY_UPDATE_ACCEPT 0xBC01
+#define OTA_KEY_UPDATE_SKIP   0xBC02
+#define OTA_TEXT_VP_CURRENT_VERSION 0x1A10
+#define OTA_TEXT_VP_TARGET_VERSION  0x1B50
+#define OTA_VERSION_TEXT_LEN 24
+
+#define OTA_PROMPT_FLAG_ACTIVE  0x01
+#define OTA_PROMPT_FLAG_SHOWN   0x02
+#define OTA_PROMPT_FLAG_DECIDED 0x04
+static volatile U08 ota_prompt_flags = 0;
+static U08 ota_prev_page = 0;
 
 #define WIFI_FAIL_TEXT_VP 0xB222
 #define WIFI_FAIL_TEXT_LEN 32
@@ -408,6 +423,12 @@ static U08 wifi_is_local_input_key(U08 page, U16 key)
 	}
 
 	if ((page == WIFI_PAGE_LIST) && (key >= WIFI_KEY_P63_SLOT1) && (key <= WIFI_KEY_P63_SLOT5))
+	{
+		return 1;
+	}
+
+	if ((page == OTA_PAGE_FIRMWARE_UPDATE) && (ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) &&
+	    ((key == OTA_KEY_UPDATE_ACCEPT) || (key == OTA_KEY_UPDATE_SKIP)))
 	{
 		return 1;
 	}
@@ -912,11 +933,104 @@ static void wifi_apply_connect_result(U08 ok)
 	wifi_apply_connect_fail_ui();
 }
 
+static void ota_uart_publish_decision(U08 accept)
+{
+	char line[20];
+	snprintf(line, sizeof(line), "@OTA|DEC|%u\n", (unsigned int)(accept ? 1U : 0U));
+	UART1_TX_STR(line);
+	if (esp_bridge_uart0_seen)
+	{
+		UART0_TX_STR(line);
+	}
+}
+
+static void ota_enter_prompt(const char *currentVersion, const char *targetVersion)
+{
+	char currentText[OTA_VERSION_TEXT_LEN + 1];
+	char targetText[OTA_VERSION_TEXT_LEN + 1];
+
+	if (ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE)
+	{
+		return;
+	}
+
+	if (ota_prompt_flags & (OTA_PROMPT_FLAG_SHOWN | OTA_PROMPT_FLAG_DECIDED))
+	{
+		ota_uart_publish_decision(0U);
+		return;
+	}
+
+	if ((dwin_page_now != 0) && (dwin_page_now != 0xFF))
+	{
+		ota_prev_page = dwin_page_now;
+	}
+	else if (startPage != 0)
+	{
+		ota_prev_page = startPage;
+	}
+	else
+	{
+		ota_prev_page = WIFI_PAGE_CONNECTED;
+	}
+
+	wifi_copy_field(currentText, sizeof(currentText), currentVersion);
+	wifi_copy_field(targetText, sizeof(targetText), targetVersion);
+	if (currentText[0] == 0)
+	{
+		strcpy(currentText, "-");
+	}
+	if (targetText[0] == 0)
+	{
+		strcpy(targetText, "-");
+	}
+
+	pageChange(OTA_PAGE_FIRMWARE_UPDATE);
+	dwin_write_text(OTA_TEXT_VP_CURRENT_VERSION, currentText, OTA_VERSION_TEXT_LEN);
+	dwin_write_text(OTA_TEXT_VP_TARGET_VERSION, targetText, OTA_VERSION_TEXT_LEN);
+
+	ota_prompt_flags |= (OTA_PROMPT_FLAG_ACTIVE | OTA_PROMPT_FLAG_SHOWN);
+}
+
+static void ota_finish_prompt(U08 accept)
+{
+	if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) == 0)
+	{
+		return;
+	}
+
+	ota_prompt_flags &= (U08)~OTA_PROMPT_FLAG_ACTIVE;
+	ota_prompt_flags |= OTA_PROMPT_FLAG_DECIDED;
+	ota_uart_publish_decision(accept ? 1U : 0U);
+
+	if (!accept)
+	{
+		if ((ota_prev_page != 0) && (ota_prev_page != OTA_PAGE_FIRMWARE_UPDATE))
+		{
+			pageChange(ota_prev_page);
+		}
+	}
+}
+
 void handle_key(uint16_t key_code)
 {
 	U08 pageNow = dwin_page_now;
 	int8_t key_idx;
 	char append_ch = 0;
+
+	if ((pageNow == OTA_PAGE_FIRMWARE_UPDATE) && (ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE))
+	{
+		if (key_code == OTA_KEY_UPDATE_ACCEPT)
+		{
+			ota_finish_prompt(1U);
+			return;
+		}
+		if (key_code == OTA_KEY_UPDATE_SKIP)
+		{
+			ota_finish_prompt(0U);
+			return;
+		}
+		return;
+	}
 
 	if (wifi_is_keyboard_page(pageNow))
 	{
@@ -2730,6 +2844,47 @@ static void page_parse_line(char *line)
 	p63_boot_waiting_status = 0;
 }
 
+static void ota_parse_line(char *line)
+{
+	char *tok;
+	char *savep = 0;
+	char *cmdTok;
+	char *currentTok;
+	char *targetTok;
+
+	if (line == 0)
+	{
+		return;
+	}
+
+	tok = strtok_r(line, "|", &savep);
+	if ((tok == 0) || (strcmp(tok, "OTA") != 0))
+	{
+		return;
+	}
+
+	cmdTok = strtok_r(0, "|", &savep);
+	if (cmdTok == 0)
+	{
+		return;
+	}
+
+	if ((strcmp(cmdTok, "Q") == 0) || (strcmp(cmdTok, "PROMPT") == 0))
+	{
+		currentTok = strtok_r(0, "|", &savep);
+		targetTok = strtok_r(0, "|", &savep);
+		if (currentTok == 0)
+		{
+			currentTok = "";
+		}
+		if (targetTok == 0)
+		{
+			targetTok = "";
+		}
+		ota_enter_prompt(currentTok, targetTok);
+	}
+}
+
 static void subscription_uart_pump_lines(void)
 {
 	U08 hasLine = 0;
@@ -2781,6 +2936,10 @@ static void subscription_uart_pump_lines(void)
 				else if (strncmp(line, "PAGE|", 5) == 0)
 				{
 					page_parse_line(line);
+				}
+				else if (strncmp(line, "OTA|", 4) == 0)
+				{
+					ota_parse_line(line);
 				}
 				else if ((strncmp(line, "WIFI|", 5) == 0) && (dwin_page_now != WIFI_PAGE_BOOT_CHECK))
 				{
@@ -3323,6 +3482,10 @@ void subscription_ui_tick(void)
 	}
 
 	subscription_uart_pump_lines();
+	if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) && (dwin_page_now != OTA_PAGE_FIRMWARE_UPDATE))
+	{
+		pageChange(OTA_PAGE_FIRMWARE_UPDATE);
+	}
 
 	p63_wifi_boot_tick();
 	p63_ui_tick();
@@ -3346,6 +3509,10 @@ void subscription_ui_tick(void)
 	}
 	// [NEW FEATURE] Keep page57/page71 energy text/icon widgets refreshed.
 	energy_ui_tick();
+	if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) && (dwin_page_now != OTA_PAGE_FIRMWARE_UPDATE))
+	{
+		pageChange(OTA_PAGE_FIRMWARE_UPDATE);
+	}
 }
 
 
@@ -3402,6 +3569,7 @@ static inline void subscription_uart_isr_feed(uint8_t c)
 	//   @WIFI|R|<0|1>\n
 	//   @REG|<0|1>\n
 	//   @ENG|A|<assigned_j>, @ENG|U|<used_j>, ... @ENG|R|<remaining_days>\n
+	//   @OTA|Q|<current_version>|<target_version>\n
 	if (!sub_uart_active)
 	{
 		if (c == '@')
@@ -3487,18 +3655,19 @@ static inline void subscription_uart_isr_feed(uint8_t c)
 			else
 			{
 					// Prefix gate for '@' commands:
-					//   SUB|..., P63|..., WIFI|..., REG|..., ENG|...
-					if (idx == 0)
-					{
-						if ((sub_uart_line[0] != 'S') &&
-						    (sub_uart_line[0] != 'P') &&
-						    (sub_uart_line[0] != 'W') &&
-						    (sub_uart_line[0] != 'R') &&
-						    (sub_uart_line[0] != 'E'))
+						//   SUB|..., P63|..., WIFI|..., REG|..., ENG|..., OTA|...
+						if (idx == 0)
 						{
-							subscription_uart_reset_line();
+							if ((sub_uart_line[0] != 'S') &&
+							    (sub_uart_line[0] != 'P') &&
+							    (sub_uart_line[0] != 'W') &&
+							    (sub_uart_line[0] != 'R') &&
+							    (sub_uart_line[0] != 'E') &&
+							    (sub_uart_line[0] != 'O'))
+							{
+								subscription_uart_reset_line();
+							}
 						}
-					}
 				else if (sub_uart_line[0] == 'S')
 				{
 					if ((idx == 1) && (sub_uart_line[idx] != 'U'))
@@ -3563,8 +3732,8 @@ static inline void subscription_uart_isr_feed(uint8_t c)
 							subscription_uart_reset_line();
 						}
 					}
-					else if (sub_uart_line[0] == 'R')
-					{
+						else if (sub_uart_line[0] == 'R')
+						{
 						if ((idx == 1) && (sub_uart_line[idx] != 'E'))
 						{
 							subscription_uart_reset_line();
@@ -3576,9 +3745,24 @@ static inline void subscription_uart_isr_feed(uint8_t c)
 						else if ((idx == 3) && (sub_uart_line[idx] != '|'))
 						{
 							subscription_uart_reset_line();
+							}
+						}
+						else if (sub_uart_line[0] == 'O')
+						{
+							if ((idx == 1) && (sub_uart_line[idx] != 'T'))
+							{
+								subscription_uart_reset_line();
+							}
+							else if ((idx == 2) && (sub_uart_line[idx] != 'A'))
+							{
+								subscription_uart_reset_line();
+							}
+							else if ((idx == 3) && (sub_uart_line[idx] != '|'))
+							{
+								subscription_uart_reset_line();
+							}
 						}
 					}
-				}
 		}
 		else
 		{
