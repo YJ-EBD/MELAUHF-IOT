@@ -99,3 +99,12 @@
 - 간단한 설명
   - OTA 프롬프트가 활성(`OTA_PROMPT_FLAG_ACTIVE`)된 동안에는 `subscription_enter_lock_page()`가 74페이지 외 페이지 강제를 수행하지 않도록 가드를 추가했다.
   - 이 보강으로 로그에서 확인된 `page 74 -> page 59 -> page 74` 왕복(플리커/루프) 현상을 차단하고, 사용자 승인 키(`0xBC01/0xBC02`) 입력 안정성을 높였다.
+
+## 13. OTA 74페이지 진행 상태 텍스트/아이콘 단계 표시 추가
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+  - 상수 추가: `OTA_TEXT_VP_PROGRESS(0xD222)`, `OTA_PROGRESS_VARICON_VP(0x1C1A)`
+  - 함수 추가: `ota_progress_reset()`, `ota_progress_start_download()`, `ota_progress_start_update()`, `ota_progress_enter_reboot()`, `ota_progress_tick()`
+- 간단한 설명
+  - OTA 승인 후 74페이지에서 `"Downloading. . ." -> "Firmware Update. . ." -> "Rebooting. . ."` 문구를 단계별로 표시하고 varicon 인덱스를 0~9로 진행하도록 보강했다.
+  - `OTA|RST`/스킵/재진입 시 진행 상태를 초기화하고, 74페이지 진입 직전 `setStandby()`를 수행해 표시 안정성을 높였다.

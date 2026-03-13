@@ -298,12 +298,25 @@ static volatile U08 p63_boot_waiting_status = 0;
 #define OTA_TEXT_VP_CURRENT_VERSION 0x1A10
 #define OTA_TEXT_VP_TARGET_VERSION  0x1B50
 #define OTA_VERSION_TEXT_LEN 24
+#define OTA_TEXT_VP_PROGRESS 0xD222
+#define OTA_PROGRESS_VARICON_VP 0x1C1A
+#define OTA_PROGRESS_TEXT_LEN 20
+#define OTA_PROGRESS_ICON_HIDE_VAL 0xFFFFU
+#define OTA_PROGRESS_ICON_MAX 9U
+
+#define OTA_PROGRESS_PHASE_NONE      0
+#define OTA_PROGRESS_PHASE_DOWNLOAD  1
+#define OTA_PROGRESS_PHASE_UPDATE    2
+#define OTA_PROGRESS_PHASE_REBOOT    3
 
 #define OTA_PROMPT_FLAG_ACTIVE  0x01
 #define OTA_PROMPT_FLAG_SHOWN   0x02
 #define OTA_PROMPT_FLAG_DECIDED 0x04
 static volatile U08 ota_prompt_flags = 0;
 static U08 ota_prev_page = 0;
+static volatile U08 ota_progress_phase = OTA_PROGRESS_PHASE_NONE;
+static U08 ota_progress_index = 0;
+static uint32_t ota_progress_last_sec = 0;
 
 #define WIFI_FAIL_TEXT_VP 0xB222
 #define WIFI_FAIL_TEXT_LEN 32
@@ -935,6 +948,103 @@ static void wifi_apply_connect_result(U08 ok)
 	wifi_apply_connect_fail_ui();
 }
 
+static uint32_t ota_now_sec(void)
+{
+	uint32_t sec;
+	cli();
+	sec = ckTime;
+	sei();
+	return sec;
+}
+
+static void ota_progress_write_text(const char *text)
+{
+	char line[OTA_PROGRESS_TEXT_LEN + 1];
+	wifi_copy_field(line, sizeof(line), text);
+	dwin_write_text(OTA_TEXT_VP_PROGRESS, line, OTA_PROGRESS_TEXT_LEN);
+}
+
+static void ota_progress_reset(void)
+{
+	ota_progress_phase = OTA_PROGRESS_PHASE_NONE;
+	ota_progress_index = 0;
+	ota_progress_last_sec = ota_now_sec();
+	SetVarIcon(OTA_PROGRESS_VARICON_VP, OTA_PROGRESS_ICON_HIDE_VAL);
+}
+
+static void ota_progress_start_download(void)
+{
+	ota_progress_phase = OTA_PROGRESS_PHASE_DOWNLOAD;
+	ota_progress_index = 0;
+	ota_progress_last_sec = ota_now_sec();
+	ota_progress_write_text("Downloading. . .");
+	SetVarIcon(OTA_PROGRESS_VARICON_VP, 0);
+}
+
+static void ota_progress_start_update(void)
+{
+	ota_progress_phase = OTA_PROGRESS_PHASE_UPDATE;
+	ota_progress_index = 0;
+	ota_progress_last_sec = ota_now_sec();
+	ota_progress_write_text("Firmware Update. . .");
+	SetVarIcon(OTA_PROGRESS_VARICON_VP, 0);
+}
+
+static void ota_progress_enter_reboot(void)
+{
+	ota_progress_phase = OTA_PROGRESS_PHASE_REBOOT;
+	ota_progress_index = OTA_PROGRESS_ICON_MAX;
+	ota_progress_last_sec = ota_now_sec();
+	SetVarIcon(OTA_PROGRESS_VARICON_VP, OTA_PROGRESS_ICON_MAX);
+	ota_progress_write_text("Rebooting. . .");
+}
+
+static void ota_progress_tick(void)
+{
+	uint32_t nowSec;
+
+	if ((ota_progress_phase != OTA_PROGRESS_PHASE_DOWNLOAD) &&
+	    (ota_progress_phase != OTA_PROGRESS_PHASE_UPDATE))
+	{
+		return;
+	}
+
+	if (dwin_page_now != OTA_PAGE_FIRMWARE_UPDATE)
+	{
+		return;
+	}
+
+	nowSec = ota_now_sec();
+	if (nowSec == ota_progress_last_sec)
+	{
+		return;
+	}
+	ota_progress_last_sec = nowSec;
+
+	if (ota_progress_index < OTA_PROGRESS_ICON_MAX)
+	{
+		ota_progress_index++;
+		SetVarIcon(OTA_PROGRESS_VARICON_VP, ota_progress_index);
+		if ((ota_progress_phase == OTA_PROGRESS_PHASE_UPDATE) && (ota_progress_index >= OTA_PROGRESS_ICON_MAX))
+		{
+			ota_progress_enter_reboot();
+		}
+		return;
+	}
+
+	if (ota_progress_phase == OTA_PROGRESS_PHASE_DOWNLOAD)
+	{
+		ota_progress_start_update();
+		return;
+	}
+
+	if (ota_progress_phase == OTA_PROGRESS_PHASE_UPDATE)
+	{
+		ota_progress_enter_reboot();
+		return;
+	}
+}
+
 static void ota_uart_publish_decision(U08 accept)
 {
 	char line[20];
@@ -962,6 +1072,8 @@ static void ota_enter_prompt(const char *currentVersion, const char *targetVersi
 		return;
 	}
 
+	ota_progress_reset();
+
 	if ((dwin_page_now != 0) && (dwin_page_now != 0xFF))
 	{
 		ota_prev_page = dwin_page_now;
@@ -986,9 +1098,17 @@ static void ota_enter_prompt(const char *currentVersion, const char *targetVersi
 		strcpy(targetText, "-");
 	}
 
+	if (opPage & 0x02)
+	{
+		setStandby();
+		opPage = 1;
+	}
+
 	pageChange(OTA_PAGE_FIRMWARE_UPDATE);
 	dwin_write_text(OTA_TEXT_VP_CURRENT_VERSION, currentText, OTA_VERSION_TEXT_LEN);
 	dwin_write_text(OTA_TEXT_VP_TARGET_VERSION, targetText, OTA_VERSION_TEXT_LEN);
+	ota_progress_write_text("");
+	SetVarIcon(OTA_PROGRESS_VARICON_VP, OTA_PROGRESS_ICON_HIDE_VAL);
 
 	ota_prompt_flags |= (OTA_PROMPT_FLAG_ACTIVE | OTA_PROMPT_FLAG_SHOWN);
 }
@@ -1003,6 +1123,14 @@ static void ota_finish_prompt(U08 accept)
 	ota_prompt_flags &= (U08)~OTA_PROMPT_FLAG_ACTIVE;
 	ota_prompt_flags |= OTA_PROMPT_FLAG_DECIDED;
 	ota_uart_publish_decision(accept ? 1U : 0U);
+	if (accept)
+	{
+		ota_progress_start_download();
+	}
+	else
+	{
+		ota_progress_reset();
+	}
 
 	if (!accept)
 	{
@@ -2890,6 +3018,7 @@ static void ota_parse_line(char *line)
 		}
 		ota_prompt_flags = 0;
 		ota_prev_page = 0;
+		ota_progress_reset();
 		return;
 	}
 
@@ -3531,6 +3660,7 @@ void subscription_ui_tick(void)
 		SUBSCRIPTION_Render57(sub_plan_text, sub_range_text, sub_dday_text, sub_remain_days);
 		sub_dirty = 0;
 	}
+	ota_progress_tick();
 	// [NEW FEATURE] Keep page57/page71 energy text/icon widgets refreshed.
 	energy_ui_tick();
 	if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) && (dwin_page_now != OTA_PAGE_FIRMWARE_UPDATE))
