@@ -12,6 +12,7 @@
 #include <avr/eeprom.h>
 #include "dwin.h"
 #include "crc.h"
+#include "ds1307.h"
 
 U08 temp_date_buf[8];
 U32 temp_date;

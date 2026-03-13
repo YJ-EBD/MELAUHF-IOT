@@ -1216,7 +1216,7 @@ static uint8_t g_page63LastStatusConnected = 0xFF;
 #define FIRMWARE_FAMILY "ABBAS_ESP32C5_MELAUHF"
 #endif
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "2026.03.12.9"
+#define FIRMWARE_VERSION "26.3.13.1"
 #endif
 #ifndef FIRMWARE_BUILD_ID
 #define FIRMWARE_BUILD_ID "ota-base"

@@ -173,9 +173,10 @@ static volatile U08 sub_uart_ready = 0;
 static volatile U08 sub_uart_len = 0;
 static volatile U08 sub_uart_drop = 0;
 static volatile U08 sub_uart_bracket_mode = 0;
-// ESP text commands top out well under 64 bytes:
-// SUB active is the longest form and currently stays around 43 chars.
-#define SUB_UART_LINE_MAX 64
+// ESP text commands stay well under this limit in current protocol
+// (SUB active is the longest form and remains around 43 chars).
+// Keep this compact to preserve SRAM headroom on ATmega128A (4KB).
+#define SUB_UART_LINE_MAX 56
 static char sub_uart_line[SUB_UART_LINE_MAX];
 static volatile U08 sub_uart_q_head = 0;
 static volatile U08 sub_uart_q_tail = 0;
@@ -183,8 +184,8 @@ static volatile U08 sub_uart_q_count = 0;
 // [NEW FEATURE] Set when ESP command headers are observed on UART0 wiring variant.
 static volatile U08 esp_bridge_uart0_seen = 0;
 // Keep RAM usage under ATmega128A 4KB SRAM limit while preserving
-// multi-line UART buffering for ESP text commands.
-#define SUB_UART_Q_DEPTH 3
+// minimal burst buffering for ESP text commands.
+#define SUB_UART_Q_DEPTH 2
 static char sub_uart_queue[SUB_UART_Q_DEPTH][SUB_UART_LINE_MAX];
 static inline void UART1_TX(uint8_t b);
 static inline void UART1_TX_STR(const char* s);
@@ -206,7 +207,8 @@ static volatile U08 p63_prev_req = 0;
 static volatile U08 p63_next_req = 0;
 static volatile U16 p63_last_key = 0;
 
-#define RKC_UART_Q_DEPTH 16
+// Runtime key queue depth; 12 is sufficient and keeps SRAM usage bounded.
+#define RKC_UART_Q_DEPTH 12
 static volatile U08 rkc_uart_q_head = 0;
 static volatile U08 rkc_uart_q_tail = 0;
 static volatile U08 rkc_uart_q_count = 0;

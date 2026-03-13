@@ -73,3 +73,10 @@
   - `release_force_update` 릴리스는 사용자 입력 대기 없이 자동 승인 경로로 OTA를 진행하도록 분기를 추가하고, 기존 session-skip 상태와 충돌하지 않도록 force-update 우선 처리를 보강했다.
   - OTA 프롬프트 전 `@OTA|RST`를 ATmega에 전송해 ESP 단독 재부팅 후에도 ATmega의 이전 프롬프트 세션 플래그 때문에 자동 skip 되지 않도록 정리했다.
   - 승인 후 메타데이터 오류/적용 실패 시 `@PAGE|61` 복귀를 요청해 DWIN 74페이지 고정 상태를 완화했다.
+
+## 11. ESP 펌웨어 버전 태그 갱신
+- 수정코드
+  - `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - `FIRMWARE_VERSION` 값을 `2026.03.12.9`에서 `26.3.13.1`로 갱신해 현재 배포/검증 대상 빌드를 식별할 수 있도록 정리했다.
+  - WEB OTA 체크/리포트와 Firmware Manage 화면에서 현재 장비 버전 표기가 일치하도록 버전 문자열 기준점을 맞췄다.

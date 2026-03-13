@@ -613,7 +613,8 @@ uint8_t adc_read(uint8_t *buf)//return 0: success
 }
 uint8_t dsi_read(uint8_t *buf)
 {
-	
+	(void)buf;
+	return 1;
 }
 uint8_t gpio_out(uint8_t d)
 {

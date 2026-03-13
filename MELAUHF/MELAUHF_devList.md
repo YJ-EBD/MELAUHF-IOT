@@ -80,3 +80,14 @@
 - 간단한 설명
   - ESP가 `@OTA|RST`(또는 `@OTA|RESET`)를 보내면 ATmega의 OTA 프롬프트 세션 플래그를 초기화하도록 파서 분기를 추가했다.
   - 필요 시 활성 74페이지 프롬프트를 이전 페이지로 되돌린 뒤 플래그를 리셋해, ESP 단독 재부팅 이후 재프롬프트가 자동 skip으로 오인되지 않도록 정리했다.
+
+## 11. ATmega128A SRAM 초과 링크 에러(.bss) 해소 및 컴파일 경고 정리
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/brf_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/hic_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/tron_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/i2c.c`
+- 간단한 설명
+  - `address ... section '.bss' is not within region 'data'` 링크 실패를 해결하기 위해 ATmega RAM 사용 버퍼를 축소(`SUB_UART_LINE_MAX`, `SUB_UART_Q_DEPTH`, `RKC_UART_Q_DEPTH`)해 SRAM 사용량을 줄였다.
+  - `ds1307_dateset` implicit declaration 경고를 없애기 위해 mode 소스에 `ds1307.h` include를 명시했고, `i2c.c`의 `dsi_read()`는 기본 반환값을 추가해 non-void 경고를 정리했다.

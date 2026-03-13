@@ -83,3 +83,10 @@
 - 간단한 설명
   - OTA 상태 배지에 `pending_user`, `approved`, `skipped`를 추가해 사용자 승인 기반 OTA 진행 상태가 화면에서 즉시 구분되도록 정리했다.
   - `data_repo.py`의 `DATE_FORMAT` 문자열을 Python f-string 환경에 맞게 `%%` 이스케이프 처리해 쿼리 포맷 문자가 안전하게 전달되도록 보강했다.
+
+## 11. 소스컨트롤 정리 기준점 업데이트
+- 수정코드
+  - 코드 수정 없음
+- 간단한 설명
+  - 이번 커밋에서는 ABBAS_WEB 디렉토리의 기능 코드 변경 없이, Arduino/MELAUHF 패치와 devList 동기화 중심으로 소스컨트롤 기준점을 정리했다.
+  - 추후 Firmware Manage 변경사항 추적 시 본 항목(11번)을 기준으로 이어서 관리하도록 메모를 남겼다.

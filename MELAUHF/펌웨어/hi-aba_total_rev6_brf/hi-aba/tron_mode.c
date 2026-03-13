@@ -12,6 +12,7 @@
 #include <avr/eeprom.h>
 #include "dwin.h"
 #include "i2c.h"
+#include "ds1307.h"
 
 #define HSW_GL	3
 #define MA5105_ICON_FORCE 1

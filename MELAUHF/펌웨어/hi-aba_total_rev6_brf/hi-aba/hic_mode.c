@@ -12,6 +12,7 @@
 #include "dwin.h"
 #include "crc.h"
 #include "ads1115.h"
+#include "ds1307.h"
 
 #define MA5105_ICON_FORCE 1
 
