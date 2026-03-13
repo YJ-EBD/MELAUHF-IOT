@@ -343,6 +343,7 @@ static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAU
 #define PAGE68_TEXT_VP 0xC222
 #define PAGE68_TEXT_LEN 32
 #define PAGE68_STEP_MIN_MS 100
+#define PAGE68_WIFI_STATUS_FRAME_WAIT_MS 1500
 #define PAGE68_REG_STATUS_WAIT_MS 3200
 #define PAGE68_SUB_STATUS_WAIT_MS 3200
 #define PAGE68_ENERGY_STATUS_WAIT_MS 3200
@@ -398,6 +399,7 @@ static U08 page67_anim_shift = 0;
 // Keep fail-safe, but tolerate short ESP-side blocking windows (HTTP/scan bursts).
 #define P63_WIFI_STATUS_NO_SIGNAL_SEC 12U
 #define P63_SCAN_BUSY_HOLD_SEC 12U
+#define WIFI_CONNECT_ATTEMPT_HOLD_SEC 45U
 // Timer0 tick is ~1225Hz with current Init_Timer0() (16MHz/256/(50+1)).
 // 612 ticks ~= 500ms.
 #define P63_SCAN_ANIM_PERIOD_TICKS 612U
@@ -898,6 +900,12 @@ void send_wifi_credentials(void)
 {
 	uint8_t i = 0;
 	char line[160];
+	uint32_t nowSec = p63_now_sec();
+
+	// Reuse p63_scan_busy flag value 2 as "Wi-Fi connect attempt active" state.
+	// 0: idle, 1: page63 scan busy, 2: wifi connect attempt hold.
+	p63_scan_busy = 2U;
+	p63_scan_busy_until_sec = nowSec + WIFI_CONNECT_ATTEMPT_HOLD_SEC;
 
 	// 1) Reliable framed commands for ESP parser.
 	snprintf(line, sizeof(line), "@WIFI|S|%s\n", ssid_buf);
@@ -950,6 +958,11 @@ static void wifi_apply_connect_fail_ui(void)
 
 static void wifi_apply_connect_result(U08 ok)
 {
+	if (p63_scan_busy == 2U)
+	{
+		p63_scan_busy = 0U;
+		p63_scan_busy_until_sec = 0U;
+	}
 	if (ok)
 	{
 		wifi_reboot_for_connected_state();
@@ -1656,6 +1669,25 @@ static void p63_wifi_page_apply(U08 connected)
 			p63_wifi_page_last_sent = dwin_page_now;
 			return;
 		}
+		// Never force-jump to page63 while user is on Wi-Fi setup/connecting pages.
+		if (wifi_is_keyboard_page(dwin_page_now) || (dwin_page_now == WIFI_PAGE_CONNECTING))
+		{
+			p63_wifi_page_last_sent = dwin_page_now;
+			return;
+		}
+		// During explicit connect-attempt flow, keep current page until ESP returns WIFI|R.
+		if (p63_scan_busy == 2U)
+		{
+			uint32_t nowSec = p63_now_sec();
+			if ((p63_scan_busy_until_sec != 0) &&
+			    ((int32_t)(nowSec - p63_scan_busy_until_sec) <= 0))
+			{
+				p63_wifi_page_last_sent = dwin_page_now;
+				return;
+			}
+			p63_scan_busy = 0U;
+			p63_scan_busy_until_sec = 0U;
+		}
 		// ESP is alive but Wi-Fi is not connected: show page63 and allow scan flow.
 		p63_exit_fail_safe();
 		if (p63_wifi_page_last_sent != 63)
@@ -1668,6 +1700,14 @@ static void p63_wifi_page_apply(U08 connected)
 
 static void p63_wifi_status_set(U08 connected)
 {
+	if (connected)
+	{
+		if (p63_scan_busy == 2U)
+		{
+			p63_scan_busy = 0U;
+			p63_scan_busy_until_sec = 0U;
+		}
+	}
 	p63_wifi_connected_state = connected ? 1U : 0U;
 	p63_wifi_status_seen = 1;
 	p63_wifi_last_seen_sec = p63_now_sec();
@@ -3230,9 +3270,9 @@ static void page68_set_step(U08 step)
 		case 4: strcpy_P(textBuf, PSTR("Checking DWIN Link...")); break;
 		case 5: strcpy_P(textBuf, PSTR("Checking SD Card...")); break;
 		case 6: strcpy_P(textBuf, PSTR("Checking NVS Credentials...")); break;
-		case 7: strcpy_P(textBuf, PSTR("Checking ESP WiFi Link...")); break;
-		case 8: strcpy_P(textBuf, PSTR("Checking Portal Fallback...")); break;
-		case 9: strcpy_P(textBuf, PSTR("Checking Network Services...")); break;
+		case 7: strcpy_P(textBuf, PSTR("Trying WiFi Connection...")); break;
+		case 8: strcpy_P(textBuf, PSTR("Checking Subscription State...")); break;
+		case 9: strcpy_P(textBuf, PSTR("Checking Firmware Version...")); break;
 		default: strcpy_P(textBuf, PSTR("Checking System...")); break;
 	}
 
@@ -3470,7 +3510,7 @@ static U08 page68_run_boot_checks(U08 resumePage)
 	// Give DGUS a brief settle time after page switch before first VP update.
 	page68_boot_step_wait_ms(120);
 
-	for (step = 0; step < PAGE68_CHECK_COUNT; step++)
+	for (step = 0; step < 7; step++)
 	{
 		page68_set_step(step);
 		page68_boot_step_wait_ms(PAGE68_STEP_MIN_MS);
@@ -3492,11 +3532,13 @@ static U08 page68_run_boot_checks(U08 resumePage)
 	subscription_ready_pending_cancel();
 	energy_reset_sync_state();
 	g_energy_local_expired_lock = 0U;
-	// Grace window: give ESP heartbeat (@P63|W|1) one more chance before deciding.
-	if (!p63_wifi_status_seen)
+	page68_set_step(7);
+	page68_boot_step_wait_ms(PAGE68_STEP_MIN_MS);
+	subscription_uart_pump_lines();
+	// Short grace window for first Wi-Fi heartbeat frame.
+	// No long forced hold: status branch is decided immediately after this window.
 	{
-		// BUGFIX: widen first-boot status wait window for simultaneous power-on races.
-		uint16_t waitMs = 1800;
+		uint16_t waitMs = PAGE68_WIFI_STATUS_FRAME_WAIT_MS;
 		while ((waitMs > 0) && (!p63_wifi_status_seen))
 		{
 			asm("wdr");
@@ -3512,64 +3554,105 @@ static U08 page68_run_boot_checks(U08 resumePage)
 			}
 		}
 	}
+	if (!page68_check_step_pass(7, errCode, sizeof(errCode)))
+	{
+		page68_fail_to_page10(errCode);
+		return 0;
+	}
 	wifiConnected = (p63_wifi_status_seen && (p63_wifi_connected_state == 1U)) ? 1U : 0U;
-
-	if (wifiConnected && !reg_gate_status_seen)
+	if (!wifiConnected)
 	{
-		regWaitMs = PAGE68_REG_STATUS_WAIT_MS;
-		while ((regWaitMs > 0) && (!reg_gate_status_seen))
+		// Disconnected/portal path: represent "Wi-Fi searching (AP ON)" as stage 8.
+		page68_set_step(8);
+		dwin_write_text(PAGE68_TEXT_VP, "Searching WiFi (AP ON)...", PAGE68_TEXT_LEN);
+		page68_boot_step_wait_ms(PAGE68_STEP_MIN_MS);
+		subscription_uart_pump_lines();
+		if (!page68_check_step_pass(8, errCode, sizeof(errCode)))
 		{
-			asm("wdr");
-			subscription_uart_pump_lines();
-			_delay_ms(10);
-			if (regWaitMs >= 10)
-			{
-				regWaitMs = (uint16_t)(regWaitMs - 10);
-			}
-			else
-			{
-				regWaitMs = 0;
-			}
+			page68_fail_to_page10(errCode);
+			return 0;
 		}
 	}
-
-	if (wifiConnected && reg_gate_status_seen && reg_gate_registered &&
-	    ((!sub_state_seen) || (sub_state_code == SUB_STATE_READY)))
+	if (wifiConnected)
 	{
-		subWaitMs = PAGE68_SUB_STATUS_WAIT_MS;
-		while ((subWaitMs > 0) && ((!sub_state_seen) || (sub_state_code == SUB_STATE_READY)))
+		page68_set_step(8);
+		page68_boot_step_wait_ms(PAGE68_STEP_MIN_MS);
+		subscription_uart_pump_lines();
+		if (!page68_check_step_pass(8, errCode, sizeof(errCode)))
 		{
-			asm("wdr");
-			subscription_uart_pump_lines();
-			_delay_ms(10);
-			if (subWaitMs >= 10)
+			page68_fail_to_page10(errCode);
+			return 0;
+		}
+
+		if (!reg_gate_status_seen)
+		{
+			regWaitMs = PAGE68_REG_STATUS_WAIT_MS;
+			while ((regWaitMs > 0) && (!reg_gate_status_seen))
 			{
-				subWaitMs = (uint16_t)(subWaitMs - 10);
-			}
-			else
-			{
-				subWaitMs = 0;
+				asm("wdr");
+				subscription_uart_pump_lines();
+				_delay_ms(10);
+				if (regWaitMs >= 10)
+				{
+					regWaitMs = (uint16_t)(regWaitMs - 10);
+				}
+				else
+				{
+					regWaitMs = 0;
+				}
 			}
 		}
-	}
 
-	if (wifiConnected && reg_gate_status_seen && reg_gate_registered &&
-	    (sub_state_seen && (sub_state_code == SUB_STATE_ACTIVE)) && !energy_sync_ready())
-	{
-		energyWaitMs = PAGE68_ENERGY_STATUS_WAIT_MS;
-		while ((energyWaitMs > 0) && (!energy_sync_ready()))
+		if (reg_gate_status_seen && reg_gate_registered &&
+		    ((!sub_state_seen) || (sub_state_code == SUB_STATE_READY)))
 		{
-			asm("wdr");
-			subscription_uart_pump_lines();
-			_delay_ms(10);
-			if (energyWaitMs >= 10)
+			subWaitMs = PAGE68_SUB_STATUS_WAIT_MS;
+			while ((subWaitMs > 0) && ((!sub_state_seen) || (sub_state_code == SUB_STATE_READY)))
 			{
-				energyWaitMs = (uint16_t)(energyWaitMs - 10);
+				asm("wdr");
+				subscription_uart_pump_lines();
+				_delay_ms(10);
+				if (subWaitMs >= 10)
+				{
+					subWaitMs = (uint16_t)(subWaitMs - 10);
+				}
+				else
+				{
+					subWaitMs = 0;
+				}
 			}
-			else
+		}
+
+		page68_set_step(9);
+		page68_boot_step_wait_ms(PAGE68_STEP_MIN_MS);
+		subscription_uart_pump_lines();
+
+		if (reg_gate_status_seen && reg_gate_registered &&
+		    (sub_state_seen && (sub_state_code == SUB_STATE_ACTIVE)) && !energy_sync_ready())
+		{
+			energyWaitMs = PAGE68_ENERGY_STATUS_WAIT_MS;
+			while ((energyWaitMs > 0) && (!energy_sync_ready()))
 			{
-				energyWaitMs = 0;
+				asm("wdr");
+				subscription_uart_pump_lines();
+				_delay_ms(10);
+				if (energyWaitMs >= 10)
+				{
+					energyWaitMs = (uint16_t)(energyWaitMs - 10);
+				}
+				else
+				{
+					energyWaitMs = 0;
+				}
 			}
+		}
+		// Keep short parser window at final stage for version/OTA metadata arrival.
+		page68_boot_step_wait_ms(160);
+		subscription_uart_pump_lines();
+		if (!page68_check_step_pass(9, errCode, sizeof(errCode)))
+		{
+			page68_fail_to_page10(errCode);
+			return 0;
 		}
 	}
 
