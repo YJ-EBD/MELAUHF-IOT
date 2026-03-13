@@ -104,3 +104,11 @@
 - 간단한 설명
   - 71페이지 `0xD100`의 ESP 버전 표시는 ESP 코드에서 별도 신규 프레임을 추가하지 않고, 기존 `@OTA|Q|<current_version>|<target_version>`의 `current_version`과 `FIRMWARE_VERSION("26.3.13.1")` 기준을 따르도록 정리했다.
   - 이번 채팅의 실제 반영은 ATmega가 기본 ESP 버전 문자열을 보유하고 필요 시 `OTA|Q` 수신값으로 덮어쓰는 방향으로 처리했고, Arduino 코드는 수정하지 않았다.
+
+## 15. 62페이지 `0x8016` 냉각 버튼 버그 분석 연동 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`, `storage/device_logs/*/MELAUHF_Log.txt`
+- 간단한 설명
+  - `RKC : 0x8016` 입력은 ESP 로그 경로까지 정상 수집되는 것을 확인했고, 실제 수정 지점은 ESP가 아니라 MELAUHF ATmega `tron_mode.c` 임을 다시 확인했다.
+  - 이번 채팅의 page62 냉각 버튼/아이콘/온도 텍스트 버그는 Arduino 디렉토리 기능 변경 없이 연동 확인만 수행했다.

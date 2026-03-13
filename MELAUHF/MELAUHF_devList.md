@@ -124,3 +124,10 @@
 - 간단한 설명
   - 71페이지에서 `0xD100`에 `"ESP Ver <version>"`, `0xD500`에 `"ATmega Ver "`를 출력하도록 추가했다.
   - ESP 버전은 기본값으로 `26.3.13.1`을 사용하고, 이후 `@OTA|Q|<current_version>|<target_version>`를 수신하면 현재 버전 값으로 덮어써서 최신 OTA 프롬프트 기준 문자열을 유지하도록 정리했다.
+
+## 16. 62페이지 `0x8016` 냉각 버튼 UI 동기화 버그 수정
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/tron_mode.c`
+- 간단한 설명
+  - MA5105 page62의 `0x8016` 버튼이 `cool_ui_show != 0` 조건에 막혀 실제 `peltier_op` 토글과 UI 갱신이 누락되던 문제를 정리했다.
+  - 버튼 입력 시 `0x3008` VAR ICON과 `0x1310` 온도 텍스트 숨김/표시가 `peltier_op` 기준으로 즉시 다시 그려지도록 helper 경로를 추가했다.

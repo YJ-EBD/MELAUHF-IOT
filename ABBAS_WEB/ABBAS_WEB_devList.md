@@ -114,3 +114,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 MELAUHF ATmega 펌웨어(`main.c`)에서만 진행했고, ABBAS_WEB 디렉토리 기능 코드는 변경하지 않았다.
   - 런타임 장비 로그 파일(`TotalEnergy.txt`)은 자동 생성 데이터 성격으로 보고 기본 커밋 범위에서 제외하는 기준을 다시 확인했다.
+
+## 15. 런타임 activity partial 로그 파일 소스컨트롤 제외 정리
+- 수정코드
+  - 루트 `.gitignore`
+  - 정리 대상: `storage/device_logs/*/.MELAUHF_Log.txt.activity.part`
+- 간단한 설명
+  - WEB 런타임 중 생성되는 `.MELAUHF_Log.txt.activity.part` 파일은 장비 로그 병합 중간 산출물이라 기능 소스와 분리해 관리하는 편이 안전하다고 판단했다.
+  - 이번 채팅에서는 실제 코드 변경과 무관한 partial 로그가 Source Control에 남지 않도록 제외 규칙과 인덱스 정리를 함께 반영했다.

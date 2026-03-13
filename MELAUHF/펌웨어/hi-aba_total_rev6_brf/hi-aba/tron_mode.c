@@ -199,6 +199,33 @@ static void ma5105_set_cool_icon(void)
 	varIconInt(0x3008, (peltier_op == 0) ? 1 : 0);
 }
 
+static void ma5105_refresh_page62_cool_ui(void)
+{
+	ma5105_set_cool_icon();
+	TEXT_Display_TEMPERATURE(ntc_t);
+}
+
+static void ma5105_toggle_page62_cool_state(void)
+{
+	/*
+	 * Page62 0x8016 is a direct cool on/off button.
+	 * Keep the visible state tied to peltier_op even when the
+	 * page69 cooling policy (cool_ui_show) is disabled.
+	 */
+	if (peltier_op == 0)
+	{
+		peltier_op = 1;
+		Peltier_OFF(1);
+	}
+	else
+	{
+		peltier_op = 0;
+		Peltier_OFF(0);
+	}
+
+	ma5105_refresh_page62_cool_ui();
+}
+
 static void ma5105_set_run_icon(void)
 {
 	if (!ma5105_mode() || (MA5105_ICON_FORCE == 0))
@@ -1799,21 +1826,7 @@ void main_tron()
 											break;
 												case 0x16:
 												// MA5105 cooling button (same logic as FL0788 0x17)
-													if(cool_ui_show!=0)
-												{
-													if (peltier_op == 0) // 0:on 1:off
-													{
-													peltier_op = 1;
-													Peltier_OFF(1);
-												}
-												else
-												{
-													peltier_op = 0;
-													Peltier_OFF(0);
-												}
-											}
-												ma5105_set_cool_icon();
-												TEXT_Display_TEMPERATURE(ntc_t);
+												ma5105_toggle_page62_cool_state();
 												ma_handled = 1;
 												break;
 												case 0x18:

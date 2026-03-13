@@ -21,6 +21,7 @@ Thumbs.db
 
 # Logs and local runtime files
 **/*.log
+ABBAS_WEB/storage/device_logs/**/.MELAUHF_Log.txt.activity.part
 
 # Local databases
 **/*.db
