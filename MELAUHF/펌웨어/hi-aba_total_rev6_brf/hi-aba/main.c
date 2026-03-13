@@ -1867,6 +1867,14 @@ static void subscription_restore_ready_page(void)
 
 static void subscription_enter_lock_page(U08 page)
 {
+	// OTA confirmation page(74) must remain stable until user presses accept/skip.
+	// Without this guard, SUB state updates can force page59/20/73 and create
+	// a 74 <-> lock-page bounce loop.
+	if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) && (page != OTA_PAGE_FIRMWARE_UPDATE))
+	{
+		return;
+	}
+
 	if (dwin_page_now == WIFI_PAGE_BOOT_CHECK)
 	{
 		return;

@@ -90,3 +90,11 @@
 - 간단한 설명
   - 이번 커밋에서는 ABBAS_WEB 디렉토리의 기능 코드 변경 없이, Arduino/MELAUHF 패치와 devList 동기화 중심으로 소스컨트롤 기준점을 정리했다.
   - 추후 Firmware Manage 변경사항 추적 시 본 항목(11번)을 기준으로 이어서 관리하도록 메모를 남겼다.
+
+## 12. OTA 74페이지/구독 잠금 페이지 충돌 패치 연동 확인
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `router/pages.py`, `templates/firmware_manage.html`, `static/js/firmware_manage.js`
+- 간단한 설명
+  - 이번 패치에서 적용된 실제 수정은 MELAUHF `main.c`의 페이지 전환 충돌 가드이며, ABBAS_WEB 디렉토리 코드는 변경하지 않았다.
+  - Firmware Manage의 OTA 배정/보고 인터페이스는 기존 스펙 그대로 유지되어 ATmega 74페이지 사용자 승인 흐름과 호환됨을 재확인했다.

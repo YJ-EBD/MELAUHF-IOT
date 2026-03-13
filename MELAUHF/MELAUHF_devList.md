@@ -91,3 +91,11 @@
 - 간단한 설명
   - `address ... section '.bss' is not within region 'data'` 링크 실패를 해결하기 위해 ATmega RAM 사용 버퍼를 축소(`SUB_UART_LINE_MAX`, `SUB_UART_Q_DEPTH`, `RKC_UART_Q_DEPTH`)해 SRAM 사용량을 줄였다.
   - `ds1307_dateset` implicit declaration 경고를 없애기 위해 mode 소스에 `ds1307.h` include를 명시했고, `i2c.c`의 `dsi_read()`는 기본 반환값을 추가해 non-void 경고를 정리했다.
+
+## 12. OTA 74페이지와 구독 잠금 페이지(59/20/73) 충돌 루프 차단
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+  - 함수: `subscription_enter_lock_page()`
+- 간단한 설명
+  - OTA 프롬프트가 활성(`OTA_PROMPT_FLAG_ACTIVE`)된 동안에는 `subscription_enter_lock_page()`가 74페이지 외 페이지 강제를 수행하지 않도록 가드를 추가했다.
+  - 이 보강으로 로그에서 확인된 `page 74 -> page 59 -> page 74` 왕복(플리커/루프) 현상을 차단하고, 사용자 승인 키(`0xBC01/0xBC02`) 입력 안정성을 높였다.
