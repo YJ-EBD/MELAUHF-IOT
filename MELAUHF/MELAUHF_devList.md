@@ -108,3 +108,19 @@
 - 간단한 설명
   - OTA 승인 후 74페이지에서 `"Downloading. . ." -> "Firmware Update. . ." -> "Rebooting. . ."` 문구를 단계별로 표시하고 varicon 인덱스를 0~9로 진행하도록 보강했다.
   - `OTA|RST`/스킵/재진입 시 진행 상태를 초기화하고, 74페이지 진입 직전 `setStandby()`를 수행해 표시 안정성을 높였다.
+
+## 14. OTA 74페이지 Rebooting 애니메이션을 10~26 반복으로 확장
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+  - 상수 추가: `OTA_REBOOT_ICON_FIRST(10)`, `OTA_REBOOT_ICON_LAST(26)`, `OTA_REBOOT_ANIM_PERIOD_TICKS(245)`
+- 간단한 설명
+  - `"Downloading. . ."`와 `"Firmware Update. . ."` 단계는 기존처럼 `0x1C1A` varicon을 0~9 진행률로 유지하고, `"Rebooting. . ."` 단계에 들어가면 10~26번 이미지를 0.2초 간격으로 반복 표시하도록 수정했다.
+  - 새 전용 타이머 전역 대신 기존 Timer0 기반 `page67_tick`를 재사용해 SRAM 증가를 최소화하면서 74페이지 재부팅 대기 애니메이션만 확장했다.
+
+## 15. 71페이지 ESP/ATmega 버전 문구 표시 추가
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+  - VP 추가: `0xD100`, `0xD500`
+- 간단한 설명
+  - 71페이지에서 `0xD100`에 `"ESP Ver <version>"`, `0xD500`에 `"ATmega Ver "`를 출력하도록 추가했다.
+  - ESP 버전은 기본값으로 `26.3.13.1`을 사용하고, 이후 `@OTA|Q|<current_version>|<target_version>`를 수신하면 현재 버전 값으로 덮어써서 최신 OTA 프롬프트 기준 문자열을 유지하도록 정리했다.

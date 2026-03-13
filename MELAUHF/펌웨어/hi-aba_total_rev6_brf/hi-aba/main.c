@@ -303,6 +303,16 @@ static volatile U08 p63_boot_waiting_status = 0;
 #define OTA_PROGRESS_TEXT_LEN 20
 #define OTA_PROGRESS_ICON_HIDE_VAL 0xFFFFU
 #define OTA_PROGRESS_ICON_MAX 9U
+#define OTA_REBOOT_ICON_FIRST 10U
+#define OTA_REBOOT_ICON_LAST  26U
+// Timer0 ISR frequency is ~1225Hz, so 245 ticks is about 200ms.
+#define OTA_REBOOT_ANIM_PERIOD_TICKS 245U
+
+#define PAGE71_TEXT_VP_ESP_VERSION    0xD100
+#define PAGE71_TEXT_VP_ATMEGA_VERSION 0xD500
+#define PAGE71_TEXT_LEN 20U
+#define PAGE71_ESP_VERSION_CACHE_LEN 12U
+#define PAGE71_DEFAULT_ESP_VERSION "26.3.13.1"
 
 #define OTA_PROGRESS_PHASE_NONE      0
 #define OTA_PROGRESS_PHASE_DOWNLOAD  1
@@ -317,6 +327,7 @@ static U08 ota_prev_page = 0;
 static volatile U08 ota_progress_phase = OTA_PROGRESS_PHASE_NONE;
 static U08 ota_progress_index = 0;
 static uint32_t ota_progress_last_sec = 0;
+static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAULT_ESP_VERSION;
 
 #define WIFI_FAIL_TEXT_VP 0xB222
 #define WIFI_FAIL_TEXT_LEN 32
@@ -957,11 +968,25 @@ static uint32_t ota_now_sec(void)
 	return sec;
 }
 
+static U16 ota_now_tick(void)
+{
+	U16 tick;
+	cli();
+	tick = page67_tick;
+	sei();
+	return tick;
+}
+
 static void ota_progress_write_text(const char *text)
 {
 	char line[OTA_PROGRESS_TEXT_LEN + 1];
 	wifi_copy_field(line, sizeof(line), text);
 	dwin_write_text(OTA_TEXT_VP_PROGRESS, line, OTA_PROGRESS_TEXT_LEN);
+}
+
+static void page71_cache_esp_version(const char *version)
+{
+	wifi_copy_field(page71_esp_version_text, sizeof(page71_esp_version_text), version);
 }
 
 static void ota_progress_reset(void)
@@ -993,24 +1018,48 @@ static void ota_progress_start_update(void)
 static void ota_progress_enter_reboot(void)
 {
 	ota_progress_phase = OTA_PROGRESS_PHASE_REBOOT;
-	ota_progress_index = OTA_PROGRESS_ICON_MAX;
-	ota_progress_last_sec = ota_now_sec();
-	SetVarIcon(OTA_PROGRESS_VARICON_VP, OTA_PROGRESS_ICON_MAX);
+	ota_progress_index = OTA_REBOOT_ICON_FIRST;
+	ota_progress_last_sec = (uint32_t)ota_now_tick();
+	SetVarIcon(OTA_PROGRESS_VARICON_VP, OTA_REBOOT_ICON_FIRST);
 	ota_progress_write_text("Rebooting. . .");
 }
 
 static void ota_progress_tick(void)
 {
 	uint32_t nowSec;
+	U16 nowTick;
 
 	if ((ota_progress_phase != OTA_PROGRESS_PHASE_DOWNLOAD) &&
-	    (ota_progress_phase != OTA_PROGRESS_PHASE_UPDATE))
+	    (ota_progress_phase != OTA_PROGRESS_PHASE_UPDATE) &&
+	    (ota_progress_phase != OTA_PROGRESS_PHASE_REBOOT))
 	{
 		return;
 	}
 
 	if (dwin_page_now != OTA_PAGE_FIRMWARE_UPDATE)
 	{
+		return;
+	}
+
+	if (ota_progress_phase == OTA_PROGRESS_PHASE_REBOOT)
+	{
+		nowTick = ota_now_tick();
+		if ((U16)(nowTick - (U16)ota_progress_last_sec) < OTA_REBOOT_ANIM_PERIOD_TICKS)
+		{
+			return;
+		}
+		ota_progress_last_sec = (uint32_t)nowTick;
+
+		if ((ota_progress_index < OTA_REBOOT_ICON_FIRST) ||
+		    (ota_progress_index >= OTA_REBOOT_ICON_LAST))
+		{
+			ota_progress_index = OTA_REBOOT_ICON_FIRST;
+		}
+		else
+		{
+			ota_progress_index++;
+		}
+		SetVarIcon(OTA_PROGRESS_VARICON_VP, ota_progress_index);
 		return;
 	}
 
@@ -2544,6 +2593,45 @@ static void energy_render_page57(void)
 static void energy_render_page71(void)
 {
 	char buf[24];
+	char versionLine[PAGE71_TEXT_LEN + 1];
+	uint8_t vi = 0;
+	uint8_t oi = 0;
+
+	versionLine[oi++] = 'E';
+	versionLine[oi++] = 'S';
+	versionLine[oi++] = 'P';
+	versionLine[oi++] = ' ';
+	versionLine[oi++] = 'V';
+	versionLine[oi++] = 'e';
+	versionLine[oi++] = 'r';
+	versionLine[oi++] = ' ';
+	if (page71_esp_version_text[0] != 0)
+	{
+		while ((page71_esp_version_text[vi] != 0) && (oi < PAGE71_TEXT_LEN))
+		{
+			versionLine[oi++] = page71_esp_version_text[vi++];
+		}
+	}
+	else
+	{
+		versionLine[oi++] = '-';
+	}
+	versionLine[oi] = 0;
+	dwin_write_text(PAGE71_TEXT_VP_ESP_VERSION, versionLine, PAGE71_TEXT_LEN);
+	versionLine[0] = 'A';
+	versionLine[1] = 'T';
+	versionLine[2] = 'm';
+	versionLine[3] = 'e';
+	versionLine[4] = 'g';
+	versionLine[5] = 'a';
+	versionLine[6] = ' ';
+	versionLine[7] = 'V';
+	versionLine[8] = 'e';
+	versionLine[9] = 'r';
+	versionLine[10] = ' ';
+	versionLine[11] = 0;
+	dwin_write_text(PAGE71_TEXT_VP_ATMEGA_VERSION, versionLine, PAGE71_TEXT_LEN);
+
 	snprintf(buf, sizeof(buf), "%lu", (unsigned long)g_energy_used_j);
 	dwin_write_text(0xB100, buf, 20);
 	dwin_write_text(0xB200, "10", 2);
@@ -3034,6 +3122,7 @@ static void ota_parse_line(char *line)
 		{
 			targetTok = "";
 		}
+		page71_cache_esp_version(currentTok);
 		ota_enter_prompt(currentTok, targetTok);
 	}
 }
@@ -3974,10 +4063,7 @@ SIGNAL(TIMER0_COMP_vect)
 	{
 		p63_anim_ms++;
 	}
-	if (page67_anim_running)
-	{
-		page67_tick++;
-	}
+	page67_tick++;
 
 	if (wf_state != prv_wf_state)
 	{

@@ -96,3 +96,11 @@
 - 간단한 설명
   - ESP는 `@OTA|Q`, `@OTA|DEC`, `@PAGE|61` 기반 사용자 승인 OTA 제어를 유지하고, 74페이지 진행 문구(`0xD222`) 출력은 ATmega/DWIN 책임 경로임을 재확인했다.
   - 이번 채팅 기준 Arduino 디렉토리는 기능 변경 없이 devList/소스컨트롤 기준점 정리만 반영했다.
+
+## 14. 71페이지 ESP 버전 표시 기준 재확인
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 71페이지 `0xD100`의 ESP 버전 표시는 ESP 코드에서 별도 신규 프레임을 추가하지 않고, 기존 `@OTA|Q|<current_version>|<target_version>`의 `current_version`과 `FIRMWARE_VERSION("26.3.13.1")` 기준을 따르도록 정리했다.
+  - 이번 채팅의 실제 반영은 ATmega가 기본 ESP 버전 문자열을 보유하고 필요 시 `OTA|Q` 수신값으로 덮어쓰는 방향으로 처리했고, Arduino 코드는 수정하지 않았다.
