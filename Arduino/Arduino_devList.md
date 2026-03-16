@@ -120,3 +120,11 @@
 - 간단한 설명
   - 이번 채팅에서 실제 코드 변경은 ATmega `main.c`에만 적용했고, Arduino(ESP) 코드는 기존 `@P63|W`, `@P63|B`, `@WIFI|R` 송신 구조를 유지했다.
   - ATmega가 Wi-Fi 연결 시도/미연결(AP 검색) 상태를 표시하도록 분기 보강되었기 때문에, ESP 측은 추가 포맷 변경 없이 기존 heartbeat/result 라인으로 연동되도록 정리했다.
+
+## 17. MA5105 `IOT_mode` 분리 리팩터링 연동 기준 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅에서 실제 코드 수정은 MELAUHF ATmega 펌웨어 쪽에만 적용했고, Arduino(ESP) 디렉토리는 동작 경로 확인과 devList 기준점 업데이트만 수행했다.
+  - ESP가 송신하는 `@SUB|`, `@P63|`, `@WIFI|`, `@OTA|`, `@ENG|` 프레임 책임은 유지한 채, ATmega 측 수신/페이지 처리 구현 위치만 `IOT_mode.c`로 이동한 상태로 정리했다.

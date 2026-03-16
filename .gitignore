@@ -30,3 +30,6 @@ ABBAS_WEB/storage/device_logs/**/.MELAUHF_Log.txt.activity.part
 
 # Local OTA firmware artifacts
 ABBAS_WEB/storage/firmware/**/*.bin
+
+# Local comparison/reference firmware trees
+therma_med/

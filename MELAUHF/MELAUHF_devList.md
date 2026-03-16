@@ -139,3 +139,16 @@
   - 68페이지 `0x0C0A`/`0xC222` 표시를 `0~9` 단계 기준으로 재구성하고, 7단계는 Wi-Fi 연결 시도, 미연결 분기는 8단계(AP 검색)로 표시하도록 조정했다.
   - Wi-Fi 연결 시도 중(`64/65/66/67`)에는 상태 heartbeat가 들어와도 63페이지로 강제 이동하지 않도록 가드를 추가했다.
   - `address ... section '.bss' is not within region 'data'` 링크 에러를 피하기 위해 신규 전역 대신 기존 상태 변수(`p63_scan_busy`)를 재활용해 SRAM 증가 없이 반영했다.
+
+## 18. MA5105 IoT 확장부를 `IOT_mode` 모듈로 분리해 EA2247형 메인 구조로 정리
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.h`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/common.h`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/hi-aba.cproj`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/Debug/Makefile`
+- 간단한 설명
+  - `main.c`에서 Wi-Fi/OTA/구독/ESP UART/63~74페이지 처리와 관련된 대형 블록을 `IOT_mode.c`로 분리해, EA2247처럼 메인 파일이 부트/EEPROM/모드 선택 중심 역할에 가깝도록 정리했다.
+  - 페이지 ID/순서는 유지했고, 기존 MA5105 동작을 바꾸지 않으면서 IoT 확장부만 모듈 경계로 분리했다.
+  - 로컬 `avr-gcc` 기준으로 전체 번역 단위 문법 검증은 통과했고, 남은 전체 링크 실패는 기존 SRAM 한계/구형 AVR-GCC 전제 차이 성격으로 확인했다.

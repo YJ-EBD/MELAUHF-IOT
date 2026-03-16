@@ -205,6 +205,12 @@
     <Compile Include="Init.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="IOT_mode.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="IOT_mode.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="main.c">
       <SubType>compile</SubType>
     </Compile>

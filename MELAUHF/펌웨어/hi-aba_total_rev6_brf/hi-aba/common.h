@@ -34,6 +34,7 @@ extern unsigned char COOL_UI;
 extern unsigned char SOUND_MODE;
 extern unsigned char SOUND_VOLUME;
 extern unsigned char INIT_BOOT;
+extern unsigned char WIFI_BOOT_PAGE61_ONCE;
 extern uint32_t D_DATE;
 
 extern uint8_t PW_VALUE[];
