@@ -13,6 +13,9 @@
 #include "Define.h"
 #include <stdio.h>
 
+#define PARSBUF_MAX_FRAME_LEN 10U
+#define PARSBUF_CAPACITY (PARSBUF_MAX_FRAME_LEN + 1U)
+
 extern unsigned char OP_MODE, OP_MODE_CK;
 extern unsigned long LIMIT_TIME, LIMIT_TIME_CK;
 extern unsigned char TRON_200_MODE, TRON_200_MODE_CK;

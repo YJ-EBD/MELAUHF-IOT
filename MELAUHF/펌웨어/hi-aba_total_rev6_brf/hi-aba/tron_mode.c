@@ -37,6 +37,9 @@
 #define MA5105_PAGE69_MAX_POWER_MIN 50
 #define MA5105_PAGE69_MAX_POWER_MAX 200
 #define MA5105_PAGE69_MAX_POWER_STEP 10
+#define MA5105_PAGE69_VALUE_STEP 5
+#define MA5105_PAGE69_DEBUG_VP 0xCCCC
+#define MA5105_PAGE69_DEBUG_TEXT_LEN 39
 
 // [PAGE70 FEATURE] page IDs and key-map definitions.
 #define MA5105_PAGE69_ID 69
@@ -99,12 +102,21 @@ static U08 ma5105_mode(void)
 	return (startPage == 61);
 }
 
+static U08 ma5105_page62_visible(void)
+{
+	return (ma5105_mode() && (dwin_page_now == 62));
+}
+
 static U08 ma5105_page69_icon0 = 0;
 static U08 ma5105_page69_icon1 = 0;
 static U08 ma5105_page69_icon2 = 0;
 static U08 ma5105_page69_icon3 = 0;
 static U08 ma5105_page69_icon1000 = 0;
 static const U08 ma5105_page69_curve_points[MA5105_PAGE69_SLOT_COUNT] = {0, 4, 9, 14, 19, 24, 29, 34, 39};
+static U08 ma5105_page69_anchor_body[MA5105_PAGE69_SLOT_COUNT];
+static U08 ma5105_page69_anchor_face[MA5105_PAGE69_SLOT_COUNT];
+static U08 ma5105_page69_dirty = 0;
+static U08 ma5105_page69_enter_pending = 0;
 static U08 ma5105_page69_test_on = 0;
 static U08 ma5105_page69_test_slot = 0xFF;
 static U08 ma5105_page69_prev_eng_show = 0;
@@ -115,6 +127,7 @@ static void ma5105_set_run_icon(void);
 static void ma5105_set_preset_default_icons(void);
 static void ma5105_set_preset_icons(U08 key);
 static void ma5105_sync_page62_ui(void);
+static void ma5105_page69_tick(void);
 // [PAGE70 FEATURE] local state for hold-to-enter and numeric password input.
 static U08 ma5105_page70_hold_active = 0;
 static U16 ma5105_page70_hold_ticks = 0;
@@ -133,10 +146,126 @@ static U08 *ma5105_page69_curve_ptr(U08 face_mode)
 	return pw_data;
 }
 
-static U08 ma5105_page69_curve_value(U08 face_mode, U08 slot)
+static U08 *ma5105_page69_anchor_ptr(U08 face_mode)
+{
+	if (face_mode)
+	return ma5105_page69_anchor_face;
+	return ma5105_page69_anchor_body;
+}
+
+static void ma5105_page69_restore_default_anchors(U08 face_mode)
+{
+	U08 *anchors = ma5105_page69_anchor_ptr(face_mode);
+	U08 i;
+
+	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	{
+		anchors[i] = ma5105_page69_slots[i].init_w;
+	}
+}
+
+static U08 ma5105_page69_anchor_is_sane(const U08 *anchors)
+{
+	U08 prev = 0;
+	U08 i;
+
+	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	{
+		U08 value = anchors[i];
+
+		if ((value < 1) || (value > 200))
+		{
+			return 0;
+		}
+		if ((i != 0) && (value < prev))
+		{
+			return 0;
+		}
+		prev = value;
+	}
+
+	return 1;
+}
+
+static void ma5105_page69_load_anchors_from_eeprom(U08 face_mode)
+{
+	U08 *anchors = ma5105_page69_anchor_ptr(face_mode);
+	uint8_t *eep_profile = face_mode ? PW_VALUE_FACE : PW_VALUE;
+	U08 i;
+
+	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	{
+		anchors[i] = eeprom_read_byte(&eep_profile[ma5105_page69_curve_points[i]]);
+	}
+	if (!ma5105_page69_anchor_is_sane(anchors))
+	{
+		ma5105_page69_restore_default_anchors(face_mode);
+	}
+}
+
+static void ma5105_page69_load_shadow_profiles(void)
+{
+	ma5105_page69_load_anchors_from_eeprom(0);
+	ma5105_page69_load_anchors_from_eeprom(1);
+}
+
+static void ma5105_page69_expand_shadow_to_runtime(U08 face_mode)
 {
 	U08 *curve = ma5105_page69_curve_ptr(face_mode);
-	return curve[ma5105_page69_curve_points[slot]];
+	U08 *anchors = ma5105_page69_anchor_ptr(face_mode);
+	U08 i;
+	U08 start_idx = 0;
+
+	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	{
+		U08 end_idx = ma5105_page69_curve_points[i];
+		U08 start_value = anchors[i];
+		U08 end_value = anchors[i];
+		U08 j;
+
+		if (i != 0)
+		{
+			start_value = anchors[i - 1];
+		}
+		if (end_idx == start_idx)
+		{
+			curve[end_idx] = end_value;
+		}
+		else
+		{
+			for (j = start_idx; j <= end_idx; j++)
+			{
+				U16 numerator = (U16)(j - start_idx) * (U16)(end_value - start_value);
+				U16 denominator = (U16)(end_idx - start_idx);
+
+				curve[j] = (U08)(start_value + (U08)(numerator / denominator));
+			}
+		}
+		start_idx = (U08)(end_idx + 1);
+	}
+}
+
+static void ma5105_page69_apply_active_shadow_to_runtime(void)
+{
+	ma5105_page69_expand_shadow_to_runtime(body_face ? 1 : 0);
+}
+
+static void ma5105_page69_save_runtime_to_eeprom(U08 face_mode)
+{
+	U08 *curve = ma5105_page69_curve_ptr(face_mode);
+	uint8_t *eep_profile = face_mode ? PW_VALUE_FACE : PW_VALUE;
+	U08 i;
+
+	for (i = 0; i < 40; i++)
+	{
+		eeprom_update_byte(&eep_profile[i], curve[i]);
+		eeprom_busy_wait();
+	}
+}
+
+static U08 ma5105_page69_curve_value(U08 face_mode, U08 slot)
+{
+	return ma5105_page69_anchor_ptr(face_mode)[slot];
 }
 
 static U08 ma5105_page62_action_from_key(U16 keyCode, U08 *action)
@@ -540,7 +669,7 @@ static U08 ma5105_page62_handle_action(U08 action)
 
 static void ma5105_set_mode_icon(void)
 {
-	if (!ma5105_mode() || (MA5105_ICON_FORCE == 0))
+	if (!ma5105_page62_visible() || (MA5105_ICON_FORCE == 0))
 	return;
 	// 0x3006: 0->409, 1->410
 	varIconInt(0x3006, body_face ? 1 : 0);
@@ -549,7 +678,7 @@ static void ma5105_set_mode_icon(void)
 static void ma5105_set_sound_icon(void)
 {
 	U08 s;
-	if (!ma5105_mode() || (MA5105_ICON_FORCE == 0))
+	if (!ma5105_page62_visible() || (MA5105_ICON_FORCE == 0))
 	return;
 	s = sound_v;
 	if (s > 3)
@@ -560,7 +689,7 @@ static void ma5105_set_sound_icon(void)
 
 static void ma5105_set_cool_icon(void)
 {
-	if (!ma5105_mode() || (MA5105_ICON_FORCE == 0))
+	if (!ma5105_page62_visible() || (MA5105_ICON_FORCE == 0))
 	return;
 	// 0x3008: 0->407(off), 1->408(on)
 	varIconInt(0x3008, (peltier_op == 0) ? 1 : 0);
@@ -595,7 +724,7 @@ static void ma5105_toggle_page62_cool_state(void)
 
 static void ma5105_set_run_icon(void)
 {
-	if (!ma5105_mode() || (MA5105_ICON_FORCE == 0))
+	if (!ma5105_page62_visible() || (MA5105_ICON_FORCE == 0))
 	return;
 	// 0x5001: 0->405(start), 1->406(stop)
 	varIconInt(0x5001, (opPage & 0x02) ? 1 : 0);
@@ -603,7 +732,7 @@ static void ma5105_set_run_icon(void)
 
 static void ma5105_set_preset_default_icons(void)
 {
-	if (!ma5105_mode() || (MA5105_ICON_FORCE == 0))
+	if (!ma5105_page62_visible() || (MA5105_ICON_FORCE == 0))
 	return;
 	if (dwin_page_now == 63)
 	return;
@@ -616,7 +745,7 @@ static void ma5105_set_preset_default_icons(void)
 
 static void ma5105_set_preset_icons(U08 key)
 {
-	if (!ma5105_mode() || (MA5105_ICON_FORCE == 0))
+	if (!ma5105_page62_visible() || (MA5105_ICON_FORCE == 0))
 	return;
 	if (dwin_page_now == 63)
 	return;
@@ -668,7 +797,7 @@ static void ma5105_set_preset_icons(U08 key)
 
 static void ma5105_sync_page62_ui(void)
 {
-	if (!ma5105_mode())
+	if (!ma5105_page62_visible())
 	return;
 	if (dwin_page_now == 63)
 	return;
@@ -862,10 +991,36 @@ static void UpdateVarIcon3Digit(U16 addr_100s, U16 addr_10s, U16 addr_1s, U16 va
 
 static void ma5105_page69_write_legacy_value(U08 slot, U16 value)
 {
-	// Keep the original engineering data-view values in sync as well.
-	// The shipped MA5105 HMI assets still expose 0x1F00~0x1F10 entries,
-	// so mirroring both paths avoids mismatches between HMI revisions.
-	setPwValue(slot, value);
+	(void)slot;
+	(void)value;
+}
+
+static void ma5105_page69_append_3digit(char *line, U08 *pos, U08 value)
+{
+	line[(*pos)++] = (char)('0' + ((value / 100) % 10));
+	line[(*pos)++] = (char)('0' + ((value / 10) % 10));
+	line[(*pos)++] = (char)('0' + (value % 10));
+}
+
+static void ma5105_page69_write_debug_text(void)
+{
+	char line[MA5105_PAGE69_DEBUG_TEXT_LEN + 1];
+	U08 anchors_face = body_face ? 1 : 0;
+	U08 pos = 0;
+	U08 i;
+
+	line[pos++] = anchors_face ? 'F' : 'B';
+	line[pos++] = ' ';
+	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	{
+		ma5105_page69_append_3digit(line, &pos, ma5105_page69_curve_value(anchors_face, i));
+		if (i + 1U < MA5105_PAGE69_SLOT_COUNT)
+		{
+			line[pos++] = ' ';
+		}
+	}
+	line[pos] = '\0';
+	dwin_write_text(MA5105_PAGE69_DEBUG_VP, line, pos);
 }
 
 static void ma5105_page69_write_value(U08 slot)
@@ -876,47 +1031,22 @@ static void ma5105_page69_write_value(U08 slot)
 		ma5105_page69_slots[slot].icon_hundreds,
 		ma5105_page69_slots[slot].icon_tens,
 		ma5105_page69_slots[slot].icon_ones,
-		0);
+		value);
 }
 
 static void ma5105_page69_reset_active_profile(void)
 {
-	for(int i=0;i<40;i++)
-	{
-		if(body_face==0)
-		{
-			pw_data[i]=(i+1)*5;
-			eeprom_update_byte(&PW_VALUE[i], pw_data[i]);
-			eeprom_busy_wait();
-		}
-		else
-		{
-			pw_data_face[i]=(i+1)*5;
-			eeprom_update_byte(&PW_VALUE_FACE[i], pw_data_face[i]);
-			eeprom_busy_wait();
-		}
-	}
-	for (int i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
-	{
-		ma5105_page69_write_value((U08)i);
-	}
+	ma5105_page69_restore_default_anchors(body_face ? 1 : 0);
+	ma5105_page69_apply_active_shadow_to_runtime();
+	ma5105_page69_save_runtime_to_eeprom(body_face ? 1 : 0);
+	ma5105_page69_dirty = 1;
 }
 
 static void ma5105_page69_save_active_profile(void)
 {
-	pw_auto_cal();
-	for (int i = 0; i < 40; i++)
-	{
-		if(body_face==0)
-		{
-			eeprom_update_byte(&PW_VALUE[i], pw_data[i]);
-		}
-		else
-		{
-			eeprom_update_byte(&PW_VALUE_FACE[i], pw_data_face[i]);
-		}
-		eeprom_busy_wait();
-	}
+	ma5105_page69_apply_active_shadow_to_runtime();
+	ma5105_page69_save_runtime_to_eeprom(body_face ? 1 : 0);
+	ma5105_page69_dirty = 1;
 }
 
 static void ma5105_page69_normalize_body_face(void)
@@ -995,6 +1125,7 @@ static void ma5105_page69_toggle_cool_mode(void)
 	eeprom_busy_wait();
 	TEXT_Display_COOL_UI_mode(cool_ui_show);
 	ma5105_page69_sync_cool_mode_icon();
+	ma5105_page69_dirty = 1;
 }
 
 static void ma5105_page69_toggle_foot_switch(void)
@@ -1011,6 +1142,7 @@ static void ma5105_page69_toggle_foot_switch(void)
 	eeprom_busy_wait();
 	TEXT_Display_TRIG_mode(foot_op);
 	ma5105_page69_sync_foot_switch_icon();
+	ma5105_page69_dirty = 1;
 }
 
 static void ma5105_page69_toggle_j16_mode(void)
@@ -1023,6 +1155,7 @@ static void ma5105_page69_toggle_j16_mode(void)
 	eeprom_busy_wait();
 	j16mode_ui(j16mode);//0 : pump , 1: led
 	ma5105_page69_sync_j16_pump_icon();
+	ma5105_page69_dirty = 1;
 }
 
 static void ma5105_page69_toggle_sound_mode(void)
@@ -1035,12 +1168,14 @@ static void ma5105_page69_toggle_sound_mode(void)
 	eeprom_busy_wait();
 	sound_mode_ui(EM_SOUND);//0 : buzzer , 1 : speaker(audioPlay)
 	ma5105_page69_sync_sound_icon();
+	ma5105_page69_dirty = 1;
 }
 
 static void ma5105_page69_select_body_face(U08 face_mode)
 {
 	body_face = face_mode ? 1 : 0;
-	ma5105_page69_sync_body_face_icon();
+	ma5105_page69_apply_active_shadow_to_runtime();
+	ma5105_page69_dirty = 1;
 }
 
 static void ma5105_page69_adjust_max_power(U08 increase)
@@ -1065,6 +1200,7 @@ static void ma5105_page69_adjust_max_power(U08 increase)
 	eeprom_update_byte(&PW_MAX, MaxPower);
 	eeprom_busy_wait();
 	ma5105_page69_sync_max_power_icons();
+	ma5105_page69_dirty = 1;
 }
 
 static void ma5105_page69_force_visible(void)
@@ -1080,6 +1216,9 @@ static void ma5105_page69_force_visible(void)
 	{
 		ma5105_page69_write_value(i);
 	}
+	ma5105_page69_write_debug_text();
+	ma5105_page69_dirty = 0;
+	ma5105_page69_enter_pending = 0;
 }
 
 static void ma5105_page69_stop_test(void)
@@ -1125,55 +1264,67 @@ static void ma5105_page69_start_test(U08 slot)
 	engTestBtnShow(slot,1);
 	ma5105_page69_test_on = 1;
 	ma5105_page69_test_slot = slot;
-	ma5105_page69_force_visible();
+	ma5105_page69_dirty = 1;
 }
 
 void ma5105_page69_sync_entry(void)
 {
 	ma5105_page69_normalize_body_face();
-	ma5105_page69_force_visible();
+	ma5105_page69_load_shadow_profiles();
+	ma5105_page69_apply_active_shadow_to_runtime();
+	ma5105_page69_dirty = 1;
+	ma5105_page69_enter_pending = 1;
 }
 
 static void ma5105_page69_adjust_value(U08 slot, U08 increase)
 {
-	U08 *curve = ma5105_page69_curve_ptr(body_face ? 1 : 0);
-	U08 idx = ma5105_page69_curve_points[slot];
+	U08 *anchors = ma5105_page69_anchor_ptr(body_face ? 1 : 0);
+	U08 idx = slot;
 
 	if (increase)
 	{
 		if (slot == 0)
 		{
-			if (curve[0] < curve[4])
-			curve[0] += 1;
+			if ((U16)anchors[0] + MA5105_PAGE69_VALUE_STEP <= anchors[1])
+			{
+				anchors[0] = (U08)(anchors[0] + MA5105_PAGE69_VALUE_STEP);
+			}
 		}
 		else if (slot == 8)
 		{
-			if (curve[39] < 200)
-			curve[39] += 1;
+			if ((U16)anchors[8] + MA5105_PAGE69_VALUE_STEP <= 200)
+			{
+				anchors[8] = (U08)(anchors[8] + MA5105_PAGE69_VALUE_STEP);
+			}
 		}
 		else
 		{
-			U08 next_idx = ma5105_page69_curve_points[slot + 1];
-			if (curve[idx] < curve[next_idx])
-			curve[idx] += 1;
+			if ((U16)anchors[idx] + MA5105_PAGE69_VALUE_STEP <= anchors[idx + 1])
+			{
+				anchors[idx] = (U08)(anchors[idx] + MA5105_PAGE69_VALUE_STEP);
+			}
 		}
 	}
 	else
 	{
 		if (slot == 0)
 		{
-			if (curve[0] > 1)
-			curve[0] -= 1;
+			if (anchors[0] > MA5105_PAGE69_VALUE_STEP)
+			{
+				anchors[0] = (U08)(anchors[0] - MA5105_PAGE69_VALUE_STEP);
+			}
 		}
 		else
 		{
-			U08 prev_idx = ma5105_page69_curve_points[slot - 1];
-			if (curve[prev_idx] < curve[idx])
-			curve[idx] -= 1;
+			if (anchors[idx] >= (U16)(anchors[idx - 1] + MA5105_PAGE69_VALUE_STEP))
+			{
+				anchors[idx] = (U08)(anchors[idx] - MA5105_PAGE69_VALUE_STEP);
+			}
 		}
 	}
 
-	ma5105_page69_write_value(slot);
+	ma5105_page69_apply_active_shadow_to_runtime();
+	ma5105_page69_dirty = 1;
 
 	if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot == slot))
 	{
@@ -1384,17 +1535,9 @@ static U08 ma5105_page69_handle_action(U08 action, U08 *factory_cnt)
 		break;
 		case 0x34:
 		ma5105_page69_select_body_face(1);
-		if(eng_show==2)
-		setEngMode_Factory(0);
-		else
-		setEngMode();
 		break;
 		case 0x35:
 		ma5105_page69_select_body_face(0);
-		if(eng_show==2)
-		setEngMode_Factory(0);
-		else
-		setEngMode();
 		break;
 		default:
 		return 0;
@@ -1406,7 +1549,7 @@ static U08 ma5105_page69_handle_key(U16 keyCode, U08 *factory_cnt)
 {
 	U08 action;
 
-	if (eng_emi && (keyCode != MA5105_PAGE69_KEY_RETURN))
+	if (eng_emi)
 	{
 		ma5105_page69_stop_test();
 		return 1;
@@ -1420,10 +1563,19 @@ static U08 ma5105_page69_handle_key(U16 keyCode, U08 *factory_cnt)
 
 	if (dwin_page_now == MA5105_PAGE69_ID)
 	{
-		ma5105_page69_force_visible();
+		ma5105_page69_tick();
 	}
 
 	return 1;
+}
+
+static void ma5105_page69_tick(void)
+{
+	if (dwin_page_now != MA5105_PAGE69_ID)
+	return;
+	if ((ma5105_page69_dirty == 0) && (ma5105_page69_enter_pending == 0))
+	return;
+	ma5105_page69_force_visible();
 }
 
 void main_tron()
@@ -1505,23 +1657,24 @@ void main_tron()
 			{
 				// [PAGE70 FEATURE] hold-to-enter timer tick on existing 10ms main loop.
 				ma5105_page70_tick_10ms();
-					if (dwin_page_now == 69)
+				if (dwin_page_now == 69)
+				{
+					ma5105_page69_tick();
+					ma5105_sync_div = 0;
+				}
+				else if (dwin_page_now == 62)
+				{
+					if (++ma5105_sync_div >= 20)
 					{
 						ma5105_sync_div = 0;
-					}
-					else if (dwin_page_now == 62)
-					{
-						if (++ma5105_sync_div >= 20)
-						{
-							ma5105_sync_div = 0;
-							ma5105_sync_page62_ui();
-						}
-					}
-					else
-					{
-						ma5105_sync_div = 0;
+						ma5105_sync_page62_ui();
 					}
 				}
+				else
+				{
+					ma5105_sync_div = 0;
+				}
+			}
 					
 			#if NEW_BOARD
 		
@@ -1787,8 +1940,7 @@ void main_tron()
 			asm("wdr");
 			if (ckHeader)
 			{
-				// BUGFIX: guard parser buffer against UART noise during simultaneous boot.
-				if (parsCnt < 10)
+				if (parsCnt < PARSBUF_CAPACITY)
 				{
 					parsBuf[parsCnt++] = rxbuf[readCnt];
 				}
@@ -1797,7 +1949,7 @@ void main_tron()
 					ckHeader = 0;
 					parsCnt = 0;
 				}
-				if (ckHeader && (parsBuf[0] > 10))
+				if (ckHeader && (parsBuf[0] > PARSBUF_MAX_FRAME_LEN))
 				{
 					ckHeader = 0;
 					parsCnt = 0;
@@ -2503,14 +2655,10 @@ void main_tron()
 									{
 										if (dwin_page_now == MA5105_PAGE69_ID)
 										{
-											if (eng_emi)
-											{
-												ma5105_page69_stop_test();
-											}
-											else if (ma5105_page69_handle_action(parsBuf[6], &factory_cnt) && (dwin_page_now == MA5105_PAGE69_ID))
-											{
-												ma5105_page69_force_visible();
-											}
+											// MA5105 page69 is driven only by the page's
+											// Return Key Codes. Ignore legacy 0x81 action
+											// packets here to avoid duplicate/conflicting
+											// profile edits versus the raw key handler.
 										}
 									}
 									else if(eng_emi)

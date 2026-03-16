@@ -136,3 +136,11 @@
 - 간단한 설명
   - `ABBAS_WEB` 플랜 응답의 `energyJ/energy_j`, `start_date`, `remaining_days`가 ESP에서 `g_assignedEnergyJ`, `g_planStartDate`, `g_planRemainingDays`로 반영된 뒤 `@ENG|A/U/D/M/P/E/R` 라인으로 ATmega page57 표시를 갱신하는 구조를 다시 확인했다.
   - 이번 채팅의 실제 수정은 ATmega 쪽 `ENG` 수신 안정화였고, Arduino 디렉토리는 코드 변경 없이 값 공급 경로 점검과 devList 업데이트만 반영했다.
+
+## 19. MA5105 69페이지 디버그/테스트 패치 연동 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 MELAUHF ATmega 펌웨어에서 `0xCCCC` 디버그 출력, page69 shadow 값 표시, 5단위 증감, 테스트 버튼 동작 정리를 반영한 내용이며 Arduino(ESP) 코드는 수정하지 않았다.
+  - ESP는 기존처럼 `@ENG|...`, `@SUB|...`, `@OTA|...` 프레임만 공급하고, MA5105 page69 숫자/테스트 동작은 ATmega 내부 로직이 책임지는 기준으로 정리했다.

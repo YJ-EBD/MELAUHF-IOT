@@ -146,3 +146,11 @@
 - 간단한 설명
   - 이번 채팅에서는 WEB 플랜 페이지 payload가 여전히 `status_code`, `plan`, `start_date`, `expiry_date`, `remaining_days`, `energyJ/energy_j`를 내려주고 있음을 다시 확인했다.
   - 실제 수정은 MELAUHF ATmega의 `@ENG|...` 수신 안정화였고, ABBAS_WEB 디렉토리는 기능 변경 없이 연동 경로 확인과 devList 기준점만 업데이트했다.
+
+## 19. MA5105 69페이지 펌웨어 패치 연동 기준 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `router/pages.py`, `DB/device_repo.py`
+- 간단한 설명
+  - 이번 채팅의 실제 코드 변경은 MELAUHF ATmega 펌웨어의 69페이지 shadow 곡선/디버그 출력/테스트 버튼 정리였고, ABBAS_WEB 디렉토리 기능 코드는 변경하지 않았다.
+  - WEB 쪽은 기존 구독/플랜/에너지 응답 구조를 그대로 유지한 상태에서, ATmega가 page69 디버그와 값 표시를 더 안정적으로 처리하는 기준으로 연동 메모만 갱신했다.

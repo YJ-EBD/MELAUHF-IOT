@@ -420,8 +420,9 @@ void Buzzer(U08 time)
 void pwDisp(uint32_t d)
 {
 	// Page 57 is reserved for subscription visuals (0x1000/0x2200/0x3100/0x3300).
-	// Do not let runtime power digits overwrite those VPs.
-	if (dwin_page_now == 57)
+	// Page 69 owns 0x1000 for Body/Face selection and should not receive
+	// runtime power writes while engineering calibration is open.
+	if ((dwin_page_now == 57) || (dwin_page_now == 69))
 	{
 		return;
 	}
@@ -455,6 +456,11 @@ void pwDisp(uint32_t d)
 
 void timeDisp(uint32_t d)
 {
+	if (dwin_page_now == 69)
+	{
+		return;
+	}
+
 	if(d==0)
 	{
 		
@@ -485,6 +491,10 @@ void timeDisp(uint32_t d)
 
 void TEST_Display(uint16_t data)
 {
+	if (dwin_page_now == 69)
+	{
+		return;
+	}
 	
 	varIconInt(0x2000,data/1000000);
 	varIconInt(0x2001,(data%1000000)/100000);
@@ -496,6 +506,11 @@ void TEST_Display(uint16_t data)
 }
 void TE_Display(uint32_t data)
 {
+	if (dwin_page_now == 69)
+	{
+		return;
+	}
+
 	/*if(dev_mode==0)
 	{
 	varIconInt(0x2001,(data%1000000)/100000);

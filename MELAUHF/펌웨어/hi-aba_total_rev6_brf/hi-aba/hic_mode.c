@@ -652,7 +652,7 @@ void main_hic()
 			if (ckHeader)
 			{
 				// BUGFIX: guard parser buffer against UART noise during simultaneous boot.
-				if (parsCnt < 10)
+				if (parsCnt < PARSBUF_CAPACITY)
 				{
 					parsBuf[parsCnt++] = rxbuf[readCnt];
 				}
@@ -661,7 +661,7 @@ void main_hic()
 					ckHeader = 0;
 					parsCnt = 0;
 				}
-				if (ckHeader && (parsBuf[0] > 10))
+				if (ckHeader && (parsBuf[0] > PARSBUF_MAX_FRAME_LEN))
 				{
 					ckHeader = 0;
 					parsCnt = 0;

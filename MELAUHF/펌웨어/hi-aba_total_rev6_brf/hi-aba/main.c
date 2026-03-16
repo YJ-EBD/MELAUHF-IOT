@@ -90,7 +90,7 @@ U08 TRON_200 = 0;
 U08 sound_v=0;
 
 U08 RIM_pause=0;
-U08 rxbuf[256], parsBuf[10], ckHeader = 0, txBuf[256], eep_s_num = 0;
+U08 rxbuf[256], parsBuf[PARSBUF_CAPACITY], ckHeader = 0, txBuf[256], eep_s_num = 0;
 U08 rx0buf[256], pars0Buf[100], write0Cnt = 0, read0Cnt = 0, pars0Cnt = 0, ck0Header = 0, resCMD = 0, resLen = 0;
 U08 writeCnt = 0, readCnt = 0, parsCnt = 0, init_boot = 0;
 
@@ -134,6 +134,10 @@ uint32_t cur_date=000101;
 
 U08 time_err=0;
 
+#define PW_PROFILE_LEN 40U
+#define PW_PROFILE_MIN 1U
+#define PW_PROFILE_MAX 200U
+
 #define MA5105_FW_BOOT_MARK_EXPECTED \
 	(0x51050000UL ^ \
 	 ((uint32_t)(__DATE__[4]) << 24) ^ \
@@ -142,6 +146,51 @@ U08 time_err=0;
 	 ((uint32_t)(__TIME__[1]) << 8) ^ \
 	 ((uint32_t)(__TIME__[3]) << 4) ^ \
 	 ((uint32_t)(__TIME__[4])))
+
+static U08 pw_profile_is_sane(const U08 *profile)
+{
+	U08 prev = 0;
+	U08 i;
+
+	for (i = 0; i < PW_PROFILE_LEN; i++)
+	{
+		U08 value = profile[i];
+
+		if ((value < PW_PROFILE_MIN) || (value > PW_PROFILE_MAX))
+		{
+			return 0;
+		}
+		if ((i != 0) && (value < prev))
+		{
+			return 0;
+		}
+		prev = value;
+	}
+
+	return 1;
+}
+
+static void pw_profile_restore_default(U08 *profile, uint8_t *eep_profile)
+{
+	U08 i;
+
+	for (i = 0; i < PW_PROFILE_LEN; i++)
+	{
+		U08 value = (U08)((i + 1U) * 5U);
+
+		profile[i] = value;
+		eeprom_update_byte(&eep_profile[i], value);
+		eeprom_busy_wait();
+	}
+}
+
+static void pw_profile_boot_sanitize(U08 *profile, uint8_t *eep_profile)
+{
+	if (!pw_profile_is_sane(profile))
+	{
+		pw_profile_restore_default(profile, eep_profile);
+	}
+}
 
 static U08 ma5105_eeprom_mode_selected(void)
 {
@@ -172,8 +221,11 @@ static void ma5105_force_boot_page7_after_new_firmware(void)
 	}
 
 	// Each newly built firmware image gets a different boot marker.
-	// On the first boot after flashing that image, force the MA5105
-	// registration page7 flow once, then keep normal reboot behavior.
+	// On the first boot after flashing that image, discard any old
+	// page69 curve data, restore the default Body/Face profiles, and
+	// force the MA5105 registration page7 flow once.
+	pw_profile_restore_default(pw_data, PW_VALUE);
+	pw_profile_restore_default(pw_data_face, PW_VALUE_FACE);
 	eeprom_update_dword(&MA5105_FW_BOOT_MARK, MA5105_FW_BOOT_MARK_EXPECTED);
 	eeprom_busy_wait();
 	eeprom_update_byte(&WIFI_BOOT_PAGE61_ONCE, 0);
@@ -193,6 +245,12 @@ SIGNAL(TIMER3_COMPA_vect)
 }
 SIGNAL(INT4_vect)
 {
+	if ((init_boot == 0) || (dwin_page_now == 7))
+	{
+		AC_ON;
+		EIFR = _BV(4);
+		return;
+	}
 	AC_OFF;
 	FAN_OFF;
 	TEC_OFF;
@@ -275,6 +333,8 @@ int main(void)
 	{
 		pw_data_face[i] = eeprom_read_byte(&PW_VALUE_FACE[i]);
 	}
+	pw_profile_boot_sanitize(pw_data, PW_VALUE);
+	pw_profile_boot_sanitize(pw_data_face, PW_VALUE_FACE);
 	EM_SOUND=eeprom_read_byte(&SOUND_MODE);
 	
 	
@@ -283,6 +343,8 @@ int main(void)
 	init_boot = eeprom_read_byte(&INIT_BOOT);
 	if(init_boot==0)
 	{
+		EIMSK &= (uint8_t)~_BV(4);
+		EIFR = _BV(4);
 		pageChange(7);
 		actCode[0]=0x20;
 		actCode[1]=0x20;
@@ -295,9 +357,6 @@ int main(void)
 		while(1)
 		{
 			asm("wdr");
-			// BUGFIX: page7 must stay in DWIN-only minimal mode (all runtime outputs OFF).
-			IOT_mode_force_hw_isolation();
-
 			_delay_ms(10); //(10);
 			
 			while (writeCnt != readCnt)
@@ -305,8 +364,7 @@ int main(void)
 				asm("wdr");
 				if (ckHeader)
 				{
-					// BUGFIX: guard parser buffer against UART noise during simultaneous boot.
-					if (parsCnt < 10)
+					if (parsCnt < PARSBUF_CAPACITY)
 					{
 						parsBuf[parsCnt++] = rxbuf[readCnt];
 					}
@@ -315,7 +373,7 @@ int main(void)
 						ckHeader = 0;
 						parsCnt = 0;
 					}
-					if (ckHeader && (parsBuf[0] > 10))
+					if (ckHeader && (parsBuf[0] > PARSBUF_MAX_FRAME_LEN))
 					{
 						ckHeader = 0;
 						parsCnt = 0;

@@ -164,3 +164,17 @@
   - page63의 Wi-Fi 연결 후 복귀 분기와 ESP UART 상태줄 처리 우선순위를 다시 정리해, 연결 성공 후 61페이지 복귀와 등록/구독 상태 해석이 더 안정적으로 동작하도록 보강했다.
   - page57은 `ABBAS_WEB -> ESP32 -> @ENG|... -> ATmega` 경로를 다시 점검하고, `0xA100~0xA500`, `0xDA10`, `0xDB01`, `0xBB22`가 ESP의 플랜/에너지 값으로 다시 그려지도록 복구했다.
   - page69는 디버깅 단계에서 27개 숫자 VAR ICON(`0x3301~0x3327`)만 `000` 고정 표시로 잠시 단순화해, 기존 엔지니어링 로직과 화면 숫자 덮어쓰기 경로를 분리해서 점검할 수 있게 정리했다.
+
+## 20. MA5105 69페이지 shadow 곡선/디버그 출력/테스트 버튼 동작 정리
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/tron_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/common.h`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/dwin.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/brf_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/hic_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/nam_mode.c`
+- 간단한 설명
+  - MA5105 69페이지는 `pw_data/pw_data_face` 실시간 배열을 직접 흔들지 않고 shadow anchor 9개를 기준으로 표시/저장/Reset을 처리하도록 다시 묶었고, `0xCCCC` 텍스트에 현재 Body/Face 앵커값 로그를 출력하도록 추가했다.
+  - page69는 공통 UI 갱신과 충돌하지 않도록 `0x3301~0x3327` 숫자 VAR ICON 중심으로 분리했고, page62 아이콘 동기화는 62페이지에서만 동작하도록 범위를 좁혔다.
+  - `+/-`는 5단위 증감으로 조정했고, `0x4101~0x4109` 테스트 버튼은 EA2247 61페이지와 같은 방식으로 고정 전력 테스트를 시작하고, 테스트 중 첫 입력은 테스트 정지만 수행하도록 정리했다.
