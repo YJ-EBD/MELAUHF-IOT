@@ -21,7 +21,7 @@ extern U08 startPage;
 
 extern U08 EM_SOUND;
 
-static U08 temp_buf[96];
+static U08 temp_buf[64];
 
 static unsigned short crc_table[256] = {
 	0x0000,0xc0c1,0xc181,0x0140,0xc301,0x03c0,0x0280,0xc241,
@@ -84,7 +84,7 @@ static void TX1_char(unsigned char data)
 static void DWN_TX(uint8_t *data,uint8_t length)
 {
 	unsigned short crc;
-	uint8_t buf[96];
+	uint8_t buf[64];
 	if (length > (uint8_t)(sizeof(buf) - 5))
 	{
 		length = (uint8_t)(sizeof(buf) - 5);
@@ -326,6 +326,13 @@ void SUBSCRIPTION_Render57(const char *plan, const char *range, const char *dday
 	uint16_t planIconId = subscription_plan_icon_id(plan);
 	char remainBuf[6];
 	(void)dday;
+	// Keep every subscription VP write page-scoped. Page69 uses 0x3301~0x3327
+	// for VAR ICON digits, so even the page57 text VPs must not be touched here
+	// unless page57 is actually active.
+	if (dwin_page_now != 57)
+	{
+		return;
+	}
 	if (remainDays < 0)
 	{
 		remainDays = 0;
@@ -345,11 +352,6 @@ void SUBSCRIPTION_Render57(const char *plan, const char *range, const char *dday
 	dwin_write_text(0x3100, range, 21);
 	snprintf(remainBuf, sizeof(remainBuf), "%d", (int)remainDays);
 	dwin_write_text(0x3300, remainBuf, 3);
-	// Keep icon writes page-scoped so runtime pages do not get overwritten.
-	if (dwin_page_now != 57)
-	{
-		return;
-	}
 	// Plan icon remains on 0x2200 (value index 0..4).
 	varIconInt(0x2200, planIconId);
 	// Remaining-days status icon on 0x1000 is configured as selector index.
@@ -722,13 +724,19 @@ void TEXT_Display_ERR_CODE(char *cdata,U08 len)
 void TEXT_Display_Check_Code(U08 d)
 {
 	char cm[]="Invalid Code";
+	char cm_n[]="            ";
+	char cm_ok[]="Valid Code  ";
 	temp_buf[0]=0x82;
 	temp_buf[1]=0x13;
 	temp_buf[2]=0x70;
 	
 	if(d==0)
 	{
-		memset(&temp_buf[3],0x00,12);
+		memcpy(&temp_buf[3],cm_n,12);
+	}
+	else if(d==2)
+	{
+		memcpy(&temp_buf[3],cm_ok,12);
 	}
 	else
 	{
@@ -1283,7 +1291,15 @@ void showKeypad(U08 b)
 }
 void showPasskey(U08 *k)
 {	
-	setPasskeyView(0x1360,k);
+	U08 text[6]={0x20,0x20,0x20,0x20,0x20,0x20};
+	for(int i=0;i<6;i++)
+	{
+		if(k[i]!=0x20)
+		{
+			text[i]=0x2A;
+		}
+	}
+	setTextView(0x1360,(char *)text,6);
 }
 void reflashD_Date(uint32_t d)
 {
@@ -1321,7 +1337,7 @@ void showPasskey_null()
 	engPass[3]=0x20;
 	engPass[4]=0x20;
 	engPass[5]=0x20;
-	setPasskeyView(0x1360,engPass);
+	setTextView(0x1360,(char *)engPass,6);
 }
 void setSelectDate(uint8_t d)
 {

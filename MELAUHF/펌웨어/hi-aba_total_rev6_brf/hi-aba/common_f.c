@@ -5,7 +5,9 @@
 *  Author: imq
 */
 #include "common_f.h"
+#include "tron_mode.h"
 #include "dwin.h"
+#include "IOT_mode.h"
 #include <avr/io.h>
 #include <avr/eeprom.h>
 #include "crc.h"
@@ -172,7 +174,19 @@ void setReady()
 		errDisp();
 
 		TEXT_Display_ERR_CODE("ERR CODE 12", 11);
-		return;
+		while (1)
+		{
+			asm("wdr");
+		}
+	}
+	else if(time_err==2)
+	{
+		errDisp();
+		TEXT_Display_ERR_CODE("ERR CODE 13", 11);
+		while (1)
+		{
+			asm("wdr");
+		}
 	}
 	if (!foot_op)
 	{
@@ -246,11 +260,7 @@ void setStandby()
 		break;
 	}
 
-	// MA5105 (startPage 61) uses a single runtime page (62) for both states.
-	if (startPage == 61)
-	pageChange(62);
-	else
-	pageChange(startPage+2);
+	pageChange(IOT_mode_runtime_page(startPage));
 
 	if (HICmode)
 	{
@@ -287,6 +297,12 @@ void errDisp()
 }
 void setEngMode()
 {
+	if(startPage==61)
+	{
+		pageChange(69);
+		sound_mode_ui(EM_SOUND);
+	}
+	else
 	pageChange(8);
 
 	OCR1A = 0;
@@ -328,6 +344,7 @@ void setEngMode()
 	
 	TEXT_Display_TRIG_mode(foot_op);
 	setMAXPower(MaxPower);
+	j16mode_ui(j16mode);//0 : pump , 1: led
 	engShowBtn();
 	
 	if((startPage != 21 ))
@@ -341,10 +358,21 @@ void setEngMode()
 	
 	if((dev_mode & 0xC0)!=0)
 	eng_show_mode=1;
+	TEXT_Display_eng_testmode(eng_show_mode);
+	if(startPage==61)
+	{
+		ma5105_page69_sync_entry();
+	}
 }
-void setEngMode_Factory()
+void setEngMode_Factory(uint8_t s)
 {
+	if(s==0)
 	pageChange(9);
+	else
+	{
+		pageChange(63);
+		reflashI_Date(ins_date);
+	}
 
 	OCR1A = 0;
 	OUT_OFF;

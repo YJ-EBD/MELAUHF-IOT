@@ -128,3 +128,11 @@
 - 간단한 설명
   - 이번 채팅에서 실제 코드 수정은 MELAUHF ATmega 펌웨어 쪽에만 적용했고, Arduino(ESP) 디렉토리는 동작 경로 확인과 devList 기준점 업데이트만 수행했다.
   - ESP가 송신하는 `@SUB|`, `@P63|`, `@WIFI|`, `@OTA|`, `@ENG|` 프레임 책임은 유지한 채, ATmega 측 수신/페이지 처리 구현 위치만 `IOT_mode.c`로 이동한 상태로 정리했다.
+
+## 18. page57 플랜/에너지 표시 경로 재확인
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - `ABBAS_WEB` 플랜 응답의 `energyJ/energy_j`, `start_date`, `remaining_days`가 ESP에서 `g_assignedEnergyJ`, `g_planStartDate`, `g_planRemainingDays`로 반영된 뒤 `@ENG|A/U/D/M/P/E/R` 라인으로 ATmega page57 표시를 갱신하는 구조를 다시 확인했다.
+  - 이번 채팅의 실제 수정은 ATmega 쪽 `ENG` 수신 안정화였고, Arduino 디렉토리는 코드 변경 없이 값 공급 경로 점검과 devList 업데이트만 반영했다.

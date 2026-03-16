@@ -59,10 +59,9 @@ static volatile U08 sub_uart_ready = 0;
 static volatile U08 sub_uart_len = 0;
 static volatile U08 sub_uart_drop = 0;
 static volatile U08 sub_uart_bracket_mode = 0;
-// ESP text commands stay well under this limit in current protocol
-// (SUB active is the longest form and remains around 43 chars).
-// Keep this compact to preserve SRAM headroom on ATmega128A (4KB).
-#define SUB_UART_LINE_MAX 56
+// Keep enough room for active subscription lines while staying within
+// ATmega128A SRAM limits.
+#define SUB_UART_LINE_MAX 48
 static char sub_uart_line[SUB_UART_LINE_MAX];
 static volatile U08 sub_uart_q_head = 0;
 static volatile U08 sub_uart_q_tail = 0;
@@ -87,14 +86,17 @@ static U08 energy_subscription_exhausted(void);
 static void subscription_ready_pending_arm(void);
 static void subscription_ready_pending_cancel(void);
 static void subscription_ready_pending_tick(void);
+static U08 subscription_uart_line_is_priority(const char *line);
+static U08 energy_parse_line_fast_isr(const char *line);
 
 static volatile U08 p63_scan_req = 0;
 static volatile U08 p63_prev_req = 0;
 static volatile U08 p63_next_req = 0;
 static volatile U16 p63_last_key = 0;
 
-// Runtime key queue depth; 12 is sufficient and keeps SRAM usage bounded.
-#define RKC_UART_Q_DEPTH 12
+// Runtime key queue depth; 8 is sufficient for bursty page-touch forwarding
+// while leaving a little more SRAM headroom on ATmega128A.
+#define RKC_UART_Q_DEPTH 8
 static volatile U08 rkc_uart_q_head = 0;
 static volatile U08 rkc_uart_q_tail = 0;
 static volatile U08 rkc_uart_q_count = 0;
@@ -104,7 +106,9 @@ static U16 rkc_uart_q_key[RKC_UART_Q_DEPTH];
 static volatile U08 p63_rx_state = 0;
 static volatile U08 p63_rx_need = 0;
 static volatile U08 p63_rx_idx = 0;
-static volatile U08 p63_rx_buf[64];
+// Key/touch frames are short; keeping this above observed frame size preserves
+// parser safety while reclaiming SRAM on ATmega128A.
+static volatile U08 p63_rx_buf[48];
 
 static volatile U08 p63_anim_on = 0;
 static U08 p63_anim_visible = 0;
@@ -127,6 +131,7 @@ static U08 p63_wifi_page_last_sent = 0xFF;
 static U08 p63_last_page_seen = 0xFF;
 static U08 p63_boot_resume_page = 0;
 static volatile U08 p63_boot_waiting_status = 0;
+static uint32_t p63_connected_wait_start_sec = 0;
 
 #define WIFI_FIELD_SSID 0
 #define WIFI_FIELD_PW   1
@@ -272,7 +277,7 @@ static const uint16_t page67_varicon_slots[PAGE67_ICON_SLOT_COUNT] PROGMEM = {
 	0xAB07, 0xAB08, 0xAB09, 0xAB10, 0xAB11
 };
 
-#define WIFI_KEY_Q_DEPTH 8
+#define WIFI_KEY_Q_DEPTH 6
 static volatile U08 wifi_key_q_head = 0;
 static volatile U08 wifi_key_q_tail = 0;
 static volatile U08 wifi_key_q_count = 0;
@@ -285,6 +290,7 @@ static U08 page67_anim_shift = 0;
 // Keep fail-safe, but tolerate short ESP-side blocking windows (HTTP/scan bursts).
 #define P63_WIFI_STATUS_NO_SIGNAL_SEC 12U
 #define P63_SCAN_BUSY_HOLD_SEC 12U
+#define P63_CONNECTED_RESTORE_GRACE_SEC 3U
 #define WIFI_CONNECT_ATTEMPT_HOLD_SEC 45U
 // Timer0 tick is ~1225Hz with current Init_Timer0() (16MHz/256/(50+1)).
 // 612 ticks ~= 500ms.
@@ -1510,6 +1516,7 @@ static void p63_wifi_page_apply(U08 connected)
 	{
 		U08 restore = p63_boot_resume_page;
 		U08 targetPage = restore;
+		uint32_t nowSec = p63_now_sec();
 		p63_exit_fail_safe();
 		// Boot race fix: if page68 had to fall back to page63 before first status frame,
 		// restore the intended runtime page only after registration/subscription gates resolve.
@@ -1527,11 +1534,55 @@ static void p63_wifi_page_apply(U08 connected)
 				}
 				p63_wifi_page_last_sent = targetPage;
 				p63_boot_waiting_status = 0;
+				p63_connected_wait_start_sec = 0;
 			}
 			else
 			{
-				p63_wifi_page_last_sent = dwin_page_now;
+				if (p63_connected_wait_start_sec == 0)
+				{
+					p63_connected_wait_start_sec = nowSec;
+				}
+				if ((uint32_t)(nowSec - p63_connected_wait_start_sec) >= P63_CONNECTED_RESTORE_GRACE_SEC)
+				{
+					if ((targetPage == 0) || (targetPage == 0xFF))
+					{
+						targetPage = WIFI_PAGE_CONNECTED;
+					}
+					if ((targetPage != WIFI_PAGE_LIST) && (dwin_page_now != targetPage))
+					{
+						pageChange(targetPage);
+					}
+					p63_wifi_page_last_sent = targetPage;
+					p63_boot_resume_page = targetPage;
+					p63_boot_waiting_status = 0;
+					p63_connected_wait_start_sec = 0;
+				}
+				else
+				{
+					p63_wifi_page_last_sent = dwin_page_now;
+				}
 			}
+			return;
+		}
+		p63_connected_wait_start_sec = 0;
+		if (dwin_page_now == WIFI_PAGE_LIST)
+		{
+			if ((restore == 0) || (restore == 0xFF))
+			{
+				restore = WIFI_PAGE_CONNECTED;
+			}
+			targetPage = restore;
+			if (!subscription_resolve_connected_target_page(restore, &targetPage))
+			{
+				targetPage = WIFI_PAGE_CONNECTED;
+			}
+			if ((targetPage != WIFI_PAGE_LIST) && (dwin_page_now != targetPage))
+			{
+				pageChange(targetPage);
+			}
+			p63_wifi_page_last_sent = targetPage;
+			p63_boot_resume_page = targetPage;
+			p63_boot_waiting_status = 0;
 			return;
 		}
 		if (dwin_page_now == 0)
@@ -1550,6 +1601,7 @@ static void p63_wifi_page_apply(U08 connected)
 	}
 	else
 	{
+		p63_connected_wait_start_sec = 0;
 		if ((dwin_page_now == WIFI_PAGE_SUB_EXPIRED) || (dwin_page_now == WIFI_PAGE_SUB_OFFLINE))
 		{
 			p63_wifi_page_last_sent = dwin_page_now;
@@ -1914,14 +1966,32 @@ static void subscription_show_connected_page(void)
 
 static void registration_restore_registered_page(void)
 {
+	U08 targetPage = p63_boot_resume_page;
+
 	if (dwin_page_now == WIFI_PAGE_REGISTER_WAIT)
 	{
 		wifi_reboot_for_connected_state();
 		return;
 	}
-	if ((dwin_page_now == 0) || (dwin_page_now == 0xFF))
+
+	if ((targetPage == 0) || (targetPage == 0xFF))
 	{
-		subscription_show_connected_page();
+		targetPage = WIFI_PAGE_CONNECTED;
+	}
+
+	if ((dwin_page_now == WIFI_PAGE_LIST) || (dwin_page_now == 0) || (dwin_page_now == 0xFF))
+	{
+		if (targetPage == WIFI_PAGE_CONNECTED)
+		{
+			subscription_show_connected_page();
+		}
+		else if (dwin_page_now != targetPage)
+		{
+			pageChange(targetPage);
+			p63_wifi_page_last_sent = targetPage;
+			p63_boot_resume_page = targetPage;
+			p63_boot_waiting_status = 0;
+		}
 	}
 }
 
@@ -2499,6 +2569,7 @@ static void energy_render_page57(void)
 {
 	char buf[24];
 	uint32_t remainPercent = energy_calc_remaining_percent();
+
 	snprintf(buf, sizeof(buf), "%lu", (unsigned long)g_energy_assigned_j);
 	dwin_write_text(0xA100, buf, 20);
 	snprintf(buf, sizeof(buf), "%lu", (unsigned long)g_energy_used_j);
@@ -3051,6 +3122,96 @@ static void ota_parse_line(char *line)
 		page71_cache_esp_version(currentTok);
 		ota_enter_prompt(currentTok, targetTok);
 	}
+}
+
+static U08 subscription_uart_line_is_priority(const char *line)
+{
+	if (line == 0)
+	{
+		return 0U;
+	}
+
+	if ((strncmp(line, "REG|", 4) == 0) ||
+	    (strncmp(line, "SUB|", 4) == 0) ||
+	    (strncmp(line, "ENG|", 4) == 0) ||
+	    (strncmp(line, "P63|W|", 6) == 0) ||
+	    (strncmp(line, "WIFI|R|", 7) == 0))
+	{
+		return 1U;
+	}
+
+	return 0U;
+}
+
+static U08 energy_parse_line_fast_isr(const char *line)
+{
+	uint32_t value = 0U;
+	uint8_t i = 6U;
+	char key;
+
+	if (line == 0)
+	{
+		return 0U;
+	}
+	if ((line[0] != 'E') || (line[1] != 'N') || (line[2] != 'G') ||
+	    (line[3] != '|') || (line[5] != '|'))
+	{
+		return 0U;
+	}
+
+	key = line[4];
+	if ((line[i] < '0') || (line[i] > '9'))
+	{
+		return 0U;
+	}
+
+	while ((line[i] >= '0') && (line[i] <= '9'))
+	{
+		value = (uint32_t)(value * 10U) + (uint32_t)(line[i] - '0');
+		i++;
+	}
+	if (line[i] != 0)
+	{
+		return 0U;
+	}
+
+	if (key == 'A')
+	{
+		g_energy_assigned_j = value;
+		g_energy_sync_seen_mask |= ENERGY_SYNC_SEEN_ASSIGNED;
+	}
+	else if (key == 'U')
+	{
+		g_energy_used_j = value;
+		g_energy_sync_seen_mask |= ENERGY_SYNC_SEEN_USED;
+	}
+	else if (key == 'D')
+	{
+		g_energy_daily_avg_j = value;
+	}
+	else if (key == 'M')
+	{
+		g_energy_monthly_avg_j = value;
+	}
+	else if (key == 'P')
+	{
+		g_energy_projected_j = value;
+	}
+	else if (key == 'E')
+	{
+		g_energy_elapsed_days = (uint16_t)value;
+	}
+	else if (key == 'R')
+	{
+		g_energy_remaining_days = (uint16_t)value;
+	}
+	else
+	{
+		return 0U;
+	}
+
+	g_energy_dirty = 1U;
+	return 1U;
 }
 
 static void subscription_uart_pump_lines(void)
@@ -3808,20 +3969,36 @@ static inline void subscription_uart_isr_feed(uint8_t c)
 		if ((!sub_uart_drop) && (sub_uart_len > 0))
 		{
 			U08 copyLen;
+			U08 isPriority;
 			sub_uart_line[sub_uart_len] = 0;
-			if (sub_uart_q_count < SUB_UART_Q_DEPTH)
+			if (energy_parse_line_fast_isr((const char *)sub_uart_line))
 			{
-				copyLen = sub_uart_len;
-				if (copyLen >= sizeof(sub_uart_queue[0]))
-				{
-					copyLen = sizeof(sub_uart_queue[0]) - 1;
-				}
-				memcpy(sub_uart_queue[sub_uart_q_head], sub_uart_line, copyLen);
-				sub_uart_queue[sub_uart_q_head][copyLen] = 0;
-				sub_uart_q_head = (U08)((sub_uart_q_head + 1) % SUB_UART_Q_DEPTH);
-				sub_uart_q_count++;
-				sub_uart_ready = 1;
+				subscription_uart_reset_line();
+				return;
 			}
+			isPriority = subscription_uart_line_is_priority(sub_uart_line);
+			copyLen = sub_uart_len;
+			if (copyLen >= sizeof(sub_uart_queue[0]))
+			{
+				copyLen = sizeof(sub_uart_queue[0]) - 1;
+			}
+			if (sub_uart_q_count >= SUB_UART_Q_DEPTH)
+			{
+				// Preserve queue room for REG/SUB/WIFI status lines that decide
+				// whether page63 can leave its waiting state.
+				if (!isPriority)
+				{
+					subscription_uart_reset_line();
+					return;
+				}
+				sub_uart_q_tail = (U08)((sub_uart_q_tail + 1) % SUB_UART_Q_DEPTH);
+				sub_uart_q_count = (U08)(SUB_UART_Q_DEPTH - 1);
+			}
+			memcpy(sub_uart_queue[sub_uart_q_head], sub_uart_line, copyLen);
+			sub_uart_queue[sub_uart_q_head][copyLen] = 0;
+			sub_uart_q_head = (U08)((sub_uart_q_head + 1) % SUB_UART_Q_DEPTH);
+			sub_uart_q_count++;
+			sub_uart_ready = 1;
 		}
 		subscription_uart_reset_line();
 		return;
@@ -4087,7 +4264,70 @@ void IOT_mode_reset_boot_state(U08 bootResumePage)
     p63_wifi_page_last_sent = dwin_page_now;
     p63_boot_resume_page = bootResumePage;
     p63_boot_waiting_status = 0;
+    p63_connected_wait_start_sec = 0;
     p63_scan_busy = 0;
     p63_scan_busy_until_sec = 0;
     p63_fail_safe_stop = 0;
+}
+
+U08 IOT_mode_prepare_boot_resume_page(U08 fallbackPage)
+{
+	U08 bootResumePage = fallbackPage;
+
+	if (bootResumePage == 0)
+	{
+		bootResumePage = 1;
+	}
+
+	if (eeprom_read_byte(&WIFI_BOOT_PAGE61_ONCE) != 0)
+	{
+		eeprom_update_byte(&WIFI_BOOT_PAGE61_ONCE, 0);
+		eeprom_busy_wait();
+		bootResumePage = IOT_MODE_PAGE_CONNECTED;
+	}
+
+	IOT_mode_reset_boot_state(bootResumePage);
+	return bootResumePage;
+}
+
+void IOT_mode_wait_for_runtime_ready(void)
+{
+	while (subscription_isolation_page_active())
+	{
+		asm("wdr");
+		subscription_ui_tick();
+		subscription_hw_isolation_tick();
+		_delay_ms(10);
+	}
+}
+
+void IOT_mode_apply_runtime_hw_gate(void)
+{
+	if (subscription_hw_safe_page_active())
+	{
+		subscription_force_hw_isolation();
+		return;
+	}
+
+	g_hw_output_lock = 0;
+	AC_ON;
+	TIME_START;
+}
+
+U08 IOT_mode_runtime_outputs_enabled(void)
+{
+	return subscription_hw_safe_page_active() ? 0U : 1U;
+}
+
+U08 IOT_mode_runtime_page(U08 startPageValue)
+{
+	if (startPageValue == 0)
+	{
+		return 1;
+	}
+	if (startPageValue == IOT_MODE_PAGE_CONNECTED)
+	{
+		return IOT_MODE_PAGE_RUNTIME;
+	}
+	return (U08)(startPageValue + 2U);
 }

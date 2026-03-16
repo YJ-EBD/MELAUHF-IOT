@@ -10,6 +10,7 @@
 #define TRON_MODE_H_
 
 void main_tron();
+void ma5105_page69_sync_entry(void);
 
 
 

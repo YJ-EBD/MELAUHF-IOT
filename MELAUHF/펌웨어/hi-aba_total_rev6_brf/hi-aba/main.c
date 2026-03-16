@@ -55,6 +55,7 @@ EEMEM unsigned char SOUND_VOLUME=3;
 
 EEMEM unsigned char INIT_BOOT=0;
 EEMEM unsigned char WIFI_BOOT_PAGE61_ONCE = 0;
+EEMEM uint32_t MA5105_FW_BOOT_MARK = 0;
 
 EEMEM uint8_t PW_VALUE[40] = {5, 10, 15, 20, 25,
 	30, 35, 40, 45, 50,
@@ -133,6 +134,54 @@ uint32_t cur_date=000101;
 
 U08 time_err=0;
 
+#define MA5105_FW_BOOT_MARK_EXPECTED \
+	(0x51050000UL ^ \
+	 ((uint32_t)(__DATE__[4]) << 24) ^ \
+	 ((uint32_t)(__DATE__[5]) << 16) ^ \
+	 ((uint32_t)(__TIME__[0]) << 12) ^ \
+	 ((uint32_t)(__TIME__[1]) << 8) ^ \
+	 ((uint32_t)(__TIME__[3]) << 4) ^ \
+	 ((uint32_t)(__TIME__[4])))
+
+static U08 ma5105_eeprom_mode_selected(void)
+{
+	U08 storedMode = eeprom_read_byte(&OP_MODE);
+	U08 storedModeCk = eeprom_read_byte(&OP_MODE_CK);
+
+	if (((storedMode + storedModeCk) & 0xff) != 0)
+	{
+		return 0;
+	}
+
+	return (((storedMode & 0x3f) == 8) ? 1 : 0);
+}
+
+static void ma5105_force_boot_page7_after_new_firmware(void)
+{
+	uint32_t storedMark;
+
+	if (!ma5105_eeprom_mode_selected())
+	{
+		return;
+	}
+
+	storedMark = eeprom_read_dword(&MA5105_FW_BOOT_MARK);
+	if (storedMark == MA5105_FW_BOOT_MARK_EXPECTED)
+	{
+		return;
+	}
+
+	// Each newly built firmware image gets a different boot marker.
+	// On the first boot after flashing that image, force the MA5105
+	// registration page7 flow once, then keep normal reboot behavior.
+	eeprom_update_dword(&MA5105_FW_BOOT_MARK, MA5105_FW_BOOT_MARK_EXPECTED);
+	eeprom_busy_wait();
+	eeprom_update_byte(&WIFI_BOOT_PAGE61_ONCE, 0);
+	eeprom_busy_wait();
+	eeprom_update_byte(&INIT_BOOT, 0);
+	eeprom_busy_wait();
+}
+
 SIGNAL(TIMER3_COMPA_vect)
 {
 	// sec_cnt++;
@@ -166,6 +215,7 @@ int main(void)
 	U08 ttChecksum1 = 0;
 	U08 ttChecksum2 = 0;
 	U08 bootResumePage = 0;
+	U08 runtimeOutputsEnabled = 0;
 	
 	U08 actCode[6]={0x20,0x20,0x20,0x20,0x20,0x20};
 	
@@ -209,6 +259,8 @@ int main(void)
 
 	WDTCR = 0x18;
 	WDTCR = 0x0f;
+
+	ma5105_force_boot_page7_after_new_firmware();
 
 	
 	foot_op = eeprom_read_byte(&TRIG_MODE);
@@ -589,18 +641,7 @@ int main(void)
 			{
 				sound_v=eeprom_read_byte(&SOUND_VOLUME);
 			}
-			if (startPage == 0)
-			{
-				startPage = 1;
-			}
-			bootResumePage = startPage;
-			if (eeprom_read_byte(&WIFI_BOOT_PAGE61_ONCE) != 0)
-			{
-				eeprom_update_byte(&WIFI_BOOT_PAGE61_ONCE, 0);
-				eeprom_busy_wait();
-				bootResumePage = IOT_MODE_PAGE_CONNECTED;
-			}
-			IOT_mode_reset_boot_state(bootResumePage);
+			bootResumePage = IOT_mode_prepare_boot_resume_page(startPage);
 
 				if (!IOT_mode_run_boot_checks(bootResumePage))
 				{
@@ -688,39 +729,21 @@ int main(void)
 		if (temp_err)
 		TEXT_Display_TEMPERATURE(999);
 
-		// Pages 63~67 must stay in DWIN-only isolation; defer runtime HW init
-		// until the UI exits Wi-Fi setup/connecting pages.
-		while (IOT_mode_isolation_page_active())
-		{
-			asm("wdr");
-			subscription_ui_tick();
-			subscription_hw_isolation_tick();
-			_delay_ms(10);
-		}
-
+		IOT_mode_wait_for_runtime_ready();
 		ETIFR = ETIFR | _BV(4);
-		g_hw_output_lock = IOT_mode_hw_safe_page_active() ? 1U : 0U;
-		if (!IOT_mode_hw_safe_page_active())
-		{
-			AC_ON;
-			TIME_START;
-		}
-		else
-		{
-			// BUGFIX: keep outputs OFF when boot lands on 61/63~68 safety pages.
-			IOT_mode_force_hw_isolation();
-		}
+		IOT_mode_apply_runtime_hw_gate();
+		runtimeOutputsEnabled = IOT_mode_runtime_outputs_enabled();
 
 	LED_WHITE(WHITE_BRI);
 	
 	#if !DUAL_HAND
-	if((j16mode==0) && (!IOT_mode_hw_safe_page_active()))
+	if((j16mode==0) && runtimeOutputsEnabled)
 	W_PUMP_ON;
 	#endif
 	
 	// audioPlay();
 	
-	if (!IOT_mode_hw_safe_page_active())
+	if (runtimeOutputsEnabled)
 	FAN_ON;
 	
 	if(j16mode==1)

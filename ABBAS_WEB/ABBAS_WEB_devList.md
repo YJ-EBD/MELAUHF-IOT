@@ -138,3 +138,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 MELAUHF ATmega 펌웨어에서 Wi-Fi/OTA/구독/63~74페이지 처리 블록을 `IOT_mode.c`로 분리하는 구조 정리였고, ABBAS_WEB 기능 코드는 변경하지 않았다.
   - WEB API 스펙은 그대로 유지되며, 서버는 기존처럼 구독/OTA 상태를 내려주고 ATmega 쪽 모듈 경계만 정리된 기준으로 devList를 갱신했다.
+
+## 18. page57 플랜/에너지 표시 연동 점검 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `router/pages.py`, `DB/device_repo.py`
+- 간단한 설명
+  - 이번 채팅에서는 WEB 플랜 페이지 payload가 여전히 `status_code`, `plan`, `start_date`, `expiry_date`, `remaining_days`, `energyJ/energy_j`를 내려주고 있음을 다시 확인했다.
+  - 실제 수정은 MELAUHF ATmega의 `@ENG|...` 수신 안정화였고, ABBAS_WEB 디렉토리는 기능 변경 없이 연동 경로 확인과 devList 기준점만 업데이트했다.

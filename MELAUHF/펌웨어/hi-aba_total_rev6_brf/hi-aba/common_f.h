@@ -30,7 +30,7 @@ void setStandby();
 
 void errDisp();
 void setEngMode();
-void setEngMode_Factory();
+void setEngMode_Factory(uint8_t s);
 void exitEngMode();
 void Buzzer_ONOFF();
 void hexToString(U08 *in, U08 *out, U08 len);

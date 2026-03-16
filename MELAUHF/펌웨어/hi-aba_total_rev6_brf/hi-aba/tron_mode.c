@@ -30,7 +30,6 @@
 #define MA5105_PAGE69_KEY_RESET 0x4019
 #define MA5105_PAGE69_KEY_SAVE  0x4020
 #define MA5105_PAGE69_KEY_PAGE70_HOLD 0xDDAA
-#define MA5105_PAGE69_ICON2301_HIDE 1
 #define MA5105_PAGE69_MIN_W 5
 #define MA5105_PAGE69_MAX_W 200
 #define MA5105_PAGE69_STEP_W 5
@@ -100,22 +99,22 @@ static U08 ma5105_mode(void)
 	return (startPage == 61);
 }
 
-static U08 ma5105_page62_secret_cnt = 0;
 static U08 ma5105_page69_icon0 = 0;
 static U08 ma5105_page69_icon1 = 0;
 static U08 ma5105_page69_icon2 = 0;
 static U08 ma5105_page69_icon3 = 0;
 static U08 ma5105_page69_icon1000 = 0;
-static U08 ma5105_page69_icon2301 = MA5105_PAGE69_ICON2301_HIDE;
-static U16 ma5105_page69_values[MA5105_PAGE69_SLOT_COUNT];
-static U16 ma5105_page69_values_body[MA5105_PAGE69_SLOT_COUNT];
-static U16 ma5105_page69_values_face[MA5105_PAGE69_SLOT_COUNT];
 static const U08 ma5105_page69_curve_points[MA5105_PAGE69_SLOT_COUNT] = {0, 4, 9, 14, 19, 24, 29, 34, 39};
-static U08 ma5105_page69_profiles_ready = 0;
 static U08 ma5105_page69_test_on = 0;
 static U08 ma5105_page69_test_slot = 0xFF;
 static U08 ma5105_page69_prev_eng_show = 0;
-static void ma5105_page69_profiles_load_once(void);
+static void ma5105_set_mode_icon(void);
+static void ma5105_set_sound_icon(void);
+static void ma5105_toggle_page62_cool_state(void);
+static void ma5105_set_run_icon(void);
+static void ma5105_set_preset_default_icons(void);
+static void ma5105_set_preset_icons(U08 key);
+static void ma5105_sync_page62_ui(void);
 // [PAGE70 FEATURE] local state for hold-to-enter and numeric password input.
 static U08 ma5105_page70_hold_active = 0;
 static U16 ma5105_page70_hold_ticks = 0;
@@ -127,48 +126,416 @@ static void ma5105_page70_tick_10ms(void);
 static U08 ma5105_page70_handle_hold_key(U16 keyCode);
 static U08 ma5105_page70_handle_key(U16 keyCode);
 
-// Sequence copy of legacy hidden key logic: A, A, B, B, A, A.
-static U08 ma5105_page62_secret_step(U16 keyCode)
+static U08 *ma5105_page69_curve_ptr(U08 face_mode)
+{
+	if (face_mode)
+	return pw_data_face;
+	return pw_data;
+}
+
+static U08 ma5105_page69_curve_value(U08 face_mode, U08 slot)
+{
+	U08 *curve = ma5105_page69_curve_ptr(face_mode);
+	return curve[ma5105_page69_curve_points[slot]];
+}
+
+static U08 ma5105_page62_action_from_key(U16 keyCode, U08 *action)
 {
 	if (keyCode == MA5105_PAGE62_SECRET_KEY_A)
 	{
-		if (ma5105_page62_secret_cnt < 2)
-		{
-			ma5105_page62_secret_cnt++;
-		}
-		else if (ma5105_page62_secret_cnt > 3)
-		{
-			ma5105_page62_secret_cnt++;
-			if (ma5105_page62_secret_cnt == 6)
-			{
-				ma5105_page62_secret_cnt = 0;
-				return 1;
-			}
-		}
-		else
-		{
-			ma5105_page62_secret_cnt = 0;
-		}
+		*action = 0x15;
+		return 1;
 	}
 	else if (keyCode == MA5105_PAGE62_SECRET_KEY_B)
 	{
-		if (ma5105_page62_secret_cnt > 1)
+		*action = 0x16;
+		return 1;
+	}
+
+	switch ((U08)keyCode)
+	{
+		case 0x01:
+		*action = 0x06;
+		return 1;
+		case 0x02:
+		*action = 0x07;
+		return 1;
+		case 0x03:
+		*action = 0x01;
+		return 1;
+		case 0x04:
+		*action = 0x02;
+		return 1;
+		case 0x05:
+		*action = 0x03;
+		return 1;
+		case 0x06:
+		*action = 0x04;
+		return 1;
+		case 0x07:
+		*action = 0x05;
+		return 1;
+		case 0x08:
+		*action = 0x08;
+		return 1;
+		case 0x09:
+		*action = 0x10;
+		return 1;
+		case 0x0A:
+		case 0x10:
+		*action = 0x11;
+		return 1;
+		case 0x0B:
+		case 0x11:
+		*action = 0x12;
+		return 1;
+		case 0x0C:
+		case 0x12:
+		*action = 0x13;
+		return 1;
+		case 0x0D:
+		case 0x13:
+		*action = 0x14;
+		return 1;
+		case 0x14:
+		*action = 0x24;
+		return 1;
+		case 0x15:
+		*action = 0x09;
+		return 1;
+		case 0x16:
+		*action = 0x17;
+		return 1;
+		case 0x18:
+		case 0x19:
+		case 0x1A:
+		case 0x1B:
+		case 0x1C:
+		case 0x1D:
+		case 0x1E:
+		case 0x1F:
+		case 0x20:
+		case 0x21:
+		case 0x22:
+		case 0x23:
+		*action = (U08)keyCode;
+		return 1;
+		case 0x58:
+		*action = 0x58;
+		return 1;
+		default:
+		break;
+	}
+	return 0;
+}
+
+static U08 ma5105_page62_handle_action(U08 action)
+{
+	switch (action)
+	{
+		case 0x01:
+		if(body_face)
 		{
-			if (ma5105_page62_secret_cnt < 4)
+			if (opower < 80)
+			opower += MinPower;
+		}
+		else
+		{
+			if (opower < MaxPower)
+			opower += MinPower;
+		}
+		if (selectMem != 0)
+		{
+			selectMem = 0;
+			MEM_Display(selectMem);
+		}
+		pwDisp(opower);
+		ma5105_set_preset_default_icons();
+		break;
+		case 0x02:
+		if (opower > MinPower)
+		opower -= MinPower;
+		if (selectMem != 0)
+		{
+			selectMem = 0;
+			MEM_Display(selectMem);
+		}
+		pwDisp(opower);
+		ma5105_set_preset_default_icons();
+		break;
+		case 0x03:
+		if ((otime % 60) != 0)
+		otime = (otime - (otime % 60));
+		if (otime < (90 * 60))
+		otime += 60;
+		settime = otime;
+		if (selectMem != 0)
+		{
+			selectMem = 0;
+			MEM_Display(selectMem);
+		}
+		timeDisp(otime);
+		ma5105_set_preset_default_icons();
+		break;
+		case 0x04:
+		if ((otime % 60) != 0)
+		{
+			otime = (otime - (otime % 60));
+			if (otime < 60)
+			otime = 60;
+		}
+		else
+		{
+			if (otime > 60)
+			otime -= 60;
+		}
+		settime = otime;
+		if (selectMem != 0)
+		{
+			selectMem = 0;
+			MEM_Display(selectMem);
+		}
+		timeDisp(otime);
+		ma5105_set_preset_default_icons();
+		break;
+		case 0x05:
+		Buzzer_ONOFF();
+		ma5105_set_sound_icon();
+		break;
+		case 0x06:
+		if (energy_subscription_run_key_guard())
+		{
+			ma5105_set_run_icon();
+			break;
+		}
+		if (opPage & 0x02)
+		{
+			setStandby();
+			opPage = 1;
+		}
+		else
+		{
+			if (total_time >= lim_time)
 			{
-				ma5105_page62_secret_cnt++;
+				errDisp();
+				TEXT_Display_ERR_CODE("ERR CODE 02", 11);
 			}
 			else
 			{
-				ma5105_page62_secret_cnt = 0;
+				if ((lsm6d_fail == 1) && (moving_sensing == 1))
+				{
+					errDisp();
+					TEXT_Display_ERR_CODE("ERR CODE 03", 11);
+				}
+				else
+				{
+					setReady();
+					opPage = 2;
+				}
+			}
+		}
+		ma5105_set_run_icon();
+		old_totalEnergy = totalEnergy;
+		TE_Display(old_totalEnergy);
+		energy_uart_publish_run_event((opPage & 0x02) ? 1U : 0U, totalEnergy);
+		break;
+		case 0x07:
+		totalEnergy = 0;
+		old_totalEnergy = 0;
+		TE_Display(old_totalEnergy);
+		break;
+		case 0x08:
+		if(body_face==0)
+		{
+			sBody_pw=opower;
+			opower=sFace_pw;
+			body_face=1;
+			pwDisp(opower);
+			if (selectMem != 0)
+			{
+				selectMem = 0;
+				MEM_Display(selectMem);
+			}
+		}
+		ma5105_set_mode_icon();
+		ma5105_set_preset_default_icons();
+		break;
+		case 0x09:
+		if(body_face==1)
+		{
+			sFace_pw=opower;
+			opower=sBody_pw;
+			body_face=0;
+			pwDisp(opower);
+			if (selectMem != 0)
+			{
+				selectMem = 0;
+				MEM_Display(selectMem);
+			}
+		}
+		ma5105_set_mode_icon();
+		ma5105_set_preset_default_icons();
+		break;
+		case 0x10:
+		if(body_face)
+		{
+			opower=30;
+			otime = 10 * 60;
+		}
+		else
+		{
+			opower=110;
+			otime = 15 * 60;
+		}
+		settime = otime;
+		selectMem = 1;
+		MEM_Display(selectMem);
+		pwDisp(opower);
+		timeDisp(otime);
+		ma5105_set_preset_icons(0x09);
+		break;
+		case 0x11:
+		if(body_face)
+		{
+			opower=40;
+			otime = 10 * 60;
+		}
+		else
+		{
+			opower=120;
+			otime = 15 * 60;
+		}
+		settime = otime;
+		selectMem = 2;
+		MEM_Display(selectMem);
+		pwDisp(opower);
+		timeDisp(otime);
+		ma5105_set_preset_icons(0x10);
+		break;
+		case 0x12:
+		if(body_face)
+		{
+			opower=50;
+			otime = 10 * 60;
+		}
+		else
+		{
+			opower=130;
+			otime = 15 * 60;
+		}
+		settime = otime;
+		selectMem = 3;
+		MEM_Display(selectMem);
+		pwDisp(opower);
+		timeDisp(otime);
+		ma5105_set_preset_icons(0x11);
+		break;
+		case 0x13:
+		if(body_face)
+		{
+			opower=60;
+			otime = 10 * 60;
+		}
+		else
+		{
+			opower=140;
+			otime = 15 * 60;
+		}
+		settime = otime;
+		selectMem = 4;
+		MEM_Display(selectMem);
+		pwDisp(opower);
+		timeDisp(otime);
+		ma5105_set_preset_icons(0x12);
+		break;
+		case 0x14:
+		if(body_face)
+		{
+			opower=80;
+			otime = 10 * 60;
+		}
+		else
+		{
+			opower=150;
+			otime = 15 * 60;
+		}
+		settime = otime;
+		selectMem = 5;
+		MEM_Display(selectMem);
+		pwDisp(opower);
+		timeDisp(otime);
+		ma5105_set_preset_icons(0x13);
+		break;
+		case 0x15:
+		if (enc_cnt < 2)
+		enc_cnt++;
+		else if (enc_cnt > 3)
+		{
+			enc_cnt++;
+			if (enc_cnt == 6)
+			{
+				enc_cnt = 0;
+				setEngMode();
 			}
 		}
 		else
 		{
-			ma5105_page62_secret_cnt = 0;
+			enc_cnt = 0;
 		}
+		break;
+		case 0x16:
+		if (enc_cnt > 1)
+		{
+			if (enc_cnt < 4)
+			enc_cnt++;
+			else
+			enc_cnt = 0;
+		}
+		else
+		enc_cnt = 0;
+		break;
+		case 0x17:
+		ma5105_toggle_page62_cool_state();
+		break;
+		case 0x18:
+		if(sound_v<9)
+		sound_v++;
+		Audio_Set(sound_v);
+		ma5105_set_sound_icon();
+		break;
+		case 0x19:
+		if(sound_v>0)
+		sound_v--;
+		Audio_Set(sound_v);
+		ma5105_set_sound_icon();
+		break;
+		case 0x1A:
+		case 0x1B:
+		case 0x1C:
+		case 0x1D:
+		case 0x1E:
+		case 0x1F:
+		case 0x20:
+		case 0x21:
+		case 0x22:
+		case 0x23:
+		sound_v = action - 0x1a;
+		Audio_Set(sound_v);
+		ma5105_set_sound_icon();
+		break;
+		case 0x24:
+		pageChange(57);
+		break;
+		case 0x58:
+		pageChange(62);
+		_delay_ms(80);
+		ma5105_sync_page62_ui();
+		break;
+		default:
+		return 0;
 	}
-	return 0;
+
+	return 1;
 }
 
 static void ma5105_set_mode_icon(void)
@@ -442,6 +809,7 @@ static U08 ma5105_page70_handle_key(U16 keyCode)
 	{
 		ma5105_page70_reset_state();
 		pageChange(MA5105_PAGE69_ID);
+		ma5105_page69_sync_entry();
 		return 1;
 	}
 
@@ -483,196 +851,72 @@ static U08 ma5105_page70_handle_key(U16 keyCode)
 	return 0;
 }
 
+static void UpdateVarIcon3Digit(U16 addr_100s, U16 addr_10s, U16 addr_1s, U16 value)
+{
+	if (value > 999)
+	value = 999;
+	varIconInt(addr_100s, (value / 100) % 10);
+	varIconInt(addr_10s, (value / 10) % 10);
+	varIconInt(addr_1s, value % 10);
+}
+
+static void ma5105_page69_write_legacy_value(U08 slot, U16 value)
+{
+	// Keep the original engineering data-view values in sync as well.
+	// The shipped MA5105 HMI assets still expose 0x1F00~0x1F10 entries,
+	// so mirroring both paths avoids mismatches between HMI revisions.
+	setPwValue(slot, value);
+}
+
 static void ma5105_page69_write_value(U08 slot)
 {
-	U16 value;
-	value = ma5105_page69_values[slot];
-	varIconInt(ma5105_page69_slots[slot].icon_hundreds, (value / 100) % 10);
-	varIconInt(ma5105_page69_slots[slot].icon_tens, (value / 10) % 10);
-	varIconInt(ma5105_page69_slots[slot].icon_ones, value % 10);
-}
-
-static U16 ma5105_page69_sanitize_value(U16 value, U08 slot)
-{
-	if (value < MA5105_PAGE69_MIN_W)
-	return ma5105_page69_slots[slot].init_w;
-	if (value > MA5105_PAGE69_MAX_W)
-	return ma5105_page69_slots[slot].init_w;
-	if ((value % MA5105_PAGE69_STEP_W) != 0)
-	return ma5105_page69_slots[slot].init_w;
-	return value;
-}
-
-static void ma5105_page69_sync_curve_from_values(U08 face_mode, U16 *src)
-{
-	int start_v;
-	int end_v;
-	int diff;
-	int value;
-	U08 seg;
-	U08 step;
-	U08 i;
-	U08 *curve;
-
-	curve = face_mode ? pw_data_face : pw_data;
-	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
-	{
-		U08 idx = ma5105_page69_curve_points[i];
-		curve[idx] = (U08)ma5105_page69_sanitize_value(src[i], i);
-	}
-	// Keep interpolation local to avoid calling pw_auto_cal() on page69 key path.
-	start_v = curve[0];
-	end_v = curve[4];
-	diff = end_v - start_v;
-	for (i = 1; i < 4; i++)
-	{
-		value = start_v + ((diff * i + ((diff >= 0) ? 2 : -2)) / 4);
-		if (value < 0)
-		value = 0;
-		else if (value > 255)
-		value = 255;
-		curve[i] = (U08)value;
-	}
-	for (seg = 0; seg < 7; seg++)
-	{
-		U08 seg_start_idx = 4 + (seg * 5);
-		U08 seg_end_idx = seg_start_idx + 5;
-		start_v = curve[seg_start_idx];
-		end_v = curve[seg_end_idx];
-		diff = end_v - start_v;
-		for (step = 1; step < 5; step++)
-		{
-			value = start_v + ((diff * step + ((diff >= 0) ? 2 : -2)) / 5);
-			if (value < 0)
-			value = 0;
-			else if (value > 255)
-			value = 255;
-			curve[seg_start_idx + step] = (U08)value;
-		}
-		asm("wdr");
-	}
-}
-
-static void ma5105_page69_persist_curve_eeprom(U08 face_mode)
-{
-	U08 i;
-	U08 *curve;
-
-	curve = face_mode ? pw_data_face : pw_data;
-	for (i = 0; i < 40; i++)
-	{
-		if (face_mode)
-		eeprom_update_byte(&PW_VALUE_FACE[i], curve[i]);
-		else
-		eeprom_update_byte(&PW_VALUE[i], curve[i]);
-		eeprom_busy_wait();
-		if ((i & 0x07) == 0)
-		asm("wdr");
-	}
-}
-
-static void ma5105_page69_load_profile_from_eeprom(U08 face_mode, U16 *dst)
-{
-	U08 i;
-	U08 *curve;
-	curve = face_mode ? pw_data_face : pw_data;
-	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
-	{
-		U08 idx = ma5105_page69_curve_points[i];
-		U08 raw = curve[idx];
-		dst[i] = ma5105_page69_sanitize_value((U16)raw, i);
-	}
-}
-
-static void ma5105_page69_save_profile_to_eeprom(U08 face_mode, U16 *src)
-{
-	U08 i;
-	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
-	{
-		U08 idx = ma5105_page69_curve_points[i];
-		U16 value = ma5105_page69_sanitize_value(src[i], i);
-		if (face_mode)
-		eeprom_update_byte(&PW_VALUE_FACE[idx], (U08)value);
-		else
-		eeprom_update_byte(&PW_VALUE[idx], (U08)value);
-		eeprom_busy_wait();
-		asm("wdr");
-	}
-}
-
-static void ma5105_page69_profiles_load_once(void)
-{
-	if (ma5105_page69_profiles_ready)
-	return;
-	ma5105_page69_load_profile_from_eeprom(0, ma5105_page69_values_body);
-	ma5105_page69_load_profile_from_eeprom(1, ma5105_page69_values_face);
-	ma5105_page69_profiles_ready = 1;
-}
-
-static void ma5105_page69_store_active_to_runtime_values_only(void)
-{
-	U08 i;
-	U16 *dst;
-	ma5105_page69_profiles_load_once();
-	dst = body_face ? ma5105_page69_values_face : ma5105_page69_values_body;
-	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
-	{
-		dst[i] = ma5105_page69_sanitize_value(ma5105_page69_values[i], i);
-		asm("wdr");
-	}
-}
-
-static void ma5105_page69_store_active_to_runtime(void)
-{
-	ma5105_page69_store_active_to_runtime_values_only();
-	ma5105_page69_sync_curve_from_values(body_face ? 1 : 0,
-		body_face ? ma5105_page69_values_face : ma5105_page69_values_body);
-}
-
-static void ma5105_page69_apply_runtime_for_mode(U08 face_mode)
-{
-	U08 i;
-	U16 *src;
-	ma5105_page69_profiles_load_once();
-	src = face_mode ? ma5105_page69_values_face : ma5105_page69_values_body;
-	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
-	{
-		ma5105_page69_values[i] = ma5105_page69_sanitize_value(src[i], i);
-		ma5105_page69_write_value(i);
-	}
+	U16 value = ma5105_page69_curve_value(body_face ? 1 : 0, slot);
+	ma5105_page69_write_legacy_value(slot, value);
+	UpdateVarIcon3Digit(
+		ma5105_page69_slots[slot].icon_hundreds,
+		ma5105_page69_slots[slot].icon_tens,
+		ma5105_page69_slots[slot].icon_ones,
+		0);
 }
 
 static void ma5105_page69_reset_active_profile(void)
 {
-	U08 i;
-	U08 face_mode;
-	U16 *dst;
-
-	ma5105_page69_profiles_load_once();
-	face_mode = body_face ? 1 : 0;
-	dst = face_mode ? ma5105_page69_values_face : ma5105_page69_values_body;
-	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	for(int i=0;i<40;i++)
 	{
-		dst[i] = ma5105_page69_slots[i].init_w;
-		ma5105_page69_values[i] = dst[i];
-		ma5105_page69_write_value(i);
-		asm("wdr");
+		if(body_face==0)
+		{
+			pw_data[i]=(i+1)*5;
+			eeprom_update_byte(&PW_VALUE[i], pw_data[i]);
+			eeprom_busy_wait();
+		}
+		else
+		{
+			pw_data_face[i]=(i+1)*5;
+			eeprom_update_byte(&PW_VALUE_FACE[i], pw_data_face[i]);
+			eeprom_busy_wait();
+		}
 	}
-	// Match page9 reset semantics (0x812E): reset + immediate EEPROM persist.
-	ma5105_page69_save_profile_to_eeprom(face_mode, dst);
+	for (int i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	{
+		ma5105_page69_write_value((U08)i);
+	}
 }
 
 static void ma5105_page69_save_active_profile(void)
 {
-	U08 face_mode;
-	U16 *src;
-	ma5105_page69_profiles_load_once();
-	ma5105_page69_store_active_to_runtime();
-	face_mode = body_face ? 1 : 0;
-	src = face_mode ? ma5105_page69_values_face : ma5105_page69_values_body;
-	// Match page9 save semantics (0x812F): persist current side only.
-	ma5105_page69_save_profile_to_eeprom(face_mode, src);
-	ma5105_page69_persist_curve_eeprom(face_mode);
+	pw_auto_cal();
+	for (int i = 0; i < 40; i++)
+	{
+		if(body_face==0)
+		{
+			eeprom_update_byte(&PW_VALUE[i], pw_data[i]);
+		}
+		else
+		{
+			eeprom_update_byte(&PW_VALUE_FACE[i], pw_data_face[i]);
+		}
+		eeprom_busy_wait();
+	}
 }
 
 static void ma5105_page69_normalize_body_face(void)
@@ -730,9 +974,7 @@ static void ma5105_page69_sync_max_power_icons(void)
 	else if (value > MA5105_PAGE69_MAX_POWER_MAX)
 	value = MA5105_PAGE69_MAX_POWER_MAX;
 	MaxPower = (U08)value;
-	varIconInt(0x5001, (value / 100) % 10);
-	varIconInt(0x5002, (value / 10) % 10);
-	varIconInt(0x5003, value % 10);
+	UpdateVarIcon3Digit(0x5001, 0x5002, 0x5003, value);
 }
 
 static void ma5105_page69_toggle_cool_mode(void)
@@ -797,33 +1039,7 @@ static void ma5105_page69_toggle_sound_mode(void)
 
 static void ma5105_page69_select_body_face(U08 face_mode)
 {
-	ma5105_page69_normalize_body_face();
-	if (face_mode)
-	{
-		if (body_face == 0)
-		{
-			sBody_pw = opower;
-			opower = sFace_pw;
-		}
-		body_face = 1;
-		if (opower > 80)
-		opower = 80;
-	}
-	else
-	{
-		if (body_face == 1)
-		{
-			sFace_pw = opower;
-			opower = sBody_pw;
-		}
-		body_face = 0;
-	}
-
-	if (selectMem != 0)
-	{
-		selectMem = 0;
-		MEM_Display(selectMem);
-	}
+	body_face = face_mode ? 1 : 0;
 	ma5105_page69_sync_body_face_icon();
 }
 
@@ -853,22 +1069,22 @@ static void ma5105_page69_adjust_max_power(U08 increase)
 
 static void ma5105_page69_force_visible(void)
 {
-	// 0x2301 group must stay shown so 0x3301 is always visible.
-	ma5105_page69_icon2301 = 0;
-	varIconInt(0x2301, ma5105_page69_icon2301);
+	U08 i;
 	ma5105_page69_sync_cool_mode_icon();
 	ma5105_page69_sync_foot_switch_icon();
 	ma5105_page69_sync_j16_pump_icon();
 	ma5105_page69_sync_sound_icon();
 	ma5105_page69_sync_body_face_icon();
 	ma5105_page69_sync_max_power_icons();
-	varIconInt(0x3301, (ma5105_page69_values[0] / 100) % 10);
-	varIconInt(0x3302, (ma5105_page69_values[0] / 10) % 10);
-	varIconInt(0x3303, ma5105_page69_values[0] % 10);
+	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	{
+		ma5105_page69_write_value(i);
+	}
 }
 
 static void ma5105_page69_stop_test(void)
 {
+	U08 i;
 	if (ma5105_page69_test_on == 0)
 	return;
 	ma5105_page69_test_on = 0;
@@ -881,183 +1097,333 @@ static void ma5105_page69_stop_test(void)
 	TCNT3 = 0;
 	if (j16mode == 1)
 	H_LED_OFF;
+	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
+	{
+		engTestBtnShow(i,0);
+	}
 	ma5105_page69_force_visible();
 }
 
 static void ma5105_page69_start_test(U08 slot)
 {
-	U16 value;
 	if (ma5105_page69_test_on == 0)
 	{
 		ma5105_page69_prev_eng_show = eng_show;
 	}
-	value = ma5105_page69_values[slot];
-	if (value < MA5105_PAGE69_MIN_W)
-	value = MA5105_PAGE69_MIN_W;
-	else if (value > MA5105_PAGE69_MAX_W)
-	value = MA5105_PAGE69_MAX_W;
-	ma5105_page69_values[slot] = value;
 	eng_show = 1;
 	eng_emi = 1;
-	setPower(value);
+	if (slot == 0)
+	setPower(5);
+	else
+	setPower((U16)slot * 25);
 	TC1_PWM_ON;
 	OUT_ON;
 	RIM_pause = 0;
 	TCNT3 = 0;
 	if (j16mode == 1)
 	W_PUMP_ON;
+	engTestBtnShow(slot,1);
 	ma5105_page69_test_on = 1;
 	ma5105_page69_test_slot = slot;
 	ma5105_page69_force_visible();
 }
 
-static void ma5105_page69_reset_icons(void)
+void ma5105_page69_sync_entry(void)
 {
-	ma5105_page69_stop_test();
-	ma5105_page69_apply_runtime_for_mode(body_face ? 1 : 0);
-	ma5105_page69_sync_max_power_icons();
-	setMAXPower(MaxPower);
+	ma5105_page69_normalize_body_face();
 	ma5105_page69_force_visible();
 }
 
-static void ma5105_page69_reboot_now(void)
+static void ma5105_page69_adjust_value(U08 slot, U08 increase)
 {
-	eeprom_busy_wait();
-	_delay_ms(20);
-	asm("jmp 0");
+	U08 *curve = ma5105_page69_curve_ptr(body_face ? 1 : 0);
+	U08 idx = ma5105_page69_curve_points[slot];
+
+	if (increase)
+	{
+		if (slot == 0)
+		{
+			if (curve[0] < curve[4])
+			curve[0] += 1;
+		}
+		else if (slot == 8)
+		{
+			if (curve[39] < 200)
+			curve[39] += 1;
+		}
+		else
+		{
+			U08 next_idx = ma5105_page69_curve_points[slot + 1];
+			if (curve[idx] < curve[next_idx])
+			curve[idx] += 1;
+		}
+	}
+	else
+	{
+		if (slot == 0)
+		{
+			if (curve[0] > 1)
+			curve[0] -= 1;
+		}
+		else
+		{
+			U08 prev_idx = ma5105_page69_curve_points[slot - 1];
+			if (curve[prev_idx] < curve[idx])
+			curve[idx] -= 1;
+		}
+	}
+
+	ma5105_page69_write_value(slot);
+
+	if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot == slot))
+	{
+		ma5105_page69_start_test(slot);
+	}
 }
 
-static U08 ma5105_page69_handle_key(U16 keyCode)
+static U08 ma5105_page69_action_from_key(U16 keyCode, U08 *action)
 {
 	U08 i;
-	ma5105_page69_force_visible();
-	if (keyCode == MA5105_PAGE69_KEY_RETURN)
+
+	switch (keyCode)
 	{
-		ma5105_page69_store_active_to_runtime();
-		ma5105_page69_stop_test();
-		pageChange(62);
-		_delay_ms(80);
-		ma5105_sync_page62_ui();
+		case MA5105_PAGE69_KEY_RETURN:
+		*action = 0x00;
 		return 1;
-	}
-	if (keyCode == MA5105_PAGE69_KEY_RESET)
-	{
-		ma5105_page69_reset_active_profile();
-		if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot < MA5105_PAGE69_SLOT_COUNT))
-		{
-			ma5105_page69_start_test(ma5105_page69_test_slot);
-		}
-		ma5105_page69_force_visible();
+		case MA5105_PAGE69_KEY_MAX_POWER_INC:
+		*action = 0x0B;
 		return 1;
-	}
-	if (keyCode == MA5105_PAGE69_KEY_SAVE)
-	{
-		ma5105_page69_save_active_profile();
-		ma5105_page69_stop_test();
-		ma5105_page69_reboot_now();
+		case MA5105_PAGE69_KEY_MAX_POWER_DEC:
+		*action = 0x0C;
 		return 1;
+		case MA5105_PAGE69_KEY_ICON1:
+		*action = 0x12;
+		return 1;
+		case MA5105_PAGE69_KEY_RESET:
+		*action = 0x2E;
+		return 1;
+		case MA5105_PAGE69_KEY_SAVE:
+		*action = 0x2F;
+		return 1;
+		case MA5105_PAGE69_KEY_ICON0:
+		*action = 0x30;
+		return 1;
+		case MA5105_PAGE69_KEY_ICON2:
+		*action = 0x31;
+		return 1;
+		case MA5105_PAGE69_KEY_ICON3:
+		*action = 0x32;
+		return 1;
+		case MA5105_PAGE69_KEY_ICON1000_SET0:
+		*action = 0x34;
+		return 1;
+		case MA5105_PAGE69_KEY_ICON1000_SET1:
+		*action = 0x35;
+		return 1;
+		default:
+		break;
 	}
 
 	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
 	{
-		U16 value;
-			if (keyCode == ma5105_page69_slots[i].plus_key)
-			{
-				value = ma5105_page69_values[i];
-				if (value <= (MA5105_PAGE69_MAX_W - MA5105_PAGE69_STEP_W))
-				value += MA5105_PAGE69_STEP_W;
-				else
-					value = MA5105_PAGE69_MAX_W;
-					ma5105_page69_values[i] = value;
-					ma5105_page69_write_value(i);
-					if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot == i))
-					{
-						ma5105_page69_start_test(i);
-					}
+		if (keyCode == ma5105_page69_slots[i].minus_key)
+		{
+			*action = (U08)(0x13 + i);
 			return 1;
 		}
-			if (keyCode == ma5105_page69_slots[i].minus_key)
-			{
-				value = ma5105_page69_values[i];
-				if (value >= (MA5105_PAGE69_MIN_W + MA5105_PAGE69_STEP_W))
-				value -= MA5105_PAGE69_STEP_W;
-				else
-					value = MA5105_PAGE69_MIN_W;
-					ma5105_page69_values[i] = value;
-					ma5105_page69_write_value(i);
-					if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot == i))
-					{
-						ma5105_page69_start_test(i);
-					}
+		if (keyCode == ma5105_page69_slots[i].plus_key)
+		{
+			*action = (U08)(0x1C + i);
 			return 1;
 		}
 		if (keyCode == ma5105_page69_slots[i].test_key)
 		{
-			if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot == i))
-			{
-				ma5105_page69_stop_test();
-			}
-			else
-			{
-				ma5105_page69_stop_test();
-				ma5105_page69_start_test(i);
-			}
+			*action = (U08)(0x25 + i);
 			return 1;
 		}
 	}
 
-	// Legacy hidden keys are consumed as no-op to avoid overwriting page69 numeric VPs.
-	switch (keyCode)
+	return 0;
+}
+
+static U08 ma5105_page69_handle_action(U08 action, U08 *factory_cnt)
+{
+	if ((*factory_cnt != 0) && (action != 0x33))
 	{
-		case MA5105_PAGE69_KEY_ICON0:
-		ma5105_page69_toggle_cool_mode();
-		ma5105_page69_force_visible();
-		return 1;
-		case MA5105_PAGE69_KEY_ICON1:
-		ma5105_page69_toggle_foot_switch();
-		ma5105_page69_force_visible();
-		return 1;
-		case MA5105_PAGE69_KEY_ICON2:
-		ma5105_page69_toggle_j16_mode();
-		ma5105_page69_force_visible();
-		return 1;
-		case MA5105_PAGE69_KEY_ICON3:
-		ma5105_page69_toggle_sound_mode();
-		ma5105_page69_force_visible();
-		return 1;
-			case MA5105_PAGE69_KEY_ICON1000_SET0:
-			// 0x1001: Face select button
-			ma5105_page69_store_active_to_runtime_values_only();
-			ma5105_page69_select_body_face(1);
-			ma5105_page69_apply_runtime_for_mode(body_face ? 1 : 0);
-			if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot < MA5105_PAGE69_SLOT_COUNT))
-			{
-				ma5105_page69_start_test(ma5105_page69_test_slot);
-			}
-		ma5105_page69_force_visible();
-		return 1;
-			case MA5105_PAGE69_KEY_ICON1000_SET1:
-			// 0x1002: Body select button
-			ma5105_page69_store_active_to_runtime_values_only();
-			ma5105_page69_select_body_face(0);
-			ma5105_page69_apply_runtime_for_mode(body_face ? 1 : 0);
-			if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot < MA5105_PAGE69_SLOT_COUNT))
-			{
-				ma5105_page69_start_test(ma5105_page69_test_slot);
-			}
-		ma5105_page69_force_visible();
-		return 1;
-		case MA5105_PAGE69_KEY_MAX_POWER_DEC:
-		ma5105_page69_adjust_max_power(0);
-		ma5105_page69_force_visible();
-		return 1;
-		case MA5105_PAGE69_KEY_MAX_POWER_INC:
+		*factory_cnt = 0;
+	}
+
+	switch (action)
+	{
+		case 0x00:
+		ma5105_page69_stop_test();
+		pageChange(62);
+		_delay_ms(80);
+		ma5105_sync_page62_ui();
+		break;
+		case 10:
+		eeprom_update_dword(&TT_TIME0, 0);
+		eeprom_busy_wait();
+		eeprom_update_dword(&TT_TIME1, 0);
+		eeprom_busy_wait();
+		eeprom_update_dword(&TT_TIME2, 0);
+		eeprom_busy_wait();
+		eeprom_update_byte(&TT_TIME_CHECKSUM0, 0);
+		eeprom_busy_wait();
+		eeprom_update_byte(&TT_TIME_CHECKSUM1, 0);
+		eeprom_busy_wait();
+		eeprom_update_byte(&TT_TIME_CHECKSUM2, 0);
+		eeprom_busy_wait();
+		total_time = 0;
+		setEngMode();
+		break;
+		case 0x0B:
 		ma5105_page69_adjust_max_power(1);
-		ma5105_page69_force_visible();
-		return 1;
+		break;
+		case 0x0C:
+		ma5105_page69_adjust_max_power(0);
+		break;
+		case 0x0D:
+		if (eng_show_mode == 0)
+		{
+			eng_show_mode = 1;
+		}
+		else
+		{
+			eng_show_mode = 0;
+		}
+		TEXT_Display_eng_testmode(eng_show_mode);
+		break;
+		case 0x0E:
+		eeprom_update_byte(&INIT_BOOT, 0);
+		eeprom_busy_wait();
+		showPasskey_null();
+		while(1);
+		break;
+		case 0x0f:
+		if (lim_time < 600000)
+		lim_time += 30000;
+		else
+		lim_time = 90000;
+
+		eeprom_update_dword(&LIMIT_TIME, lim_time);
+		eeprom_busy_wait();
+
+		eeprom_update_dword(&LIMIT_TIME_CK, 0x1000000 - lim_time);
+		eeprom_busy_wait();
+		TEXT_Display_LIMIT_Time(lim_time);
+		break;
+		case 0x10:
+		break;
+		case 0x11:
+		exitEngMode();
+		init_boot=0;
+		LCD_OFF;
+		while(1);
+		break;
+		case 0x12:
+		ma5105_page69_toggle_foot_switch();
+		break;
+		case 0x13:
+		case 0x14:
+		case 0x15:
+		case 0x16:
+		case 0x17:
+		case 0x18:
+		case 0x19:
+		case 0x1a:
+		case 0x1b:
+		ma5105_page69_adjust_value((U08)(action - 0x13), 0);
+		break;
+		case 0x1c:
+		case 0x1d:
+		case 0x1e:
+		case 0x1f:
+		case 0x20:
+		case 0x21:
+		case 0x22:
+		case 0x23:
+		case 0x24:
+		ma5105_page69_adjust_value((U08)(action - 0x1c), 1);
+		break;
+		case 0x25:
+		case 0x26:
+		case 0x27:
+		case 0x28:
+		case 0x29:
+		case 0x2a:
+		case 0x2b:
+		case 0x2c:
+		case 0x2d:
+		ma5105_page69_start_test((U08)(action - 0x25));
+		break;
+		case 0x2e:
+		ma5105_page69_reset_active_profile();
+		break;
+		case 0x2f:
+		ma5105_page69_save_active_profile();
+		break;
+		case 0x30:
+		ma5105_page69_toggle_cool_mode();
+		break;
+		case 0x31:
+		ma5105_page69_toggle_j16_mode();
+		break;
+		case 0x32:
+		ma5105_page69_toggle_sound_mode();
+		break;
+		case 0x33:
+		(*factory_cnt)++;
+		if (*factory_cnt > 4)
+		{
+			showPasskey_null();
+			*factory_cnt = 0;
+			showKeypad(1);
+			passmode=1;
+		}
+		break;
+		case 0x34:
+		ma5105_page69_select_body_face(1);
+		if(eng_show==2)
+		setEngMode_Factory(0);
+		else
+		setEngMode();
+		break;
+		case 0x35:
+		ma5105_page69_select_body_face(0);
+		if(eng_show==2)
+		setEngMode_Factory(0);
+		else
+		setEngMode();
+		break;
 		default:
 		return 0;
 	}
+	return 1;
+}
+
+static U08 ma5105_page69_handle_key(U16 keyCode, U08 *factory_cnt)
+{
+	U08 action;
+
+	if (eng_emi && (keyCode != MA5105_PAGE69_KEY_RETURN))
+	{
+		ma5105_page69_stop_test();
+		return 1;
+	}
+
+	if (!ma5105_page69_action_from_key(keyCode, &action))
+	return 0;
+
+	if (!ma5105_page69_handle_action(action, factory_cnt))
+	return 0;
+
+	if (dwin_page_now == MA5105_PAGE69_ID)
+	{
+		ma5105_page69_force_visible();
+	}
+
+	return 1;
 }
 
 void main_tron()
@@ -1078,7 +1444,6 @@ void main_tron()
 	U08 temp_raw[2];
 	U08 adc_fail=0;
 	U08 ma5105_sync_div = 0;
-	U08 ma5105_page69_init_done = 0;
 	
 	U08 select_date=0;
 	
@@ -1140,19 +1505,12 @@ void main_tron()
 			{
 				// [PAGE70 FEATURE] hold-to-enter timer tick on existing 10ms main loop.
 				ma5105_page70_tick_10ms();
-				if (dwin_page_now == 69)
-				{
-					if (ma5105_page69_init_done == 0)
-						{
-							ma5105_page69_reset_icons();
-							ma5105_page69_init_done = 1;
-						}
-						ma5105_page69_force_visible();
+					if (dwin_page_now == 69)
+					{
 						ma5105_sync_div = 0;
 					}
 					else if (dwin_page_now == 62)
 					{
-						ma5105_page69_init_done = 0;
 						if (++ma5105_sync_div >= 20)
 						{
 							ma5105_sync_div = 0;
@@ -1161,7 +1519,6 @@ void main_tron()
 					}
 					else
 					{
-						ma5105_page69_init_done = 0;
 						ma5105_sync_div = 0;
 					}
 				}
@@ -1504,368 +1861,67 @@ void main_tron()
 								else
 										{
 											U08 ma_handled = 0;
-											if (ma5105_mode())
-											{
-												if ((dwin_page_now == 62) && (parsBuf[5] == 0x85))
+												if (ma5105_mode())
+												{
+													U16 keyCode = ((U16)parsBuf[5] << 8) | (U16)parsBuf[6];
+
+													if ((dwin_page_now == MA5105_PAGE69_ID) &&
+														((parsBuf[5] == 0xDD) || (parsBuf[5] == 0x00)))
 													{
-														U16 keyCode = ((U16)parsBuf[5] << 8) | (U16)parsBuf[6];
-														if (ma5105_page62_secret_step(keyCode))
-														{
-															pageChange(69);
-															ma5105_page69_reset_icons();
-														}
-														ma_handled = 1;
-													}
-															// [PAGE70 FEATURE] page69 -> page70 hold key path.
-															else if ((dwin_page_now == MA5105_PAGE69_ID) &&
-																((parsBuf[5] == 0xDD) || (parsBuf[5] == 0x00)))
-													{
-														U16 keyCode = ((U16)parsBuf[5] << 8) | (U16)parsBuf[6];
 														ma_handled = ma5105_page70_handle_hold_key(keyCode);
 													}
-															else if ((dwin_page_now == 69) &&
-																((parsBuf[5] == 0x22) || (parsBuf[5] == 0x10) || (parsBuf[5] == 0x23) ||
-																(parsBuf[5] == 0x40) || (parsBuf[5] == 0x41)))
+													else if ((dwin_page_now == MA5105_PAGE69_ID) &&
+														((parsBuf[5] == 0x22) || (parsBuf[5] == 0x10) || (parsBuf[5] == 0x23) ||
+														(parsBuf[5] == 0x40) || (parsBuf[5] == 0x41)))
 													{
-														U16 keyCode = ((U16)parsBuf[5] << 8) | (U16)parsBuf[6];
-														ma_handled = ma5105_page69_handle_key(keyCode);
+														ma_handled = ma5105_page69_handle_key(keyCode, &factory_cnt);
 													}
-															// [PAGE70 FEATURE] page70 password keypad path.
-															else if ((dwin_page_now == MA5105_PAGE70_ID) &&
-																((parsBuf[5] == 0xBB) || (parsBuf[5] == 0xAB) ||
-																(parsBuf[5] == 0xDD) || (parsBuf[5] == 0xCC)))
+													else if ((dwin_page_now == MA5105_PAGE70_ID) &&
+														((parsBuf[5] == 0xBB) || (parsBuf[5] == 0xAB) ||
+														(parsBuf[5] == 0xDD) || (parsBuf[5] == 0xCC)))
 													{
-														U16 keyCode = ((U16)parsBuf[5] << 8) | (U16)parsBuf[6];
 														ma_handled = ma5105_page70_handle_key(keyCode);
 													}
-															else if ((dwin_page_now == MA5105_PAGE71_ID) &&
-																(parsBuf[5] == 0xD3) && (parsBuf[6] == 0x11))
+													else if ((dwin_page_now == MA5105_PAGE71_ID) &&
+														(parsBuf[5] == 0xD3) && (parsBuf[6] == 0x11))
 													{
-														U16 keyCode = ((U16)parsBuf[5] << 8) | (U16)parsBuf[6];
 														if (keyCode == MA5105_PAGE71_KEY_RETURN_TO_69)
 														{
 															pageChange(MA5105_PAGE69_ID);
+															ma5105_page69_sync_entry();
 															ma_handled = 1;
 														}
 													}
-														else
+													else
+													{
+														U08 ma_action = 0;
+
+														if ((dwin_page_now == 62) && (opPage & 0x02) && (parsBuf[6] != 0x01))
 														{
-													U08 ma_key = parsBuf[6];
-													// Some MA5105 touch objects emit 0x0A~0x0D for preset 2~5.
-													if ((ma_key >= 0x0A) && (ma_key <= 0x0D))
-													ma_key = (U08)(ma_key + 0x06);
-													if ((dwin_page_now == 62) && (opPage & 0x02) && (ma_key != 0x01))
-													{
-														ma_handled = 1;
-													}
-													else
-													if ((parsBuf[5] == 0x20) && (parsBuf[6] == 0x00))
-													{
-														pageChange(58);
-														ma_handled = 1;
-													}
-													else
-													switch (ma_key)
+															ma_handled = 1;
+														}
+														else if ((dwin_page_now == 57) && (parsBuf[6] == 0x58))
 														{
-														case 0x01:
-												if (energy_subscription_run_key_guard())
-												{
-													ma5105_set_run_icon();
-													ma_handled = 1;
-													break;
-												}
-												// MA5105 start/stop button (same logic as FL0788 0x06)
-												if (opPage & 0x02)
-												{
-												setStandby();
-												opPage = 1;
-											}
-											else
-											{
-												if (total_time >= lim_time)
-												{
-													errDisp();
-													TEXT_Display_ERR_CODE("ERR CODE 02", 11);
-												}
-												else
-												{
-													if ((lsm6d_fail == 1) && (moving_sensing == 1))
-													{
-														errDisp();
-														TEXT_Display_ERR_CODE("ERR CODE 03", 11);
-													}
-													else
-													{
-														setReady();
-														opPage = 2;
+															pageChange(62);
+															_delay_ms(80);
+															ma5105_sync_page62_ui();
+															ma_handled = 1;
+														}
+														else if ((parsBuf[5] == 0x20) && (parsBuf[6] == 0x00))
+														{
+															pageChange(58);
+															ma_handled = 1;
+														}
+														else if ((dwin_page_now == 62) && ma5105_page62_action_from_key(keyCode, &ma_action))
+														{
+															ma_handled = ma5105_page62_handle_action(ma_action);
+															if ((ma_handled != 0) && (dwin_page_now == 69))
+															{
+																ma5105_page69_sync_entry();
+															}
+														}
 													}
 												}
-											}
-											ma5105_set_run_icon();
-												// [NEW FEATURE] Page62 run-key post action:
-												// keep display/UART in sync without adding button-edge energy.
-												old_totalEnergy = totalEnergy;
-												TE_Display(old_totalEnergy);
-												energy_uart_publish_run_event((opPage & 0x02) ? 1U : 0U, totalEnergy);
-											ma_handled = 1;
-											break;
-											case 0x02:
-											// MA5105 reset button (same logic as FL0788 0x07)
-											totalEnergy = 0;
-											old_totalEnergy = 0;
-											TE_Display(old_totalEnergy);
-											ma_handled = 1;
-											break;
-												case 0x03:
-												// MA5105 power up
-												if(body_face)
-												{
-													if (opower < 80)
-														opower += MinPower;
-												}
-												else
-												{
-													if (opower < MaxPower)
-														opower += MinPower;
-												}
-												if (selectMem != 0)
-												{
-													selectMem = 0;
-													MEM_Display(selectMem);
-												}
-												pwDisp(opower);
-												ma5105_set_preset_default_icons();
-												ma_handled = 1;
-												break;
-												case 0x04:
-												// MA5105 power down
-												if (opower > MinPower)
-													opower -= MinPower;
-												if (selectMem != 0)
-												{
-													selectMem = 0;
-													MEM_Display(selectMem);
-												}
-												pwDisp(opower);
-												ma5105_set_preset_default_icons();
-												ma_handled = 1;
-												break;
-												case 0x05:
-												// MA5105 time up (FL0788 0x03 mapping)
-												if ((otime % 60) != 0)
-													otime = (otime - (otime % 60));
-												if (otime < (90 * 60))
-													otime += 60;
-												settime = otime;
-												if (selectMem != 0)
-												{
-													selectMem = 0;
-													MEM_Display(selectMem);
-												}
-												timeDisp(otime);
-												ma5105_set_preset_default_icons();
-												ma_handled = 1;
-												break;
-												case 0x06:
-												// MA5105 time down (FL0788 0x04 mapping)
-												if ((otime % 60) != 0)
-												{
-													otime = (otime - (otime % 60));
-													if (otime < 60)
-													otime = 60;
-											}
-											else
-											{
-												if (otime > 60)
-													otime -= 60;
-											}
-											settime = otime;
-											if (selectMem != 0)
-												{
-													selectMem = 0;
-													MEM_Display(selectMem);
-												}
-												timeDisp(otime);
-												ma5105_set_preset_default_icons();
-												ma_handled = 1;
-												break;
-											case 0x07:
-											// MA5105 sound button (same logic as FL0788 0x05)
-											Buzzer_ONOFF();
-											ma5105_set_sound_icon();
-											ma_handled = 1;
-											break;
-											case 0x08:
-											// MA5105 mode button A (same logic as FL0788 0x08)
-											if(body_face==0)
-											{
-												sBody_pw=opower;
-												opower=sFace_pw;
-												body_face=1;
-												// MA5105 uses 0x3006 mode icon instead of 0x100C/0x100D.
-												pwDisp(opower);
-												if (selectMem != 0)
-												{
-													selectMem = 0;
-													MEM_Display(selectMem);
-												}
-											}
-											ma5105_set_mode_icon();
-											ma5105_set_preset_default_icons();
-											ma_handled = 1;
-											break;
-												case 0x09:
-												case 0x10:
-												case 0x11:
-												case 0x12:
-												case 0x13:
-												{
-													// MA5105 preset buttons (same logic as FL0788 0x10~0x14)
-													U08 preset = 5;
-													if (ma_key == 0x09) preset = 1;
-													else if (ma_key == 0x10) preset = 2;
-													else if (ma_key == 0x11) preset = 3;
-													else if (ma_key == 0x12) preset = 4;
-												if (preset == 1)
-												{
-													if(body_face)
-													{
-														opower=30;
-														otime = 10 * 60;
-													}
-													else
-													{
-														opower=110;
-														otime = 15 * 60;
-													}
-												}
-												else if (preset == 2)
-												{
-													if(body_face)
-													{
-														opower=40;
-														otime = 10 * 60;
-													}
-													else
-													{
-														opower=120;
-														otime = 15 * 60;
-													}
-												}
-												else if (preset == 3)
-												{
-													if(body_face)
-													{
-														opower=50;
-														otime = 10 * 60;
-													}
-													else
-													{
-														opower=130;
-														otime = 15 * 60;
-													}
-												}
-												else if (preset == 4)
-												{
-													if(body_face)
-													{
-														opower=60;
-														otime = 10 * 60;
-													}
-													else
-													{
-														opower=140;
-														otime = 15 * 60;
-													}
-												}
-												else
-												{
-													if(body_face)
-													{
-														opower=80;
-														otime = 10 * 60;
-													}
-													else
-													{
-														opower=150;
-														otime = 15 * 60;
-													}
-												}
-												settime = otime;
-												selectMem = preset;
-												MEM_Display(selectMem);
-												pwDisp(opower);
-												timeDisp(otime);
-													ma5105_set_preset_icons(ma_key);
-												ma_handled = 1;
-												break;
-											}
-											case 0x14:
-											// MA5105 service button (same logic as FL0788 0x57)
-											pageChange(57);
-											ma_handled = 1;
-											break;
-											case 0x15:
-											// MA5105 mode button B (same logic as FL0788 0x09)
-											if(body_face==1)
-											{
-												sFace_pw=opower;
-												opower=sBody_pw;
-												body_face=0;
-												// MA5105 uses 0x3006 mode icon instead of 0x100C/0x100D.
-												pwDisp(opower);
-												if (selectMem != 0)
-												{
-													selectMem = 0;
-													MEM_Display(selectMem);
-												}
-											}
-											ma5105_set_mode_icon();
-											ma5105_set_preset_default_icons();
-											ma_handled = 1;
-											break;
-												case 0x16:
-												// MA5105 cooling button (same logic as FL0788 0x17)
-												ma5105_toggle_page62_cool_state();
-												ma_handled = 1;
-												break;
-												case 0x18:
-												if(sound_v<9)
-												sound_v++;
-												Audio_Set(sound_v);
-												ma_handled = 1;
-												break;
-												case 0x19:
-												if(sound_v>0)
-												sound_v--;
-												Audio_Set(sound_v);
-												ma_handled = 1;
-												break;
-												case 0x1A:
-												case 0x1B:
-												case 0x1C:
-												case 0x1D:
-												case 0x1E:
-												case 0x1F:
-												case 0x20:
-												case 0x21:
-												case 0x22:
-												case 0x23:
-												sound_v=parsBuf[6]-0x1a;
-												Audio_Set(sound_v);
-												ma_handled = 1;
-												break;
-													case 0x58:
-													pageChange(62);
-													_delay_ms(80);
-														ma5105_sync_page62_ui();
-														ma_handled = 1;
-														break;
-													default:
-													break;
-													}
-												}
-											}
 									if (!ma_handled && !ma5105_mode())
 									{
 									switch (parsBuf[6])
@@ -2295,7 +2351,7 @@ void main_tron()
 											(engPass[5]==0x35))
 											{
 												showKeypad(0);
-												setEngMode_Factory();
+												setEngMode_Factory(0);
 												passmode=0;
 											}
 											else
@@ -2441,12 +2497,26 @@ void main_tron()
 									}
 								}
 							}
-							else if ((parsBuf[2] == 0x30) && (parsBuf[3] == 0x00) && (parsBuf[5] == 0x81)) /// eng mode
-							{
-								if(eng_emi)
+								else if ((parsBuf[2] == 0x30) && (parsBuf[3] == 0x00) && (parsBuf[5] == 0x81)) /// eng mode
 								{
-									eng_emi=0;
-									TC1_PWM_OFF;
+									if (ma5105_mode())
+									{
+										if (dwin_page_now == MA5105_PAGE69_ID)
+										{
+											if (eng_emi)
+											{
+												ma5105_page69_stop_test();
+											}
+											else if (ma5105_page69_handle_action(parsBuf[6], &factory_cnt) && (dwin_page_now == MA5105_PAGE69_ID))
+											{
+												ma5105_page69_force_visible();
+											}
+										}
+									}
+									else if(eng_emi)
+									{
+										eng_emi=0;
+										TC1_PWM_OFF;
 
 									OUT_OFF;
 									RIM_pause = 1;
@@ -2461,8 +2531,8 @@ void main_tron()
 									if(j16mode==1)
 									H_LED_OFF;
 								}
-								else
-								{
+									else
+									{
 									if(factory_cnt!=0)
 									{
 										if(parsBuf[6]!=0x33)
@@ -2809,7 +2879,7 @@ void main_tron()
 										else
 										body_face=0;
 										if(eng_show==2)
-										setEngMode_Factory();
+										setEngMode_Factory(0);
 										else
 										setEngMode();
 										break;

@@ -1297,7 +1297,7 @@ void main_nam()
 										case 0x33:
 										factory_cnt++;										
 										if(factory_cnt>4)
-										setEngMode_Factory();
+										setEngMode_Factory(0);
 										break;
 										case 0x34:
 										if(body_face==0)
@@ -1305,7 +1305,7 @@ void main_nam()
 										else
 										body_face=0;
 										if(eng_show==2)
-										setEngMode_Factory();
+										setEngMode_Factory(0);
 										else
 										setEngMode();
 										break;

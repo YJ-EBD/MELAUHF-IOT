@@ -1392,7 +1392,7 @@ void main_hic()
 											(engPass[5]==0x35))
 											{
 												showKeypad(0);
-												setEngMode_Factory();
+												setEngMode_Factory(0);
 												passmode=0;
 											}
 											else
@@ -1912,7 +1912,7 @@ void main_hic()
 										else
 										body_face=0;
 										if(eng_show==2)
-										setEngMode_Factory();
+										setEngMode_Factory(0);
 										else
 										setEngMode();
 										break;

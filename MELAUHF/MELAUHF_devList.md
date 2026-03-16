@@ -152,3 +152,15 @@
   - `main.c`에서 Wi-Fi/OTA/구독/ESP UART/63~74페이지 처리와 관련된 대형 블록을 `IOT_mode.c`로 분리해, EA2247처럼 메인 파일이 부트/EEPROM/모드 선택 중심 역할에 가깝도록 정리했다.
   - 페이지 ID/순서는 유지했고, 기존 MA5105 동작을 바꾸지 않으면서 IoT 확장부만 모듈 경계로 분리했다.
   - 로컬 `avr-gcc` 기준으로 전체 번역 단위 문법 검증은 통과했고, 남은 전체 링크 실패는 기존 SRAM 한계/구형 AVR-GCC 전제 차이 성격으로 확인했다.
+
+## 19. page57/page63/page69 동작 재정리 및 HMI 연동 안정화
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/tron_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/dwin.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/common_f.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/main.c`
+- 간단한 설명
+  - page63의 Wi-Fi 연결 후 복귀 분기와 ESP UART 상태줄 처리 우선순위를 다시 정리해, 연결 성공 후 61페이지 복귀와 등록/구독 상태 해석이 더 안정적으로 동작하도록 보강했다.
+  - page57은 `ABBAS_WEB -> ESP32 -> @ENG|... -> ATmega` 경로를 다시 점검하고, `0xA100~0xA500`, `0xDA10`, `0xDB01`, `0xBB22`가 ESP의 플랜/에너지 값으로 다시 그려지도록 복구했다.
+  - page69는 디버깅 단계에서 27개 숫자 VAR ICON(`0x3301~0x3327`)만 `000` 고정 표시로 잠시 단순화해, 기존 엔지니어링 로직과 화면 숫자 덮어쓰기 경로를 분리해서 점검할 수 있게 정리했다.
