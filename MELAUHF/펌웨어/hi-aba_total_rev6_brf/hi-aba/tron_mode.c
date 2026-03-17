@@ -38,6 +38,9 @@
 #define MA5105_PAGE69_MAX_POWER_MAX 200
 #define MA5105_PAGE69_MAX_POWER_STEP 10
 #define MA5105_PAGE69_VALUE_STEP 5
+#define MA5105_PAGE69_CONSOLE_VP 0xA1B1
+#define MA5105_PAGE62_CONSOLE_VP 0xC2D2
+#define MA5105_CONSOLE_TEXT_LEN 31
 #define MA5105_PAGE69_DEBUG_VP 0xCCCC
 #define MA5105_PAGE69_DEBUG_TEXT_LEN 39
 
@@ -107,6 +110,11 @@ static U08 ma5105_page62_visible(void)
 	return (ma5105_mode() && (dwin_page_now == 62));
 }
 
+static U08 ma5105_page62_status_visible(void)
+{
+	return (ma5105_mode() && ((dwin_page_now == 62) || (dwin_page_now == 63)));
+}
+
 static U08 ma5105_page69_icon0 = 0;
 static U08 ma5105_page69_icon1 = 0;
 static U08 ma5105_page69_icon2 = 0;
@@ -120,6 +128,8 @@ static U08 ma5105_page69_enter_pending = 0;
 static U08 ma5105_page69_test_on = 0;
 static U08 ma5105_page69_test_slot = 0xFF;
 static U08 ma5105_page69_prev_eng_show = 0;
+static U16 ma5105_page62_last_key = 0;
+static U16 ma5105_page69_last_key = 0;
 static void ma5105_set_mode_icon(void);
 static void ma5105_set_sound_icon(void);
 static void ma5105_toggle_page62_cool_state(void);
@@ -151,6 +161,116 @@ static U08 *ma5105_page69_anchor_ptr(U08 face_mode)
 	if (face_mode)
 	return ma5105_page69_anchor_face;
 	return ma5105_page69_anchor_body;
+}
+
+static U08 ma5105_curve_value_for_power(uint32_t power_w)
+{
+	U08 idx;
+
+	if (power_w < 5U)
+	{
+		power_w = 5U;
+	}
+	else if (power_w > 200U)
+	{
+		power_w = 200U;
+	}
+
+	power_w -= (power_w % 5U);
+	if (power_w < 5U)
+	{
+		power_w = 5U;
+	}
+
+	idx = (U08)((power_w / 5U) - 1U);
+	return body_face ? pw_data_face[idx] : pw_data[idx];
+}
+
+static void ma5105_console_push(char *line, U08 *pos, char c)
+{
+	if (*pos < MA5105_CONSOLE_TEXT_LEN)
+	{
+		line[(*pos)++] = c;
+	}
+}
+
+static void ma5105_console_append_text(char *line, U08 *pos, const char *text)
+{
+	while ((text != 0) && (*text != '\0'))
+	{
+		ma5105_console_push(line, pos, *text++);
+	}
+}
+
+static void ma5105_console_append_dec1(char *line, U08 *pos, U08 value)
+{
+	ma5105_console_push(line, pos, (char)('0' + (value % 10U)));
+}
+
+static void ma5105_console_append_dec3(char *line, U08 *pos, U16 value)
+{
+	ma5105_console_push(line, pos, (char)('0' + ((value / 100U) % 10U)));
+	ma5105_console_push(line, pos, (char)('0' + ((value / 10U) % 10U)));
+	ma5105_console_push(line, pos, (char)('0' + (value % 10U)));
+}
+
+static void ma5105_console_append_dec4(char *line, U08 *pos, U16 value)
+{
+	ma5105_console_push(line, pos, (char)('0' + ((value / 1000U) % 10U)));
+	ma5105_console_push(line, pos, (char)('0' + ((value / 100U) % 10U)));
+	ma5105_console_push(line, pos, (char)('0' + ((value / 10U) % 10U)));
+	ma5105_console_push(line, pos, (char)('0' + (value % 10U)));
+}
+
+static void ma5105_page62_write_console_text(void)
+{
+	char line[MA5105_CONSOLE_TEXT_LEN + 1];
+	U08 pos = 0;
+	U16 cal = ma5105_curve_value_for_power(opower);
+
+	ma5105_console_append_text(line, &pos, "P");
+	ma5105_console_append_dec3(line, &pos, (U16)opower);
+	ma5105_console_append_text(line, &pos, ",C");
+	ma5105_console_append_dec3(line, &pos, cal);
+	ma5105_console_append_text(line, &pos, ",O");
+	ma5105_console_append_dec4(line, &pos, OCR1A);
+	ma5105_console_append_text(line, &pos, ",R");
+	ma5105_console_append_dec1(line, &pos, opPage);
+	ma5105_console_append_text(line, &pos, ",L");
+	ma5105_console_append_dec1(line, &pos, g_hw_output_lock);
+	ma5105_console_append_text(line, &pos, ",F");
+	ma5105_console_append_dec1(line, &pos, body_face);
+	line[pos] = '\0';
+	dwin_write_text(MA5105_PAGE62_CONSOLE_VP, line, MA5105_CONSOLE_TEXT_LEN);
+}
+
+static void ma5105_page69_write_console_text(void)
+{
+	char line[MA5105_CONSOLE_TEXT_LEN + 1];
+	U08 pos = 0;
+	U16 watt = 0;
+	U16 cal = 0;
+
+	if ((ma5105_page69_test_on != 0) && (ma5105_page69_test_slot < MA5105_PAGE69_SLOT_COUNT))
+	{
+		watt = ma5105_page69_slots[ma5105_page69_test_slot].init_w;
+		cal = ma5105_curve_value_for_power(watt);
+	}
+
+	ma5105_console_append_text(line, &pos, "W");
+	ma5105_console_append_dec3(line, &pos, watt);
+	ma5105_console_append_text(line, &pos, ",C");
+	ma5105_console_append_dec3(line, &pos, cal);
+	ma5105_console_append_text(line, &pos, ",O");
+	ma5105_console_append_dec4(line, &pos, OCR1A);
+	ma5105_console_append_text(line, &pos, ",T");
+	ma5105_console_append_dec1(line, &pos, ma5105_page69_test_on);
+	ma5105_console_append_text(line, &pos, ",L");
+	ma5105_console_append_dec1(line, &pos, g_hw_output_lock);
+	ma5105_console_append_text(line, &pos, ",F");
+	ma5105_console_append_dec1(line, &pos, body_face);
+	line[pos] = '\0';
+	dwin_write_text(MA5105_PAGE69_CONSOLE_VP, line, MA5105_CONSOLE_TEXT_LEN);
 }
 
 static void ma5105_page69_restore_default_anchors(U08 face_mode)
@@ -248,6 +368,18 @@ static void ma5105_page69_expand_shadow_to_runtime(U08 face_mode)
 static void ma5105_page69_apply_active_shadow_to_runtime(void)
 {
 	ma5105_page69_expand_shadow_to_runtime(body_face ? 1 : 0);
+}
+
+void ma5105_profile_boot_sync(void)
+{
+	/*
+	 * Align MA5105 runtime output with the same 9-point engineering anchors
+	 * shown on page69 so page62 does not inherit stale/intermediate EEPROM
+	 * bytes from older firmware builds.
+	 */
+	ma5105_page69_load_shadow_profiles();
+	ma5105_page69_expand_shadow_to_runtime(0);
+	ma5105_page69_expand_shadow_to_runtime(1);
 }
 
 static void ma5105_page69_save_runtime_to_eeprom(U08 face_mode)
@@ -797,10 +929,13 @@ static void ma5105_set_preset_icons(U08 key)
 
 static void ma5105_sync_page62_ui(void)
 {
-	if (!ma5105_page62_visible())
+	if (!ma5105_page62_status_visible())
 	return;
 	if (dwin_page_now == 63)
+	{
+		ma5105_page62_write_console_text();
 	return;
+	}
 	pwDisp(opower);
 	timeDisp(otime);
 	TE_Display(old_totalEnergy);
@@ -817,6 +952,7 @@ static void ma5105_sync_page62_ui(void)
 		ma5105_set_preset_default_icons();
 	}
 	TEXT_Display_TEMPERATURE(ntc_t);
+	ma5105_page62_write_console_text();
 }
 
 // [PAGE70 FEATURE] clear six password VAR ICON slots (0xAA01~0xAA06).
@@ -1217,6 +1353,7 @@ static void ma5105_page69_force_visible(void)
 		ma5105_page69_write_value(i);
 	}
 	ma5105_page69_write_debug_text();
+	ma5105_page69_write_console_text();
 	ma5105_page69_dirty = 0;
 	ma5105_page69_enter_pending = 0;
 }
@@ -1230,12 +1367,13 @@ static void ma5105_page69_stop_test(void)
 	ma5105_page69_test_slot = 0xFF;
 	eng_emi = 0;
 	eng_show = ma5105_page69_prev_eng_show;
+	OCR1A = 0;
 	TC1_PWM_OFF;
 	OUT_OFF;
 	RIM_pause = 1;
 	TCNT3 = 0;
 	if (j16mode == 1)
-	H_LED_OFF;
+	W_PUMP_OFF;
 	for (i = 0; i < MA5105_PAGE69_SLOT_COUNT; i++)
 	{
 		engTestBtnShow(i,0);
@@ -1271,7 +1409,6 @@ void ma5105_page69_sync_entry(void)
 {
 	ma5105_page69_normalize_body_face();
 	ma5105_page69_load_shadow_profiles();
-	ma5105_page69_apply_active_shadow_to_runtime();
 	ma5105_page69_dirty = 1;
 	ma5105_page69_enter_pending = 1;
 }
@@ -1549,14 +1686,33 @@ static U08 ma5105_page69_handle_key(U16 keyCode, U08 *factory_cnt)
 {
 	U08 action;
 
-	if (eng_emi)
-	{
-		ma5105_page69_stop_test();
-		return 1;
-	}
+	ma5105_page69_last_key = keyCode;
 
 	if (!ma5105_page69_action_from_key(keyCode, &action))
 	return 0;
+
+	if (ma5105_page69_test_on != 0)
+	{
+		if ((action >= 0x25) && (action <= 0x2d))
+		{
+			U08 slot = (U08)(action - 0x25);
+
+			// Match the legacy engineering-page behavior:
+			// same test key toggles the output off, another test key switches
+			// to the new slot in the same pass.
+			if (slot == ma5105_page69_test_slot)
+			{
+				ma5105_page69_stop_test();
+				if (dwin_page_now == MA5105_PAGE69_ID)
+				{
+					ma5105_page69_tick();
+				}
+				return 1;
+			}
+		}
+
+		ma5105_page69_stop_test();
+	}
 
 	if (!ma5105_page69_handle_action(action, factory_cnt))
 	return 0;
@@ -1662,7 +1818,7 @@ void main_tron()
 					ma5105_page69_tick();
 					ma5105_sync_div = 0;
 				}
-				else if (dwin_page_now == 62)
+				else if ((dwin_page_now == 62) || (dwin_page_now == 63))
 				{
 					if (++ma5105_sync_div >= 20)
 					{
@@ -2064,11 +2220,12 @@ void main_tron()
 															pageChange(58);
 															ma_handled = 1;
 														}
-														else if ((dwin_page_now == 62) && ma5105_page62_action_from_key(keyCode, &ma_action))
-														{
-															ma_handled = ma5105_page62_handle_action(ma_action);
-															if ((ma_handled != 0) && (dwin_page_now == 69))
+															else if ((dwin_page_now == 62) && ma5105_page62_action_from_key(keyCode, &ma_action))
 															{
+																ma5105_page62_last_key = keyCode;
+																ma_handled = ma5105_page62_handle_action(ma_action);
+																if ((ma_handled != 0) && (dwin_page_now == 69))
+																{
 																ma5105_page69_sync_entry();
 															}
 														}

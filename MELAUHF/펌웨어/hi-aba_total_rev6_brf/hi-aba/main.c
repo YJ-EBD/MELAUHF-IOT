@@ -221,11 +221,10 @@ static void ma5105_force_boot_page7_after_new_firmware(void)
 	}
 
 	// Each newly built firmware image gets a different boot marker.
-	// On the first boot after flashing that image, discard any old
-	// page69 curve data, restore the default Body/Face profiles, and
-	// force the MA5105 registration page7 flow once.
-	pw_profile_restore_default(pw_data, PW_VALUE);
-	pw_profile_restore_default(pw_data_face, PW_VALUE_FACE);
+	// On the first boot after flashing that image, keep the existing
+	// calibration curves and only force the registration/page7 flow once.
+	// Invalid EEPROM profiles are still repaired later during boot
+	// by pw_profile_boot_sanitize() after the curves are loaded.
 	eeprom_update_dword(&MA5105_FW_BOOT_MARK, MA5105_FW_BOOT_MARK_EXPECTED);
 	eeprom_busy_wait();
 	eeprom_update_byte(&WIFI_BOOT_PAGE61_ONCE, 0);
@@ -689,6 +688,12 @@ int main(void)
 			startPage=1;
 			break;
 		}
+			if (startPage == 61)
+			{
+				// Rebuild the MA5105 runtime curve from the 9 engineering
+				// anchors so page62 uses the same calibration model as page69.
+				ma5105_profile_boot_sync();
+			}
 			if(((dev_mode&0x3f)==6) || ((dev_mode&0x3f)==2) || ((dev_mode&0x3f)==3)  || ((dev_mode&0x3f)==5))
 			{
 				sound_v=eeprom_read_byte(&SOUND_VOLUME);

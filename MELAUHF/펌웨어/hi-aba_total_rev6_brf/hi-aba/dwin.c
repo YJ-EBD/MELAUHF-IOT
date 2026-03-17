@@ -6,6 +6,7 @@
 */
 #include "dwin.h"
 #include <avr/io.h>
+#include <avr/pgmspace.h>
 #include <string.h>
 #include "common.h"
 
@@ -23,7 +24,7 @@ extern U08 EM_SOUND;
 
 static U08 temp_buf[64];
 
-static unsigned short crc_table[256] = {
+static const uint16_t crc_table[256] PROGMEM = {
 	0x0000,0xc0c1,0xc181,0x0140,0xc301,0x03c0,0x0280,0xc241,
 	0xc601,0x06c0,0x0780,0xc741,0x0500,0xc5c1,0xc481,0x0440,
 	0xcc01,0x0cc0,0x0d80,0xcd41,0x0f00,0xcfc1,0xce81,0x0e40,
@@ -65,7 +66,7 @@ unsigned short update_crc(unsigned char *data_blk_ptr, unsigned short data_blk_s
 
 	for(j = 0; j < data_blk_size; j++)
 	{
-		i = crc_table[((unsigned short)(crc_accum >> 8) ^ data_blk_ptr[j]) & 0xFF];
+		i = pgm_read_word(&crc_table[((unsigned short)(crc_accum >> 8) ^ data_blk_ptr[j]) & 0xFF]);
 		
 		crc_accum=(((i&0xff)^(crc_accum&0xff))<<8)+(i>>8);
 		
