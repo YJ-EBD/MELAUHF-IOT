@@ -95,6 +95,7 @@ void setEngModeDis(uint8_t mode);
 void TEXT_Display_NAM_PW(U16 t ,U16 f_p,U16 r_p);
 
 void showKeypad(U08 b);
+void clearPasskeyDisplay(void);
 void showPasskey(U08 *k);
 
 void TEXT_Display_Check_Code(U08 d);

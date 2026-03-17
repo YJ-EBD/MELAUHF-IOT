@@ -198,37 +198,17 @@ static void setTextViewFixed(uint16_t add, const char *d, uint8_t len)
 	}
 	setTextView(add, local, len);
 }
-static void setPasskeyView(uint16_t add, const U08 *d)
+static void clearPasskeyDisplayView(uint16_t add)
 {
-	U08 local[12];
+	char local[12];
 	uint8_t i;
-	uint8_t si = 0;
-	uint8_t di = 0;
 
 	for (i = 0; i < sizeof(local); i++)
 	{
 		local[i] = 0x00;
 	}
 
-	if (d != 0)
-	{
-		while ((si < 6) && (d[si] == 0x20))
-		{
-			si++;
-		}
-		while ((si < 6) && (di < sizeof(local)))
-		{
-			if (d[si] == 0x00)
-			break;
-			if (d[si] != 0x20)
-			{
-				local[di++] = d[si];
-			}
-			si++;
-		}
-	}
-
-	setTextView(add, (char *)local, sizeof(local));
+	setTextView(add, local, sizeof(local));
 }
 static void setTextColor(uint16_t add, uint16_t color)
 {
@@ -1305,6 +1285,10 @@ void showKeypad(U08 b)
 {
 	varIconInt(0x1402,b);
 }
+void clearPasskeyDisplay(void)
+{
+	clearPasskeyDisplayView(0x1360);
+}
 void showPasskey(U08 *k)
 {	
 	U08 text[6]={0x20,0x20,0x20,0x20,0x20,0x20};
@@ -1353,7 +1337,8 @@ void showPasskey_null()
 	engPass[3]=0x20;
 	engPass[4]=0x20;
 	engPass[5]=0x20;
-	setTextView(0x1360,(char *)engPass,6);
+	clearPasskeyDisplayView(0x1360);
+	showPasskey(engPass);
 }
 void setSelectDate(uint8_t d)
 {

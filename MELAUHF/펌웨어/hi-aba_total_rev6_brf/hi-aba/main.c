@@ -137,6 +137,7 @@ U08 time_err=0;
 #define PW_PROFILE_LEN 40U
 #define PW_PROFILE_MIN 1U
 #define PW_PROFILE_MAX 200U
+#define PAGE7_CODE_LEN 6U
 
 #define MA5105_FW_BOOT_MARK_EXPECTED \
 	(0x51050000UL ^ \
@@ -190,6 +191,250 @@ static void pw_profile_boot_sanitize(U08 *profile, uint8_t *eep_profile)
 	{
 		pw_profile_restore_default(profile, eep_profile);
 	}
+}
+
+static void page7_reset_code(U08 *code)
+{
+	U08 i;
+
+	for (i = 0; i < PAGE7_CODE_LEN; i++)
+	{
+		code[i] = 0x20;
+	}
+}
+
+static void page7_reset_uart_parser(void)
+{
+	cli();
+	readCnt = writeCnt;
+	parsCnt = 0;
+	ckHeader = 0;
+	sei();
+}
+
+static U08 page7_match_dev_mode(const U08 *code, U08 *next_dev_mode)
+{
+	if (((code[0] == 'M') || (code[0] == 'm')) && ((code[1] == 'A') || (code[1] == 'a')))
+	{
+		if ((code[2] == '1') && (code[3] == '3') && (code[4] == '5') && (code[5] == '8'))
+		{
+			*next_dev_mode = 0x00;
+			return 1;
+		}
+		if ((code[2] == '8') && (code[3] == '5') && (code[4] == '4') && (code[5] == '1'))
+		{
+			*next_dev_mode = 0x80;
+			return 1;
+		}
+		if ((code[2] == '2') && (code[3] == '4') && (code[4] == '6') && (code[5] == '9'))
+		{
+			*next_dev_mode = 0x40;
+			return 1;
+		}
+		if ((code[2] == '5') && (code[3] == '1') && (code[4] == '0') && (code[5] == '5'))
+		{
+			*next_dev_mode = 0x08;
+			return 1;
+		}
+	}
+	else if (((code[0] == 'M') || (code[0] == 'm')) && ((code[1] == 'U') || (code[1] == 'u')))
+	{
+		if ((code[2] == '2') && (code[3] == '3') && (code[4] == '4') && (code[5] == '6'))
+		{
+			*next_dev_mode = 0x07;
+			return 1;
+		}
+		if ((code[2] == '7') && (code[3] == '6') && (code[4] == '5') && (code[5] == '3'))
+		{
+			*next_dev_mode = 0x87;
+			return 1;
+		}
+		if ((code[2] == '3') && (code[3] == '4') && (code[4] == '5') && (code[5] == '7'))
+		{
+			*next_dev_mode = 0x47;
+			return 1;
+		}
+	}
+	else if (((code[0] == 'E') || (code[0] == 'e')) && ((code[1] == 'U') || (code[1] == 'u')))
+	{
+		if ((code[2] == '3') && (code[3] == '5') && (code[4] == '7') && (code[5] == '8'))
+		{
+			*next_dev_mode = 0x01;
+			return 1;
+		}
+		if ((code[2] == '6') && (code[3] == '4') && (code[4] == '2') && (code[5] == '1'))
+		{
+			*next_dev_mode = 0x81;
+			return 1;
+		}
+		if ((code[2] == '4') && (code[3] == '6') && (code[4] == '8') && (code[5] == '9'))
+		{
+			*next_dev_mode = 0x41;
+			return 1;
+		}
+	}
+	else if (((code[0] == 'L') || (code[0] == 'l')) && ((code[1] == 'H') || (code[1] == 'h')))
+	{
+		if ((code[2] == '5') && (code[3] == '4') && (code[4] == '1') && (code[5] == '8'))
+		{
+			*next_dev_mode = 0x02;
+			return 1;
+		}
+		if ((code[2] == '4') && (code[3] == '5') && (code[4] == '8') && (code[5] == '1'))
+		{
+			*next_dev_mode = 0x82;
+			return 1;
+		}
+		if ((code[2] == '6') && (code[3] == '5') && (code[4] == '2') && (code[5] == '9'))
+		{
+			*next_dev_mode = 0x42;
+			return 1;
+		}
+	}
+	else if (((code[0] == 'A') || (code[0] == 'a')) && ((code[1] == 'F') || (code[1] == 'f')))
+	{
+		if ((code[2] == '9') && (code[3] == '1') && (code[4] == '0') && (code[5] == '8'))
+		{
+			*next_dev_mode = 0x03;
+			return 1;
+		}
+		if ((code[2] == '0') && (code[3] == '8') && (code[4] == '9') && (code[5] == '1'))
+		{
+			*next_dev_mode = 0x83;
+			return 1;
+		}
+		if ((code[2] == '0') && (code[3] == '2') && (code[4] == '1') && (code[5] == '9'))
+		{
+			*next_dev_mode = 0x43;
+			return 1;
+		}
+	}
+	else if (((code[0] == 'U') || (code[0] == 'u')) && ((code[1] == 'M') || (code[1] == 'm')))
+	{
+		if ((code[2] == '4') && (code[3] == '5') && (code[4] == '6') && (code[5] == '8'))
+		{
+			*next_dev_mode = 0x04;
+			return 1;
+		}
+		if ((code[2] == '5') && (code[3] == '4') && (code[4] == '3') && (code[5] == '1'))
+		{
+			*next_dev_mode = 0x84;
+			return 1;
+		}
+		if ((code[2] == '5') && (code[3] == '6') && (code[4] == '7') && (code[5] == '9'))
+		{
+			*next_dev_mode = 0x44;
+			return 1;
+		}
+	}
+	else if (((code[0] == 'H') || (code[0] == 'h')) && ((code[1] == 'E') || (code[1] == 'e')))
+	{
+		if ((code[2] == '7') && (code[3] == '8') && (code[4] == '1') && (code[5] == '8'))
+		{
+			*next_dev_mode = 0x05;
+			return 1;
+		}
+		if ((code[2] == '2') && (code[3] == '1') && (code[4] == '8') && (code[5] == '1'))
+		{
+			*next_dev_mode = 0x85;
+			return 1;
+		}
+		if ((code[2] == '8') && (code[3] == '9') && (code[4] == '2') && (code[5] == '9'))
+		{
+			*next_dev_mode = 0x45;
+			return 1;
+		}
+	}
+	else if (((code[0] == 'F') || (code[0] == 'f')) && ((code[1] == 'L') || (code[1] == 'l')))
+	{
+		if ((code[2] == '0') && (code[3] == '7') && (code[4] == '8') && (code[5] == '8'))
+		{
+			*next_dev_mode = 0x06;
+			return 1;
+		}
+		if ((code[2] == '9') && (code[3] == '2') && (code[4] == '1') && (code[5] == '1'))
+		{
+			*next_dev_mode = 0x86;
+			return 1;
+		}
+		if ((code[2] == '1') && (code[3] == '8') && (code[4] == '9') && (code[5] == '9'))
+		{
+			*next_dev_mode = 0x46;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static void page7_commit_dev_mode(U08 next_dev_mode)
+{
+	dev_mode = next_dev_mode;
+#if DEBUG
+	TX0_char('M');
+	TX0_char(':');
+	{
+		U08 hb = (dev_mode >> 4) & 0x0f;
+		U08 lb = dev_mode & 0x0f;
+		TX0_char((hb < 10) ? (hb + '0') : (hb - 10 + 'A'));
+		TX0_char((lb < 10) ? (lb + '0') : (lb - 10 + 'A'));
+	}
+	TX0_char('\r');
+	TX0_char('\n');
+#endif
+	eeprom_update_byte(&OP_MODE, dev_mode);
+	eeprom_busy_wait();
+
+	eeprom_update_byte(&OP_MODE_CK, 0x100 - dev_mode);
+	eeprom_busy_wait();
+
+	eeprom_update_byte(&INIT_BOOT, 1);
+	eeprom_busy_wait();
+
+	if ((dev_mode & 0x3f) == 8)
+	{
+		eeprom_update_dword(&MA5105_FW_BOOT_MARK, MA5105_FW_BOOT_MARK_EXPECTED);
+		eeprom_busy_wait();
+	}
+
+	init_boot = 1;
+	page7_reset_uart_parser();
+	showPasskey_null();
+	asm("jmp 0");
+}
+
+static void page7_submit_code(U08 *code)
+{
+	U08 next_dev_mode = 0;
+
+	TEXT_Display_Check_Code(0);
+#if DEBUG
+	TX0_char('\r');
+	TX0_char('\n');
+	TX0_char('C');
+	TX0_char(':');
+	for (U08 ai = 0; ai < PAGE7_CODE_LEN; ai++)
+	{
+		TX0_char(code[ai]);
+	}
+	TX0_char('\r');
+	TX0_char('\n');
+#endif
+
+	if (page7_match_dev_mode(code, &next_dev_mode))
+	{
+		page7_commit_dev_mode(next_dev_mode);
+	}
+
+#if DEBUG
+	TX0_char('M');
+	TX0_char(':');
+	TX0_char('N');
+	TX0_char('\r');
+	TX0_char('\n');
+#endif
+	page7_reset_code(code);
+	TEXT_Display_Check_Code(1);
 }
 
 static U08 ma5105_eeprom_mode_selected(void)
@@ -345,14 +590,12 @@ int main(void)
 		EIMSK &= (uint8_t)~_BV(4);
 		EIFR = _BV(4);
 		pageChange(7);
-		actCode[0]=0x20;
-		actCode[1]=0x20;
-		actCode[2]=0x20;
-		actCode[3]=0x20;
-		actCode[4]=0x20;
-		actCode[5]=0x20;
+		page7_reset_code(actCode);
+		clearPasskeyDisplay();
 		showPasskey(actCode);
 		TEXT_Display_Check_Code(0);
+		_delay_ms(80);
+		page7_reset_uart_parser();
 		while(1)
 		{
 			asm("wdr");
@@ -386,235 +629,24 @@ int main(void)
 
 							if ((parsCnt > 6) && (parsBuf[1] == 0x83))
 							{
-								if(parsBuf[5]==0x21)
+								if(parsBuf[6]==0xF0)
 								{
+									page7_reset_code(actCode);
+									TEXT_Display_Check_Code(0);
+								}
+								else if(parsBuf[6]==0x0d)
+								{
+									page7_submit_code(actCode);
+								}
+								else if(parsBuf[5]==0x21)
+								{
+									TEXT_Display_Check_Code(0);
 									actCode[0]=actCode[1];
 									actCode[1]=actCode[2];
 									actCode[2]=actCode[3];
 									actCode[3]=actCode[4];
 									actCode[4]=actCode[5];
 									actCode[5]=parsBuf[6];
-								}
-								else
-								{
-									if(parsBuf[6]==0xF0)
-									{
-										actCode[0]=0x20;
-										actCode[1]=0x20;
-										actCode[2]=0x20;
-										actCode[3]=0x20;
-										actCode[4]=0x20;
-										actCode[5]=0x20;
-									}
-										else if(parsBuf[6]==0x0d)
-										{
-											TEXT_Display_Check_Code(0);
-											U08 code_matched = 0;
-											U08 next_dev_mode = 0;
-#if DEBUG
-											TX0_char('\r');
-											TX0_char('\n');
-											TX0_char('C');
-											TX0_char(':');
-											for (U08 ai = 0; ai < 6; ai++)
-											{
-												TX0_char(actCode[ai]);
-											}
-											TX0_char('\r');
-											TX0_char('\n');
-#endif
-											if (((actCode[0] == 'M') || (actCode[0] == 'm')) && ((actCode[1] == 'A') || (actCode[1] == 'a')))
-											{
-												if ((actCode[2] == '1') && (actCode[3] == '3') && (actCode[4] == '5') && (actCode[5] == '8'))
-												{
-													next_dev_mode = 0x00;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '8') && (actCode[3] == '5') && (actCode[4] == '4') && (actCode[5] == '1'))
-												{
-													next_dev_mode = 0x80;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '2') && (actCode[3] == '4') && (actCode[4] == '6') && (actCode[5] == '9'))
-												{
-													next_dev_mode = 0x40;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '5') && (actCode[3] == '1') && (actCode[4] == '0') && (actCode[5] == '5'))
-												{
-													next_dev_mode = 0x08;
-													code_matched = 1;
-												}
-											}
-											else if (((actCode[0] == 'M') || (actCode[0] == 'm')) && ((actCode[1] == 'U') || (actCode[1] == 'u')))
-											{
-												if ((actCode[2] == '2') && (actCode[3] == '3') && (actCode[4] == '4') && (actCode[5] == '6'))
-												{
-													next_dev_mode = 0x07;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '7') && (actCode[3] == '6') && (actCode[4] == '5') && (actCode[5] == '3'))
-												{
-													next_dev_mode = 0x87;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '3') && (actCode[3] == '4') && (actCode[4] == '5') && (actCode[5] == '7'))
-												{
-													next_dev_mode = 0x47;
-													code_matched = 1;
-												}
-											}
-											else if (((actCode[0] == 'E') || (actCode[0] == 'e')) && ((actCode[1] == 'U') || (actCode[1] == 'u')))
-											{
-												if ((actCode[2] == '3') && (actCode[3] == '5') && (actCode[4] == '7') && (actCode[5] == '8'))
-												{
-													next_dev_mode = 0x01;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '6') && (actCode[3] == '4') && (actCode[4] == '2') && (actCode[5] == '1'))
-												{
-													next_dev_mode = 0x81;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '4') && (actCode[3] == '6') && (actCode[4] == '8') && (actCode[5] == '9'))
-												{
-													next_dev_mode = 0x41;
-													code_matched = 1;
-												}
-											}
-											else if (((actCode[0] == 'L') || (actCode[0] == 'l')) && ((actCode[1] == 'H') || (actCode[1] == 'h')))
-											{
-												if ((actCode[2] == '5') && (actCode[3] == '4') && (actCode[4] == '1') && (actCode[5] == '8'))
-												{
-													next_dev_mode = 0x02;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '4') && (actCode[3] == '5') && (actCode[4] == '8') && (actCode[5] == '1'))
-												{
-													next_dev_mode = 0x82;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '6') && (actCode[3] == '5') && (actCode[4] == '2') && (actCode[5] == '9'))
-												{
-													next_dev_mode = 0x42;
-													code_matched = 1;
-												}
-											}
-											else if (((actCode[0] == 'A') || (actCode[0] == 'a')) && ((actCode[1] == 'F') || (actCode[1] == 'f')))
-											{
-												if ((actCode[2] == '9') && (actCode[3] == '1') && (actCode[4] == '0') && (actCode[5] == '8'))
-												{
-													next_dev_mode = 0x03;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '0') && (actCode[3] == '8') && (actCode[4] == '9') && (actCode[5] == '1'))
-												{
-													next_dev_mode = 0x83;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '0') && (actCode[3] == '2') && (actCode[4] == '1') && (actCode[5] == '9'))
-												{
-													next_dev_mode = 0x43;
-													code_matched = 1;
-												}
-											}
-											else if (((actCode[0] == 'U') || (actCode[0] == 'u')) && ((actCode[1] == 'M') || (actCode[1] == 'm')))
-											{
-												if ((actCode[2] == '4') && (actCode[3] == '5') && (actCode[4] == '6') && (actCode[5] == '8'))
-												{
-													next_dev_mode = 0x04;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '5') && (actCode[3] == '4') && (actCode[4] == '3') && (actCode[5] == '1'))
-												{
-													next_dev_mode = 0x84;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '5') && (actCode[3] == '6') && (actCode[4] == '7') && (actCode[5] == '9'))
-												{
-													next_dev_mode = 0x44;
-													code_matched = 1;
-												}
-											}
-											else if (((actCode[0] == 'H') || (actCode[0] == 'h')) && ((actCode[1] == 'E') || (actCode[1] == 'e')))
-											{
-												if ((actCode[2] == '7') && (actCode[3] == '8') && (actCode[4] == '1') && (actCode[5] == '8'))
-												{
-													next_dev_mode = 0x05;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '2') && (actCode[3] == '1') && (actCode[4] == '8') && (actCode[5] == '1'))
-												{
-													next_dev_mode = 0x85;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '8') && (actCode[3] == '9') && (actCode[4] == '2') && (actCode[5] == '9'))
-												{
-													next_dev_mode = 0x45;
-													code_matched = 1;
-												}
-											}
-											else if (((actCode[0] == 'F') || (actCode[0] == 'f')) && ((actCode[1] == 'L') || (actCode[1] == 'l')))
-											{
-												if ((actCode[2] == '0') && (actCode[3] == '7') && (actCode[4] == '8') && (actCode[5] == '8'))
-												{
-													next_dev_mode = 0x06;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '9') && (actCode[3] == '2') && (actCode[4] == '1') && (actCode[5] == '1'))
-												{
-													next_dev_mode = 0x86;
-													code_matched = 1;
-												}
-												else if ((actCode[2] == '1') && (actCode[3] == '8') && (actCode[4] == '9') && (actCode[5] == '9'))
-												{
-													next_dev_mode = 0x46;
-													code_matched = 1;
-												}
-											}
-
-											if (code_matched)
-											{
-												dev_mode = next_dev_mode;
-#if DEBUG
-												TX0_char('M');
-												TX0_char(':');
-												{
-													U08 hb = (dev_mode >> 4) & 0x0f;
-													U08 lb = dev_mode & 0x0f;
-													TX0_char((hb < 10) ? (hb + '0') : (hb - 10 + 'A'));
-													TX0_char((lb < 10) ? (lb + '0') : (lb - 10 + 'A'));
-												}
-												TX0_char('\r');
-												TX0_char('\n');
-#endif
-												eeprom_update_byte(&OP_MODE, dev_mode);
-												eeprom_busy_wait();
-
-												eeprom_update_byte(&OP_MODE_CK, 0x100 - dev_mode);
-												eeprom_busy_wait();
-
-												eeprom_update_byte(&INIT_BOOT, 1);
-												eeprom_busy_wait();
-												showPasskey_null();
-												while(1);
-											}
-#if DEBUG
-											TX0_char('M');
-											TX0_char(':');
-											TX0_char('N');
-											TX0_char('\r');
-											TX0_char('\n');
-#endif
-											actCode[0]=0x20;
-											actCode[1]=0x20;
-											actCode[2]=0x20;
-										actCode[3]=0x20;
-										actCode[4]=0x20;
-										actCode[5]=0x20;
-										
-										TEXT_Display_Check_Code(1);
-									}
 								}
 								showPasskey(actCode);
 								
