@@ -61,7 +61,7 @@ static void subscription_uart_pump_lines(void)
 		{
 			ota_parse_line(line);
 		}
-		else if ((strncmp(line, "WIFI|", 5) == 0) && (dwin_page_now != WIFI_PAGE_BOOT_CHECK))
+		else if (strncmp(line, "WIFI|", 5) == 0)
 		{
 			wifi_parse_line(line);
 		}

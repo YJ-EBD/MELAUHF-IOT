@@ -241,7 +241,9 @@ static void ma5105_page62_write_console_text(void)
 	ma5105_console_append_text(line, &pos, ",F");
 	ma5105_console_append_dec1(line, &pos, body_face);
 	line[pos] = '\0';
-	dwin_write_text(MA5105_PAGE62_CONSOLE_VP, line, MA5105_CONSOLE_TEXT_LEN);
+	/* Disabled for now: hide page62 text display (0xC2D2) without removing
+	   the formatting logic so it can be restored later if needed. */
+	/* dwin_write_text(MA5105_PAGE62_CONSOLE_VP, line, MA5105_CONSOLE_TEXT_LEN); */
 }
 
 static void ma5105_page69_write_console_text(void)
@@ -270,7 +272,9 @@ static void ma5105_page69_write_console_text(void)
 	ma5105_console_append_text(line, &pos, ",F");
 	ma5105_console_append_dec1(line, &pos, body_face);
 	line[pos] = '\0';
-	dwin_write_text(MA5105_PAGE69_CONSOLE_VP, line, MA5105_CONSOLE_TEXT_LEN);
+	/* Disabled for now: hide page69 text display (0xA1B1) without removing
+	   the formatting logic so it can be restored later if needed. */
+	/* dwin_write_text(MA5105_PAGE69_CONSOLE_VP, line, MA5105_CONSOLE_TEXT_LEN); */
 }
 
 static void ma5105_page69_restore_default_anchors(U08 face_mode)
@@ -1156,7 +1160,9 @@ static void ma5105_page69_write_debug_text(void)
 		}
 	}
 	line[pos] = '\0';
-	dwin_write_text(MA5105_PAGE69_DEBUG_VP, line, pos);
+	/* Disabled for now: hide page69 debug text display (0xCCCC) while keeping
+	   the value-build logic available for later reuse. */
+	/* dwin_write_text(MA5105_PAGE69_DEBUG_VP, line, pos); */
 }
 
 static void ma5105_page69_write_value(U08 slot)

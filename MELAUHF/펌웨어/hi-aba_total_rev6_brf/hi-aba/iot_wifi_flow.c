@@ -563,6 +563,13 @@ static void wifi_apply_connect_result(U08 ok)
 		p63_scan_busy = 0U;
 		p63_scan_busy_until_sec = 0U;
 	}
+	if ((dwin_page_now == WIFI_PAGE_BOOT_CHECK) || page68_boot_active)
+	{
+		// During page68 boot gating, WIFI|R is boot state input, not a request to
+		// reboot into the connected runtime flow.
+		p63_wifi_status_set(ok ? 1U : 0U);
+		return;
+	}
 	if (ok)
 	{
 		wifi_reboot_for_connected_state();
@@ -988,6 +995,13 @@ static void p63_wifi_page_apply(U08 connected)
 		p63_wifi_page_last_sent = dwin_page_now;
 		return;
 	}
+	if (dwin_page_now == PAGE68_FAIL_PAGE)
+	{
+		// Once boot was classified as an error, later Wi-Fi heartbeats must not
+		// pull the UI out of page10 behind the user's back.
+		p63_wifi_page_last_sent = dwin_page_now;
+		return;
+	}
 
 	if (connected)
 	{
@@ -1113,6 +1127,66 @@ static void p63_wifi_page_apply(U08 connected)
 	}
 }
 
+static void p63_boot_waiting_connected_tick(uint32_t nowSec)
+{
+	U08 restore;
+	U08 targetPage;
+
+	if ((dwin_page_now != WIFI_PAGE_LIST) || (!p63_boot_waiting_status))
+	{
+		p63_connected_wait_start_sec = 0;
+		return;
+	}
+	if ((!p63_wifi_status_seen) || (p63_wifi_connected_state != 1U))
+	{
+		p63_connected_wait_start_sec = 0;
+		return;
+	}
+
+	restore = p63_boot_resume_page;
+	if ((restore == 0) || (restore == 0xFF))
+	{
+		restore = (startPage != 0) ? startPage : WIFI_PAGE_CONNECTED;
+	}
+
+	targetPage = restore;
+	if (subscription_resolve_connected_target_page(restore, &targetPage))
+	{
+		if (targetPage == WIFI_PAGE_CONNECTED)
+		{
+			subscription_show_connected_page();
+		}
+		else if ((targetPage != WIFI_PAGE_LIST) && (dwin_page_now != targetPage))
+		{
+			pageChange(targetPage);
+			p63_wifi_page_last_sent = targetPage;
+			p63_boot_resume_page = targetPage;
+			p63_boot_waiting_status = 0;
+		}
+		p63_connected_wait_start_sec = 0;
+		return;
+	}
+
+	if (p63_connected_wait_start_sec == 0)
+	{
+		p63_connected_wait_start_sec = nowSec;
+		return;
+	}
+	if ((uint32_t)(nowSec - p63_connected_wait_start_sec) < P63_CONNECTED_RESTORE_GRACE_SEC)
+	{
+		return;
+	}
+
+	if ((targetPage != WIFI_PAGE_LIST) && (dwin_page_now != targetPage))
+	{
+		pageChange(targetPage);
+	}
+	p63_wifi_page_last_sent = targetPage;
+	p63_boot_resume_page = targetPage;
+	p63_boot_waiting_status = 0;
+	p63_connected_wait_start_sec = 0;
+}
+
 static void p63_wifi_status_set(U08 connected)
 {
 	if (connected)
@@ -1210,7 +1284,10 @@ static void p63_wifi_boot_tick(void)
 		p63_wifi_connected_state = 0xFF;
 		p63_wifi_last_seen_sec = 0;
 		p63_enter_fail_safe();
+		return;
 	}
+
+	p63_boot_waiting_connected_tick(nowSec);
 }
 
 static void p63_ui_tick(void)
@@ -1347,6 +1424,31 @@ static void p63_parse_line(char *line)
 		if (connTok != 0)
 		{
 			p63_wifi_status_set((atoi(connTok) != 0) ? 1U : 0U);
+		}
+		return;
+	}
+
+	if (strcmp(cmdTok, "M") == 0)
+	{
+		char *modeTok = strtok_r(0, "|", &savep);
+		if (modeTok == 0)
+		{
+			return;
+		}
+		switch (modeTok[0])
+		{
+			case 'C':
+				p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_CONNECTING;
+				break;
+			case 'A':
+				p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_AP_READY;
+				break;
+			case 'E':
+				p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_ERROR;
+				break;
+			default:
+				p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_NONE;
+				break;
 		}
 		return;
 	}

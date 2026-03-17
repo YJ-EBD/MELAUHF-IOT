@@ -214,3 +214,30 @@
   - 기존 `IOT_mode.c`에 몰려 있던 Wi-Fi 입력/63페이지 흐름, 구독/에너지 상태, OTA 화면 처리, ESP UART 브리지, 68페이지 부팅 체크를 기능별 파일로 분리하고 `IOT_mode.c`는 facade 역할 위주로 다시 정리했다.
   - 현재 단계는 동작 리스크를 줄이기 위해 단일 translation unit 구조를 유지한 채 파일 경계만 먼저 나눈 상태이며, Atmel Studio 프로젝트에서도 새 파일들이 보이도록 항목을 추가했다.
   - 로컬 `avr-gcc` 기준으로 전체 `.c` 파일 컴파일 검증을 다시 돌려, 이번 분리로 인한 신규 컴파일 에러 없이 기존 경고 수준에서 정리되는 것까지 확인했다.
+
+## 24. MA5105 68페이지 부팅 게이트를 실제 ESP 상태 수신 기반으로 재구성
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_boot.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_uart_bridge.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_wifi_flow.c`
+- 간단한 설명
+  - 68페이지 부팅 체크를 로컬 상태 확인, ESP 링크 대기, Wi-Fi 연결 단계, 등록 상태, 구독 상태, 에너지 동기화, 최종 목표 페이지 결정 순서로 다시 묶고, 각 단계를 500ms 이상 유지하면서 ESP 활동 프레임은 최대 30초까지 기다리도록 보강했다.
+  - `WIFI|` 라인을 page68에서도 바로 파싱하게 바꾸고, `@P63|M|C/A/E` 부팅 Wi-Fi 단계값을 받아 CONNECTING/AP READY/ERROR를 구분하도록 정리했다.
+  - ESP 상태가 오지 않거나 순서가 맞지 않으면 `ERR68-*` 코드와 함께 10페이지로 실패시키고, 한 번 10페이지로 분류된 뒤에는 뒤늦은 Wi-Fi heartbeat가 화면을 다시 끌어가지 못하게 가드를 추가했다.
+
+## 25. page68 부팅 중 OTA 프롬프트는 큐잉 후 최종 단계에서만 표시하도록 조정
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_boot.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_ota.c`
+- 간단한 설명
+  - 부팅 중 `OTA|Q|<current>|<target>`가 먼저 들어오면 즉시 74페이지로 튀지 않도록 `ota_boot_prompt_pending`에 임시 저장한 뒤, 68페이지의 target page 결정 이후에만 표시하도록 바꿨다.
+  - 부트 상태 리셋 시 대기 중 OTA 버전 문자열과 pending 플래그도 함께 초기화해서 이전 부팅의 잔여 프롬프트가 다음 부팅에 섞이지 않도록 정리했다.
+
+## 26. MA5105 62/69페이지 텍스트 디스플레이 출력만 임시 비활성화
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/tron_mode.c`
+- 간단한 설명
+  - 요청 기준으로 62페이지 `0xC2D2`, 69페이지 `0xA1B1`, 69페이지 `0xCCCC` Text display 출력은 `dwin_write_text()` 호출만 주석 처리해서 화면 표시만 끄고 값 조합 로직은 그대로 남겨두었다.
+  - 필요 시 주석만 해제하면 바로 복구할 수 있도록 포맷/버퍼 구성 코드는 유지했고, 로컬 `avr-gcc` 컴파일로 문법 이상 없이 반영되는 것까지 다시 확인했다.

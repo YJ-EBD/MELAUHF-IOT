@@ -1207,6 +1207,7 @@ static uint8_t g_page63LastSeenPage = 0xFF;
 static bool g_page63EntryLogged = false;
 static uint32_t g_page63LastStatusMs = 0;
 static uint8_t g_page63LastStatusConnected = 0xFF;
+static uint8_t g_atmegaBootUiStateLast = 0xFF;
 
 #ifndef WEB_SERVER_BASE_URL
 #define WEB_SERVER_BASE_URL "https://www.yjcooperation.com"
@@ -1880,6 +1881,7 @@ static bool waitForStaGotIP(uint32_t timeoutMs) {
 
 static bool tryConnectSTA(const String& ssid, const String& pass, int tries) {
   Serial.println("[STA] --- STA connect start ---");
+  notifyAtmegaBootUiState('C');
 
   WiFi.mode(WIFI_STA);
 
@@ -5593,6 +5595,25 @@ static void notifyAtmegaWifiConnectResult(bool ok) {
   Serial.printf("[ESP->AT] WIFI result=%u\n", ok ? 1U : 0U);
 }
 
+static void notifyAtmegaBootUiState(char state) {
+  char line[24];
+  uint8_t stateId = 0xFF;
+
+  switch (state) {
+    case 'C': stateId = 1U; break;
+    case 'A': stateId = 2U; break;
+    case 'E': stateId = 3U; break;
+    default: stateId = 0U; break;
+  }
+
+  if (stateId == g_atmegaBootUiStateLast) return;
+  g_atmegaBootUiStateLast = stateId;
+
+  snprintf(line, sizeof(line), "@P63|M|%c\n", state);
+  ATMEGA.print(line);
+  Serial.printf("[ESP->AT] boot wifi phase=%c\n", state);
+}
+
 static void atmegaCredentialConnectTick() {
   if (!g_atmegaPendingConnectReq) return;
   g_atmegaPendingConnectReq = false;
@@ -6126,8 +6147,10 @@ static void startPortal() {
 
   if (!apOk) {
     Serial.println("[AP] ❌ AP start failed. (Check board/core, power, antenna, region/channel)");
+    notifyAtmegaBootUiState('E');
   } else {
     Serial.println("[AP] ✅ AP should be visible now. (If not, try 2.4GHz Wi-Fi list on phone)");
+    notifyAtmegaBootUiState('A');
   }
 
   dnsServer.start(DNS_PORT, "*", AP_IP);
@@ -6228,6 +6251,7 @@ void setup() {
     bool ok = tryConnectSTA(savedSsid, savedPass, MAX_CONNECT_TRIES);
     if (ok) {
       Serial.println("[BOOT] ✅ STA connected. Portal NOT started.");
+      notifyAtmegaWifiConnectResult(true);
       portalMode = false;
 
       booting = false;

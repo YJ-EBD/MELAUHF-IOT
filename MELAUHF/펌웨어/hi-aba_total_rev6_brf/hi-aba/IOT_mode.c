@@ -77,6 +77,7 @@ static inline void UART1_TX_STR(const char* s);
 static inline void UART0_TX(uint8_t b);
 static inline void UART0_TX_STR(const char* s);
 static void subscription_enter_lock_page(U08 page);
+static void subscription_show_connected_page(void);
 static U08 subscription_resolve_connected_target_page(U08 resumePage, U08 *targetPage);
 static void subscription_restore_ready_page(void);
 static void energy_clear_subscription_snapshot(void);
@@ -89,6 +90,7 @@ static void subscription_ready_pending_tick(void);
 static U08 subscription_uart_line_is_priority(const char *line);
 static U08 energy_parse_line_fast_isr(const char *line);
 static void ota_finish_prompt(U08 accept);
+static void p63_wifi_status_set(U08 connected);
 
 static volatile U08 p63_scan_req = 0;
 static volatile U08 p63_prev_req = 0;
@@ -119,6 +121,7 @@ static U16 p63_anim_last_ms = 0;
 
 static volatile U08 p63_wifi_connected_state = 0xFF;
 static volatile U08 p63_wifi_status_seen = 0;
+static volatile U08 p63_boot_wifi_phase = 0;
 static volatile U08 reg_gate_status_seen = 0;
 static volatile U08 reg_gate_registered = 1;
 static volatile uint32_t p63_wifi_last_seen_sec = 0;
@@ -185,6 +188,11 @@ static uint32_t p63_connected_wait_start_sec = 0;
 #define WIFI_PAGE_SUB_OFFLINE 20
 #define OTA_PAGE_FIRMWARE_UPDATE 74
 
+#define P63_BOOT_WIFI_PHASE_NONE       0U
+#define P63_BOOT_WIFI_PHASE_CONNECTING 1U
+#define P63_BOOT_WIFI_PHASE_AP_READY   2U
+#define P63_BOOT_WIFI_PHASE_ERROR      3U
+
 #define OTA_KEY_UPDATE_ACCEPT 0xBC01
 #define OTA_KEY_UPDATE_SKIP   0xBC02
 #define OTA_TEXT_VP_CURRENT_VERSION 0x1A10
@@ -219,6 +227,9 @@ static U08 ota_prev_page = 0;
 static volatile U08 ota_progress_phase = OTA_PROGRESS_PHASE_NONE;
 static U08 ota_progress_index = 0;
 static uint32_t ota_progress_last_sec = 0;
+static volatile U08 ota_boot_prompt_pending = 0;
+static char ota_boot_current_version[OTA_VERSION_TEXT_LEN + 1] = {0};
+static char ota_boot_target_version[OTA_VERSION_TEXT_LEN + 1] = {0};
 static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAULT_ESP_VERSION;
 
 #define WIFI_FAIL_TEXT_VP 0xB222
@@ -234,11 +245,15 @@ static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAU
 #define PAGE68_ICON_VP 0x0C0A
 #define PAGE68_TEXT_VP 0xC222
 #define PAGE68_TEXT_LEN 32
-#define PAGE68_STEP_MIN_MS 100
-#define PAGE68_WIFI_STATUS_FRAME_WAIT_MS 1500
+#define PAGE68_STEP_MIN_MS 500
+#define PAGE68_STATUS_ACTIVITY_WAIT_MS 30000
+#define PAGE68_WIFI_PHASE_WAIT_MS 15000
+#define PAGE68_WIFI_STATUS_FRAME_WAIT_MS 15000
 #define PAGE68_REG_STATUS_WAIT_MS 3200
 #define PAGE68_SUB_STATUS_WAIT_MS 3200
 #define PAGE68_ENERGY_STATUS_WAIT_MS 3200
+#define PAGE68_OTA_PROMPT_WAIT_MS 1000
+#define PAGE68_REFRESH_PERIOD_MS 250
 #define PAGE68_FAIL_PAGE 10
 #define PAGE68_ERROR_VP 0x1200
 #define PAGE68_ERROR_TEXT_LEN 16
@@ -248,6 +263,11 @@ static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAU
 #define PAGE68_ICON_INDEX_BASE 0
 // Timer0 ISR frequency ~=1225Hz, 368 ticks ~= 300ms.
 #define PAGE67_ANIM_PERIOD_TICKS 368
+
+static volatile U08 page68_boot_active = 0;
+static U08 page68_current_step = 0xFF;
+static char page68_text_cache[PAGE68_TEXT_LEN + 1] = {0};
+static uint16_t page68_refresh_elapsed_ms = 0;
 
 char ssid_buf[33] = {0};
 char pw_buf[64] = {0};
@@ -352,6 +372,12 @@ void subscription_mark_page_change(U08 page)
 		wifi_refresh_field_display(WIFI_FIELD_PW);
 	}
 
+	if ((page == WIFI_PAGE_BOOT_CHECK) && page68_boot_active &&
+	    (page68_current_step < PAGE68_CHECK_COUNT))
+	{
+		page68_render_cached_step();
+	}
+
 	dwin_page_now = page;
 	p63_last_page_seen = page;
 	if ((dwin_page_now == 57) && sub_active)
@@ -430,6 +456,7 @@ void IOT_mode_reset_boot_state(U08 bootResumePage)
 {
 	p63_wifi_connected_state = 0xFF;
 	p63_wifi_status_seen = 0;
+	p63_boot_wifi_phase = 0;
 	reg_gate_status_seen = 0;
 	reg_gate_registered = 1;
 	sub_state_seen = 0;
@@ -441,9 +468,19 @@ void IOT_mode_reset_boot_state(U08 bootResumePage)
 	p63_boot_resume_page = bootResumePage;
 	p63_boot_waiting_status = 0;
 	p63_connected_wait_start_sec = 0;
+	subscription_ready_pending_cancel();
 	p63_scan_busy = 0;
 	p63_scan_busy_until_sec = 0;
 	p63_fail_safe_stop = 0;
+	energy_reset_sync_state();
+	g_energy_local_expired_lock = 0U;
+	page68_boot_active = 0;
+	page68_current_step = 0xFF;
+	page68_text_cache[0] = 0;
+	page68_refresh_elapsed_ms = 0;
+	ota_boot_prompt_pending = 0;
+	ota_boot_current_version[0] = 0;
+	ota_boot_target_version[0] = 0;
 }
 
 U08 IOT_mode_prepare_boot_resume_page(U08 fallbackPage)

@@ -118,6 +118,13 @@
 ## 15. 런타임 activity partial 로그 파일 소스컨트롤 제외 정리
 - 수정코드
   - 루트 `.gitignore`
+
+## 16. 이번 채팅 기준 WEB 디렉토리 무변경 기준점 정리
+- 수정코드
+  - 코드 수정 없음
+- 간단한 설명
+  - 이번 채팅의 실제 기능 수정은 `Arduino`와 `MELAUHF` 디렉토리에만 반영했고, `ABBAS_WEB` 디렉토리의 라우터/DB/UI 코드는 건드리지 않았다.
+  - 소스컨트롤 정리 시 WEB 디렉토리는 기존 상태를 그대로 유지하는 기준점만 남기고, 이번 커밋에서는 devList 기록 외 기능 영향이 없도록 정리했다.
   - 정리 대상: `storage/device_logs/*/.MELAUHF_Log.txt.activity.part`
 - 간단한 설명
   - WEB 런타임 중 생성되는 `.MELAUHF_Log.txt.activity.part` 파일은 장비 로그 병합 중간 산출물이라 기능 소스와 분리해 관리하는 편이 안전하다고 판단했다.

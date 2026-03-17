@@ -151,7 +151,26 @@ static void ota_uart_publish_decision(U08 accept)
 	}
 }
 
-static void ota_enter_prompt(const char *currentVersion, const char *targetVersion)
+static void ota_boot_prompt_clear_pending(void)
+{
+	ota_boot_prompt_pending = 0U;
+	ota_boot_current_version[0] = 0;
+	ota_boot_target_version[0] = 0;
+}
+
+static void ota_boot_prompt_queue(const char *currentVersion, const char *targetVersion)
+{
+	wifi_copy_field(ota_boot_current_version, sizeof(ota_boot_current_version), currentVersion);
+	wifi_copy_field(ota_boot_target_version, sizeof(ota_boot_target_version), targetVersion);
+	ota_boot_prompt_pending = 1U;
+}
+
+static U08 ota_boot_prompt_pending_active(void)
+{
+	return ota_boot_prompt_pending ? 1U : 0U;
+}
+
+static void ota_show_prompt_internal(const char *currentVersion, const char *targetVersion, U08 prevPage)
 {
 	char currentText[OTA_VERSION_TEXT_LEN + 1];
 	char targetText[OTA_VERSION_TEXT_LEN + 1];
@@ -169,7 +188,11 @@ static void ota_enter_prompt(const char *currentVersion, const char *targetVersi
 
 	ota_progress_reset();
 
-	if ((dwin_page_now != 0) && (dwin_page_now != 0xFF))
+	if ((prevPage != 0) && (prevPage != 0xFF) && (prevPage != OTA_PAGE_FIRMWARE_UPDATE))
+	{
+		ota_prev_page = prevPage;
+	}
+	else if ((dwin_page_now != 0) && (dwin_page_now != 0xFF) && (dwin_page_now != OTA_PAGE_FIRMWARE_UPDATE))
 	{
 		ota_prev_page = dwin_page_now;
 	}
@@ -206,6 +229,28 @@ static void ota_enter_prompt(const char *currentVersion, const char *targetVersi
 	SetVarIcon(OTA_PROGRESS_VARICON_VP, OTA_PROGRESS_ICON_HIDE_VAL);
 
 	ota_prompt_flags |= (OTA_PROMPT_FLAG_ACTIVE | OTA_PROMPT_FLAG_SHOWN);
+}
+
+static void ota_enter_prompt(const char *currentVersion, const char *targetVersion)
+{
+	ota_show_prompt_internal(currentVersion, targetVersion, dwin_page_now);
+}
+
+static U08 ota_show_boot_prompt_if_pending(U08 fallbackPage)
+{
+	U08 shown = 0U;
+
+	if (!ota_boot_prompt_pending_active())
+	{
+		return 0U;
+	}
+
+	ota_boot_prompt_pending = 0U;
+	ota_show_prompt_internal(ota_boot_current_version, ota_boot_target_version, fallbackPage);
+	shown = (ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) ? 1U : 0U;
+	ota_boot_current_version[0] = 0;
+	ota_boot_target_version[0] = 0;
+	return shown;
 }
 
 static void ota_finish_prompt(U08 accept)
@@ -263,6 +308,7 @@ static void ota_parse_line(char *line)
 
 	if ((strcmp(cmdTok, "RST") == 0) || (strcmp(cmdTok, "RESET") == 0))
 	{
+		ota_boot_prompt_clear_pending();
 		if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) && (dwin_page_now == OTA_PAGE_FIRMWARE_UPDATE))
 		{
 			if ((ota_prev_page != 0) && (ota_prev_page != OTA_PAGE_FIRMWARE_UPDATE))
@@ -289,6 +335,11 @@ static void ota_parse_line(char *line)
 			targetTok = "";
 		}
 		page71_cache_esp_version(currentTok);
+		if (page68_boot_active || (dwin_page_now == WIFI_PAGE_BOOT_CHECK))
+		{
+			ota_boot_prompt_queue(currentTok, targetTok);
+			return;
+		}
 		ota_enter_prompt(currentTok, targetTok);
 	}
 }
