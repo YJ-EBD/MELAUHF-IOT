@@ -119,5 +119,11 @@ extern char sub_dday_text[];
 void energy_uart_publish_run_event(U08 runActive, uint32_t totalEnergyNow);
 // [NEW FEATURE] Guard runtime start/stop key when assigned plan energy is exhausted.
 U08 energy_subscription_run_key_guard(void);
+// [NEW FEATURE] Re-assert page59 immediately when local energy expiry is latched.
+void energy_local_expired_page_tick(void);
+// [NEW FEATURE] Track live session baseline for immediate plan-energy expiry enforcement.
+void energy_subscription_note_run_state(U08 runActive, uint32_t totalEnergyNow);
+// [NEW FEATURE] Stop active runtime immediately when live used energy crosses plan energy.
+U08 energy_subscription_runtime_guard(uint32_t totalEnergyNow);
 
 #endif /* COMMON_H_ */

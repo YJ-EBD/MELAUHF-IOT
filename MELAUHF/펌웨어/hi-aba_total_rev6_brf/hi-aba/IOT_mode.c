@@ -246,7 +246,7 @@ static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAU
 #define PAGE68_TEXT_VP 0xC222
 #define PAGE68_TEXT_LEN 32
 #define PAGE68_STEP_MIN_MS 500
-#define PAGE68_STATUS_ACTIVITY_WAIT_MS 30000
+#define PAGE68_STATUS_ACTIVITY_WAIT_MS 60000
 #define PAGE68_WIFI_PHASE_WAIT_MS 15000
 #define PAGE68_WIFI_STATUS_FRAME_WAIT_MS 15000
 #define PAGE68_REG_STATUS_WAIT_MS 3200
@@ -406,6 +406,7 @@ void subscription_ui_tick(void)
 	p63_wifi_boot_tick();
 	p63_ui_tick();
 	registration_gate_tick();
+	energy_local_expired_page_tick();
 	subscription_ready_pending_tick();
 	page67_anim_update();
 

@@ -473,7 +473,11 @@ void main_hic()
 				{					
 					total_time++;
 				}
-					if (otime == 0)
+				if (energy_subscription_runtime_guard(totalEnergy))
+				{
+					ma5105_set_run_icon();
+				}
+				else if (otime == 0)
 					{
 						setStandby();
 						otime = settime;
@@ -759,12 +763,14 @@ void main_hic()
 															old_totalEnergy = totalEnergy;
 															TE_Display(old_totalEnergy);
 															energy_uart_publish_run_event((opPage & 0x02) ? 1U : 0U, totalEnergy);
+															energy_subscription_note_run_state((opPage & 0x02) ? 1U : 0U, totalEnergy);
 														ma_handled = 1;
 														break;
 													case 0x02:
 													totalEnergy = 0;
 													old_totalEnergy = 0;
 													TE_Display(old_totalEnergy);
+													energy_subscription_note_run_state((opPage & 0x02) ? 1U : 0U, totalEnergy);
 													ma_handled = 1;
 													break;
 													case 0x03:
@@ -1090,6 +1096,7 @@ void main_hic()
 												old_totalEnergy = totalEnergy;
 												TE_Display(old_totalEnergy);
 												energy_uart_publish_run_event((opPage & 0x02) ? 1U : 0U, totalEnergy);
+												energy_subscription_note_run_state((opPage & 0x02) ? 1U : 0U, totalEnergy);
 											break;
 											case 0x07:
 											totalEnergy = 0;
@@ -1097,6 +1104,7 @@ void main_hic()
 											old_totalEnergy = 0;
 											TE_Display(old_totalEnergy);
 											energy_uart_publish_run_event((opPage & 0x02) ? 1U : 0U, totalEnergy);
+											energy_subscription_note_run_state((opPage & 0x02) ? 1U : 0U, totalEnergy);
 											break;
 										case 0x08:
 										if(body_face==0)

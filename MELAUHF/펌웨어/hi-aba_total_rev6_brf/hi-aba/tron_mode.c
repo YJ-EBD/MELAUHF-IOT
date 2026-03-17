@@ -603,11 +603,13 @@ static U08 ma5105_page62_handle_action(U08 action)
 		old_totalEnergy = totalEnergy;
 		TE_Display(old_totalEnergy);
 		energy_uart_publish_run_event((opPage & 0x02) ? 1U : 0U, totalEnergy);
+		energy_subscription_note_run_state((opPage & 0x02) ? 1U : 0U, totalEnergy);
 		break;
 		case 0x07:
 		totalEnergy = 0;
 		old_totalEnergy = 0;
 		TE_Display(old_totalEnergy);
+		energy_subscription_note_run_state((opPage & 0x02) ? 1U : 0U, totalEnergy);
 		break;
 		case 0x08:
 		if(body_face==0)
@@ -2041,8 +2043,12 @@ void main_tron()
 				if ((otime % 60) == 0)
 				{
 					total_time++;
-				}				
-					if (otime == 0)
+				}
+				if (energy_subscription_runtime_guard(totalEnergy))
+				{
+					ma5105_set_run_icon();
+				}
+				else if (otime == 0)
 					{
 						setStandby();
 						otime = settime;
@@ -2361,6 +2367,7 @@ void main_tron()
 												old_totalEnergy = totalEnergy;
 												TE_Display(old_totalEnergy);
 												energy_uart_publish_run_event((opPage & 0x02) ? 1U : 0U, totalEnergy);
+												energy_subscription_note_run_state((opPage & 0x02) ? 1U : 0U, totalEnergy);
 											break;
 											case 0x07:
 											
@@ -2371,6 +2378,7 @@ void main_tron()
 											old_totalEnergy = 0;
 											TE_Display(old_totalEnergy);
 											energy_uart_publish_run_event((opPage & 0x02) ? 1U : 0U, totalEnergy);
+											energy_subscription_note_run_state((opPage & 0x02) ? 1U : 0U, totalEnergy);
 											break;
 										case 0x08:
 										if(body_face==0)

@@ -85,9 +85,14 @@ static void sub_clear_state(void)
 	sub_dirty = 0;
 }
 
+static U08 g_energy_live_session_active = 0U;
+static uint32_t g_energy_live_session_start_total = 0U;
+
 static void energy_reset_sync_state(void)
 {
 	g_energy_sync_seen_mask = 0U;
+	g_energy_live_session_active = 0U;
+	g_energy_live_session_start_total = 0U;
 }
 
 static U08 energy_sync_ready(void)
@@ -262,6 +267,28 @@ static void subscription_enter_lock_page(U08 page)
 	}
 	p63_wifi_page_last_sent = page;
 	p63_boot_waiting_status = 0;
+}
+
+void energy_local_expired_page_tick(void)
+{
+	if (!g_energy_local_expired_lock)
+	{
+		return;
+	}
+	if ((sub_state_code != SUB_STATE_ACTIVE) &&
+	    (sub_state_code != SUB_STATE_READY) &&
+	    (sub_active == 0U))
+	{
+		return;
+	}
+	if (dwin_page_now == WIFI_PAGE_CONNECTING)
+	{
+		return;
+	}
+	sub_clear_state();
+	sub_state_seen = 1U;
+	sub_state_code = SUB_STATE_EXPIRED;
+	subscription_enter_lock_page(WIFI_PAGE_SUB_EXPIRED);
 }
 
 static U08 subscription_resolve_connected_target_page(U08 resumePage, U08 *targetPage)
@@ -673,6 +700,25 @@ static U08 energy_subscription_exhausted(void)
 	return (g_energy_used_j >= g_energy_assigned_j) ? 1U : 0U;
 }
 
+static uint64_t energy_effective_used_with_live_session(uint32_t totalEnergyNow)
+{
+	uint64_t used = (uint64_t)g_energy_used_j;
+
+	if (g_energy_live_session_active &&
+	    (totalEnergyNow >= g_energy_live_session_start_total))
+	{
+		used += (uint64_t)(totalEnergyNow - g_energy_live_session_start_total);
+	}
+
+	return used;
+}
+
+void energy_subscription_note_run_state(U08 runActive, uint32_t totalEnergyNow)
+{
+	g_energy_live_session_active = runActive ? 1U : 0U;
+	g_energy_live_session_start_total = totalEnergyNow;
+}
+
 static void energy_apply_local_expired_lock(void)
 {
 	if (!energy_subscription_exhausted())
@@ -686,6 +732,59 @@ static void energy_apply_local_expired_lock(void)
 	sub_state_seen = 1U;
 	sub_state_code = SUB_STATE_EXPIRED;
 	subscription_enter_lock_page(WIFI_PAGE_SUB_EXPIRED);
+}
+
+U08 energy_subscription_runtime_guard(uint32_t totalEnergyNow)
+{
+	uint64_t effectiveUsed;
+	uint32_t localUsed;
+
+	if (g_energy_assigned_j == 0U)
+	{
+		return 0U;
+	}
+
+	if (!g_energy_live_session_active)
+	{
+		g_energy_live_session_active = 1U;
+		g_energy_live_session_start_total = totalEnergyNow;
+		return 0U;
+	}
+
+	effectiveUsed = energy_effective_used_with_live_session(totalEnergyNow);
+	if (effectiveUsed < (uint64_t)g_energy_assigned_j)
+	{
+		return 0U;
+	}
+
+	localUsed = (effectiveUsed > 0xFFFFFFFFULL) ? 0xFFFFFFFFUL : (uint32_t)effectiveUsed;
+	if (localUsed < g_energy_assigned_j)
+	{
+		localUsed = g_energy_assigned_j;
+	}
+	if (localUsed > g_energy_used_j)
+	{
+		g_energy_used_j = localUsed;
+	}
+	g_energy_sync_seen_mask |= ENERGY_SYNC_SEEN_USED;
+	g_energy_dirty = 1U;
+	g_energy_local_expired_lock = 1U;
+
+	if (opPage & 0x02)
+	{
+		setStandby();
+		opPage = 1;
+		old_totalEnergy = totalEnergy;
+		TE_Display(old_totalEnergy);
+		energy_uart_publish_run_event(0U, totalEnergy);
+	}
+
+	energy_subscription_note_run_state(0U, totalEnergyNow);
+	sub_clear_state();
+	sub_state_seen = 1U;
+	sub_state_code = SUB_STATE_EXPIRED;
+	subscription_enter_lock_page(WIFI_PAGE_SUB_EXPIRED);
+	return 1U;
 }
 
 // [NEW FEATURE] Page57 status icon formula (expected/included ratio).
@@ -874,6 +973,10 @@ static void energy_parse_line(char *line)
 	}
 	else if ((cmdTok[0] == 'U') && (cmdTok[1] == 0))
 	{
+		if (g_energy_local_expired_lock && (val < g_energy_used_j))
+		{
+			val = g_energy_used_j;
+		}
 		g_energy_used_j = val;
 		g_energy_sync_seen_mask |= ENERGY_SYNC_SEEN_USED;
 	}
@@ -931,6 +1034,7 @@ U08 energy_subscription_run_key_guard(void)
 		old_totalEnergy = totalEnergy;
 		energy_uart_publish_run_event(0U, totalEnergy);
 	}
+	energy_subscription_note_run_state(0U, totalEnergy);
 
 	sub_clear_state();
 	sub_state_seen = 1U;
@@ -1137,6 +1241,10 @@ static U08 energy_parse_line_fast_isr(const char *line)
 	}
 	else if (key == 'U')
 	{
+		if (g_energy_local_expired_lock && (value < g_energy_used_j))
+		{
+			value = g_energy_used_j;
+		}
 		g_energy_used_j = value;
 		g_energy_sync_seen_mask |= ENERGY_SYNC_SEEN_USED;
 	}
@@ -1166,6 +1274,17 @@ static U08 energy_parse_line_fast_isr(const char *line)
 	}
 
 	g_energy_dirty = 1U;
+	if ((key == 'A') || (key == 'U'))
+	{
+		if (energy_subscription_exhausted())
+		{
+			g_energy_local_expired_lock = 1U;
+		}
+		else
+		{
+			g_energy_local_expired_lock = 0U;
+		}
+	}
 	return 1U;
 }
 

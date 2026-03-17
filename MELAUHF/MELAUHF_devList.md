@@ -241,3 +241,21 @@
 - 간단한 설명
   - 요청 기준으로 62페이지 `0xC2D2`, 69페이지 `0xA1B1`, 69페이지 `0xCCCC` Text display 출력은 `dwin_write_text()` 호출만 주석 처리해서 화면 표시만 끄고 값 조합 로직은 그대로 남겨두었다.
   - 필요 시 주석만 해제하면 바로 복구할 수 있도록 포맷/버퍼 구성 코드는 유지했고, 로컬 `avr-gcc` 컴파일로 문법 이상 없이 반영되는 것까지 다시 확인했다.
+
+## 27. MA5105 62페이지 운전 중 플랜 초과 시 즉시 정지/59페이지 전환 보강
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/common.h`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_subscription.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/tron_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/hic_mode.c`
+- 간단한 설명
+  - MA5105 62페이지에서 운전 중 사용 에너지가 플랜 에너지를 초과해도 재부팅 전까지 62페이지에 남던 문제를 수정했다.
+  - live session delta를 포함한 runtime guard를 추가해 초과 즉시 `setStandby()`와 run-stop UART publish를 수행하고, 로컬 만료 잠금 상태로 59페이지를 지속 유지하도록 정리했다.
+
+## 28. page68 상태 활동 대기시간을 30초에서 60초로 확대
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+- 간단한 설명
+  - `PAGE68_STATUS_ACTIVITY_WAIT_MS`를 `30000`에서 `60000`으로 조정해, 68페이지 부팅 중 상태 활동 대기 허용 시간을 60초로 늘렸다.
+  - 기존 단계별 분기 구조는 유지한 채, 느린 연결/상태 응답 환경에서도 부팅 실패로 너무 빨리 떨어지지 않도록 여유 시간을 확대했다.
