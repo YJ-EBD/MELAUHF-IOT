@@ -215,5 +215,12 @@
       <SubType>compile</SubType>
     </Compile>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="iot_boot.c" />
+    <None Include="iot_ota.c" />
+    <None Include="iot_subscription.c" />
+    <None Include="iot_uart_bridge.c" />
+    <None Include="iot_wifi_flow.c" />
+  </ItemGroup>
   <Import Project="$(AVRSTUDIO_EXE_PATH)\\Vs\\Compiler.targets" />
 </Project>

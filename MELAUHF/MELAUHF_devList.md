@@ -200,3 +200,17 @@
   - 7번 페이지에서 기기번호 입력 후 엔터를 처리하는 로직을 정리하고, page7 진입 직후 UART 파서 상태를 초기화해 첫 입력 시퀀스가 이전 수신 잔여 데이터에 영향받지 않도록 보강했다.
   - MA5105는 기기등록 성공 후 즉시 부트 마커를 갱신해 다음 재부팅에서 다시 page7 등록을 강제하지 않도록 수정해서, `FL0788`처럼 1회 입력 후 엔터 1회로 정상 진입하도록 정리했다.
   - Text Display는 page7 진입/성공 시 전체 클리어와 입력 중 6칸 마스킹 표시를 분리해, 쓰레기값 잔존 없이 초반 입력부터 바로 표시되도록 보강했다.
+
+## 23. MA5105 IoT 확장부를 기능별 파일로 재정리
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_wifi_flow.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_subscription.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_ota.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_uart_bridge.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_boot.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/hi-aba.cproj`
+- 간단한 설명
+  - 기존 `IOT_mode.c`에 몰려 있던 Wi-Fi 입력/63페이지 흐름, 구독/에너지 상태, OTA 화면 처리, ESP UART 브리지, 68페이지 부팅 체크를 기능별 파일로 분리하고 `IOT_mode.c`는 facade 역할 위주로 다시 정리했다.
+  - 현재 단계는 동작 리스크를 줄이기 위해 단일 translation unit 구조를 유지한 채 파일 경계만 먼저 나눈 상태이며, Atmel Studio 프로젝트에서도 새 파일들이 보이도록 항목을 추가했다.
+  - 로컬 `avr-gcc` 기준으로 전체 `.c` 파일 컴파일 검증을 다시 돌려, 이번 분리로 인한 신규 컴파일 에러 없이 기존 경고 수준에서 정리되는 것까지 확인했다.
