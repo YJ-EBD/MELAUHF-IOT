@@ -7,6 +7,14 @@
     --nas-accent-soft: rgba(31, 122, 97, 0.12);
     --nas-ink: #0f172a;
     --nas-panel: #f8fafc;
+    --nas-topbar-card-height: 58px;
+    --nas-danger: #c2410c;
+    --nas-danger-soft: rgba(194, 65, 12, 0.1);
+    --nas-danger-border: rgba(194, 65, 12, 0.28);
+    --nas-danger-strong: #9a3412;
+    --nas-danger-dark: #ffb4a0;
+    --nas-danger-dark-soft: rgba(255, 129, 82, 0.16);
+    --nas-danger-dark-border: rgba(255, 129, 82, 0.28);
   }
 
   .nas-hero {
@@ -136,120 +144,110 @@
     display: flex;
     align-items: center;
     gap: .7rem;
-    min-height: 50px;
-    padding: .55rem .8rem;
+    height: var(--nas-topbar-card-height);
+    padding: .5rem .8rem;
+    box-sizing: border-box;
     border-radius: 1rem;
     border: 1px solid rgba(148, 163, 184, 0.24);
     background: rgba(255, 255, 255, 0.92);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
   }
 
+  .nas-searchbar .form-control {
+    padding-left: .8rem;
+  }
+
   .nas-addressbar__icon,
   .nas-searchbar__icon {
-    width: 34px;
-    height: 34px;
-    border-radius: .85rem;
+    width: 30px;
+    height: 30px;
+    border-radius: .75rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     background: rgba(22, 119, 255, 0.08);
     color: var(--explorer-accent);
+    font-size: .95rem;
     flex-shrink: 0;
   }
 
-  .nas-addressbar__content {
+  .nas-addressbar__content,
+  .nas-searchbar .flex-grow-1 {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: .16rem;
+    height: 100%;
     min-width: 0;
     flex: 1 1 auto;
   }
 
   .nas-addressbar__label,
   .nas-searchbar__label {
-    font-size: .75rem;
+    font-size: .68rem;
+    line-height: 1;
     color: #64748b;
-    margin-bottom: .18rem;
+    margin-bottom: 0;
   }
 
-  .nas-searchbar input {
+  .nas-searchbar input,
+  .nas-searchbar .form-control.form-control-sm {
     border: 0;
     box-shadow: none;
-    padding: 0;
+    min-height: 0 !important;
+    height: auto !important;
+    padding: .05rem 0 .05rem .8rem !important;
     background: transparent;
+    line-height: 1.15;
+    font-size: .92rem;
   }
 
   .nas-searchbar input:focus {
     box-shadow: none;
   }
 
-  .nas-explorer-summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+  .nas-explorer-topbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 300px;
     gap: .75rem;
-    padding: 0 1.1rem .95rem;
-    flex-wrap: wrap;
-  }
-
-  .nas-summary-title {
-    font-size: .95rem;
-    font-weight: 700;
-    color: #0f172a;
-  }
-
-  .nas-summary-sub {
-    font-size: .82rem;
-    color: #64748b;
-  }
-
-  .nas-summary-pills {
-    display: flex;
     align-items: center;
-    gap: .55rem;
-    flex-wrap: wrap;
+    padding: .85rem 1rem .75rem;
+    background: var(--explorer-header);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
   }
 
-  .nas-summary-pill {
+  .nas-navtool-group {
     display: inline-flex;
     align-items: center;
-    gap: .45rem;
-    padding: .45rem .72rem;
-    border-radius: 999px;
-    background: rgba(15, 23, 42, 0.04);
-    color: #475569;
-    font-size: .8rem;
+    gap: .35rem;
+    height: var(--nas-topbar-card-height);
+    padding: .25rem .45rem;
+    box-sizing: border-box;
+    border-radius: .95rem;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(255, 255, 255, 0.82);
   }
 
-  .nas-explorer-list {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
+  .nas-navtool-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: .75rem;
+    border: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: #334155;
   }
 
-  .nas-explorer-list .table-responsive {
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-
-  .nas-explorer-list .table {
-    margin-bottom: 0;
-  }
-
-  .nas-explorer-list thead th {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    background: #f8fafc;
-    color: #475569;
-    font-size: .78rem;
-    font-weight: 700;
-    letter-spacing: .01em;
-    text-transform: uppercase;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  .nas-navtool-btn:hover {
+    background: rgba(15, 23, 42, 0.05);
   }
 
   .nas-drive-meta {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: .85rem;
+    grid-template-columns: 1fr;
+    gap: .75rem;
   }
 
   .nas-meta-item {
@@ -285,53 +283,278 @@
     transition: width .25s ease;
   }
 
-  .nas-dropzone {
-    border: 1.5px dashed rgba(31, 122, 97, 0.32);
-    background:
-      linear-gradient(180deg, rgba(31, 122, 97, 0.08), rgba(255, 255, 255, 0.75)),
-      #ffffff;
-    border-radius: 1.1rem;
-    padding: 1.15rem;
-    text-align: center;
-    transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
-    cursor: pointer;
-  }
-
-  .nas-dropzone.is-dragover {
-    border-color: var(--nas-accent);
-    transform: translateY(-1px);
-    box-shadow: 0 18px 35px rgba(15, 23, 42, 0.08);
-  }
-
   .nas-upload-queue {
-    max-height: 200px;
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    flex-wrap: wrap;
+    min-height: 38px;
+    max-height: 88px;
     overflow: auto;
   }
 
   .nas-upload-chip {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    justify-content: space-between;
-    gap: .75rem;
-    padding: .7rem .85rem;
-    border-radius: .9rem;
+    gap: .65rem;
+    padding: .45rem .65rem;
+    border-radius: .8rem;
     background: #f8fafc;
     border: 1px solid rgba(148, 163, 184, 0.18);
+    max-width: 320px;
   }
 
   .nas-browser-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .85rem;
+    padding: .65rem 1rem;
     background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.92));
     border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    flex-wrap: wrap;
+  }
+
+  .nas-command-group {
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    flex-wrap: wrap;
+  }
+
+  .nas-command-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    padding: .45rem .72rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.04);
+    color: #475569;
+    font-size: .8rem;
   }
 
   .nas-breadcrumbs {
     display: flex;
+    align-items: center;
     flex-wrap: wrap;
-    gap: .4rem;
+    gap: .32rem;
   }
 
   .nas-breadcrumbs .btn {
+    border-radius: .65rem;
+    min-height: 28px;
+    padding: .2rem .62rem;
+    font-size: .82rem;
+  }
+
+  .nas-upload-strip {
+    display: grid;
+    grid-template-columns: minmax(180px, 220px) minmax(0, 1fr) auto;
+    gap: .9rem;
+    align-items: center;
+    padding: .7rem 1rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(248, 250, 252, 0.96);
+  }
+
+  .nas-upload-strip__title {
+    font-size: .84rem;
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  .nas-upload-strip__sub {
+    font-size: .8rem;
+    color: #64748b;
+    margin-top: .18rem;
+  }
+
+  .nas-upload-empty {
+    font-size: .82rem;
+    color: #64748b;
+  }
+
+  .nas-explorer-main {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+
+  .nas-explorer-pane {
+    min-width: 0;
+    background: var(--nas-panel);
+    border-right: 1px solid rgba(148, 163, 184, 0.14);
+    padding: .9rem .75rem;
+    overflow: auto;
+  }
+
+  .nas-pane-section + .nas-pane-section {
+    margin-top: 1rem;
+    padding-top: .9rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.14);
+  }
+
+  .nas-pane-section__title {
+    font-size: .74rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin-bottom: .45rem;
+  }
+
+  .nas-pane-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .6rem .7rem;
+    border: 0;
+    border-radius: .9rem;
+    background: transparent;
+    color: #0f172a;
+    text-align: left;
+    font-weight: 600;
+  }
+
+  .nas-pane-item:hover {
+    background: rgba(15, 23, 42, 0.05);
+  }
+
+  .nas-pane-item.is-disabled,
+  .nas-pane-item:disabled {
+    color: #94a3b8;
+    cursor: not-allowed;
+    opacity: 1;
+  }
+
+  .nas-pane-item:disabled:hover {
+    background: transparent;
+  }
+
+  .nas-pane-drive {
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+    padding: .55rem .7rem;
+    border-radius: .9rem;
+    background: rgba(15, 23, 42, 0.04);
+    color: #0f172a;
+    font-weight: 600;
+    margin-bottom: .55rem;
+  }
+
+  .nas-pane-location {
+    display: grid;
+    gap: .35rem;
+  }
+
+  .nas-pane-location .btn {
+    justify-content: flex-start;
+    border-radius: .75rem;
+  }
+
+  .nas-explorer-content {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98));
+  }
+
+  .nas-list-caption {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .8rem;
+    padding: .8rem 1rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(255, 255, 255, 0.82);
+    flex-wrap: wrap;
+  }
+
+  .nas-list-caption__title {
+    font-size: .86rem;
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  .nas-list-caption__sub {
+    font-size: .82rem;
+    color: #64748b;
+    margin-top: .2rem;
+  }
+
+  .nas-list-caption__info {
+    display: inline-flex;
+    align-items: center;
+    gap: .55rem;
+    flex-wrap: wrap;
+  }
+
+  .nas-list-caption__chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .42rem;
+    padding: .4rem .65rem;
     border-radius: 999px;
+    background: rgba(15, 23, 42, 0.05);
+    color: #475569;
+    font-size: .8rem;
+  }
+
+  .nas-explorer-list {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .nas-explorer-list .table-responsive {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    transition: background .16s ease, box-shadow .16s ease;
+  }
+
+  .nas-explorer-list .table-responsive.is-dragover {
+    background: rgba(22, 119, 255, 0.04);
+    box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.16);
+  }
+
+  .nas-explorer-list .table-responsive.is-dragover::after {
+    content: "파일을 놓으면 현재 폴더에 업로드됩니다";
+    position: absolute;
+    inset: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 1rem;
+    border: 1.5px dashed rgba(22, 119, 255, 0.4);
+    background: rgba(248, 250, 252, 0.9);
+    color: #0f172a;
+    font-size: .95rem;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .nas-explorer-list .table {
+    margin-bottom: 0;
+  }
+
+  .nas-explorer-list thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f8fafc;
+    color: #475569;
+    font-size: .84rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
   }
 
   .nas-file-row td {
@@ -360,15 +583,15 @@
   }
 
   .nas-file-icon {
-    width: 42px;
-    height: 42px;
-    border-radius: .95rem;
+    width: 34px;
+    height: 34px;
+    border-radius: .7rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     background: rgba(31, 122, 97, 0.1);
     color: var(--nas-accent);
-    font-size: 1.1rem;
+    font-size: 1rem;
     flex-shrink: 0;
   }
 
@@ -393,6 +616,22 @@
     color: #64748b;
   }
 
+  #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary {
+    color: #d94356 !important;
+    border-color: rgba(217, 67, 86, 0.32) !important;
+    background: linear-gradient(180deg, #fff7f9, #fff1f4) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
+  }
+
+  #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary:hover,
+  #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary:focus-visible,
+  #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary:active {
+    color: #fff5f7 !important;
+    border-color: #d94356 !important;
+    background: linear-gradient(180deg, #ef5a67, #d94356) !important;
+    box-shadow: 0 10px 24px rgba(217, 67, 86, 0.22) !important;
+  }
+
   .nas-empty {
     padding: 3rem 1.25rem;
     text-align: center;
@@ -402,8 +641,8 @@
   .nas-context-menu {
     position: fixed;
     min-width: 220px;
-    padding: .45rem;
-    border-radius: 1rem;
+    padding: .35rem;
+    border-radius: .9rem;
     background: rgba(255, 255, 255, 0.98);
     border: 1px solid rgba(148, 163, 184, 0.24);
     box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
@@ -437,8 +676,28 @@
     box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
   }
 
-  .nas-context-menu__item--danger {
-    color: #b42318;
+  body.page-nas .nas-context-menu__item--danger,
+  body.page-nas .nas-context-menu__item--danger span,
+  body.page-nas .nas-context-menu__item--danger i {
+    color: #d94356 !important;
+  }
+
+  body.page-nas .nas-context-menu__item--danger {
+    background: linear-gradient(180deg, rgba(255, 235, 239, 0.96), rgba(255, 246, 248, 0.98)) !important;
+    box-shadow: inset 0 0 0 1px rgba(217, 67, 86, 0.16);
+  }
+
+  body.page-nas .nas-context-menu__item--danger:hover,
+  body.page-nas .nas-context-menu__item--danger:focus-visible {
+    background: linear-gradient(180deg, rgba(239, 90, 103, 0.18), rgba(217, 67, 86, 0.12)) !important;
+    box-shadow: 0 12px 24px rgba(217, 67, 86, 0.18) !important;
+  }
+
+  body.page-nas .nas-context-menu__item--danger:hover span,
+  body.page-nas .nas-context-menu__item--danger:hover i,
+  body.page-nas .nas-context-menu__item--danger:focus-visible span,
+  body.page-nas .nas-context-menu__item--danger:focus-visible i {
+    color: #b42318 !important;
   }
 
   .nas-context-menu__divider {
@@ -483,13 +742,179 @@
     background: rgba(15, 23, 42, 0.05);
   }
 
+  html[data-bs-theme="dark"] #nasPageRoot .nas-navtool-group,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-addressbar,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-searchbar,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-command-meta,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-list-caption__chip,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-drive,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-meta-item,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-upload-chip,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-status-chip {
+    background: #182338;
+    border-color: rgba(129, 148, 185, 0.22);
+    color: #dce7ff;
+    box-shadow: none;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-browser-shell,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-explorer-content {
+    background: #11192b;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-explorer-topbar,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-browser-toolbar,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-upload-strip,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-list-caption,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-statusbar {
+    background: #151f32;
+    border-color: rgba(129, 148, 185, 0.18);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-explorer-pane {
+    background: #101827;
+    border-right-color: rgba(129, 148, 185, 0.18);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-section + .nas-pane-section {
+    border-top-color: rgba(129, 148, 185, 0.18);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-item,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-upload-strip__title,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-list-caption__title,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-file-name,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-meta-value,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-navtool-btn {
+    color: #eef4ff;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-item:hover {
+    background: rgba(79, 124, 255, 0.12);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary {
+    color: #ffc0c8 !important;
+    border-color: rgba(239, 90, 103, 0.38) !important;
+    background: linear-gradient(180deg, rgba(93, 31, 41, 0.92), rgba(69, 24, 34, 0.96)) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary:hover,
+  html[data-bs-theme="dark"] #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary:focus-visible,
+  html[data-bs-theme="dark"] #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary:active {
+    color: #fff1f3 !important;
+    border-color: rgba(255, 144, 154, 0.46) !important;
+    background: linear-gradient(180deg, rgba(239, 90, 103, 0.96), rgba(185, 46, 59, 0.98)) !important;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28) !important;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-section__title,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-upload-strip__sub,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-list-caption__sub,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-file-sub,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-meta-label,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-upload-empty,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-empty,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-trash-empty,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-statusbar,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu__item,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu__item span,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu__item i {
+    color: #b1c0da;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu {
+    background: rgba(17, 25, 42, 0.98);
+    border-color: rgba(129, 148, 185, 0.24);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu__item:hover,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu__item:focus-visible {
+    background: linear-gradient(180deg, rgba(79, 124, 255, 0.16), rgba(79, 124, 255, 0.08));
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
+  }
+
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger,
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger span,
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger i {
+    color: #ffc4cb !important;
+  }
+
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger {
+    background: linear-gradient(180deg, rgba(88, 29, 39, 0.96), rgba(63, 22, 31, 0.98)) !important;
+    box-shadow: inset 0 0 0 1px rgba(239, 90, 103, 0.18);
+  }
+
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger:hover,
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger:focus-visible {
+    background: linear-gradient(180deg, rgba(239, 90, 103, 0.28), rgba(185, 46, 59, 0.24)) !important;
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22) !important;
+  }
+
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger:hover span,
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger:hover i,
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger:focus-visible span,
+  html[data-bs-theme="dark"] body.page-nas .nas-context-menu__item--danger:focus-visible i {
+    color: #fff1f3 !important;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu__divider {
+    background: rgba(129, 148, 185, 0.2);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-file-row:hover td {
+    background: rgba(79, 124, 255, 0.08);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-file-row.is-selected td {
+    background: rgba(79, 124, 255, 0.16);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), inset 0 -1px 0 rgba(79, 124, 255, 0.06);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-explorer-list thead th {
+    background: #182338;
+    color: #dbe7ff;
+    border-bottom-color: rgba(129, 148, 185, 0.18);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-explorer-list .table-responsive.is-dragover {
+    background: rgba(79, 124, 255, 0.08);
+    box-shadow: inset 0 0 0 1px rgba(129, 148, 185, 0.22);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-explorer-list .table-responsive.is-dragover::after {
+    border-color: rgba(129, 148, 185, 0.4);
+    background: rgba(16, 24, 39, 0.92);
+    color: #eef4ff;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-breadcrumbs .btn,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-location .btn {
+    background: #182338;
+    border-color: rgba(129, 148, 185, 0.22);
+    color: #dce7ff;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-breadcrumbs .btn:hover,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-location .btn:hover {
+    background: rgba(79, 124, 255, 0.16);
+  }
+
   @media (max-width: 991.98px) {
-    .nas-drive-meta {
+    .nas-explorer-topbar,
+    .nas-upload-strip {
       grid-template-columns: 1fr;
     }
 
-    .nas-address-row {
+    .nas-explorer-main {
       grid-template-columns: 1fr;
+    }
+
+    .nas-explorer-pane {
+      border-right: 0;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
     }
   }
 </style>
@@ -502,7 +927,7 @@
       <div class="row g-4 align-items-center">
         <div class="col-12 col-xl-7">
           <span class="badge rounded-pill border border-light-subtle text-bg-light text-dark mb-3">Admin Only</span>
-          <h2 class="display-6 fw-semibold mb-2">Seagate Backup+ Desk NAS Center</h2>
+          <h2 class="display-6 fw-semibold mb-2">Foriver Backup+ Desk NAS Center</h2>
           <p class="mb-4 text-white-50">
             외장하드 내부 파일을 한 화면에서 열람하고, 현재 폴더 기준으로 바로 업로드 및 다운로드할 수 있도록 구성한 관리자 전용 작업 공간입니다.
           </p>
@@ -544,8 +969,8 @@
   <div class="alert d-none" id="nasAlert" role="alert"></div>
 
   <div class="row g-3">
-    <div class="col-12 col-xl-4">
-      <div class="card shadow-sm nas-side-card mb-3">
+    <div class="col-12 col-xl-3 col-xxl-2">
+      <div class="card shadow-sm nas-side-card">
         <div class="card-header bg-white fw-semibold d-flex align-items-center justify-content-between">
           <span><i class="bi bi-hdd-stack me-2"></i>드라이브 상태</span>
           <span class="badge rounded-pill text-bg-light border" id="nasDriveStatus">확인 중</span>
@@ -577,100 +1002,43 @@
           <div class="nas-usage-bar mb-3">
             <span id="nasUsageBar" style="width: {{ nas_drive.usage_percent if nas_drive else 0 }}%;"></span>
           </div>
-          <div class="row g-2 small">
-            <div class="col-4">
+          <div class="d-grid gap-2 small">
+            <div>
               <div class="text-secondary">사용</div>
               <div class="fw-semibold" id="nasUsedText">{{ nas_drive.used_label if nas_drive else "-" }}</div>
             </div>
-            <div class="col-4">
+            <div>
               <div class="text-secondary">여유</div>
               <div class="fw-semibold" id="nasFreeText">{{ nas_drive.free_label if nas_drive else "-" }}</div>
             </div>
-            <div class="col-4">
+            <div>
               <div class="text-secondary">전체</div>
               <div class="fw-semibold" id="nasTotalText">{{ nas_drive.total_label if nas_drive else "-" }}</div>
             </div>
           </div>
         </div>
       </div>
-
-      <div class="card shadow-sm nas-side-card mb-3">
-        <div class="card-header bg-white fw-semibold">
-          <i class="bi bi-cloud-arrow-up me-2"></i>현재 폴더 업로드
-        </div>
-        <div class="card-body">
-          <input id="nasUploadInput" type="file" class="d-none" multiple>
-          <button class="nas-dropzone w-100" id="nasDropzone" type="button">
-            <div class="fs-4 mb-2"><i class="bi bi-folder-symlink"></i></div>
-            <div class="fw-semibold mb-1">파일을 여기로 끌어오거나 눌러서 선택</div>
-            <div class="small text-secondary">업로드 대상 폴더: <span id="nasUploadTarget">/</span></div>
-          </button>
-
-          <div class="d-flex align-items-center justify-content-between mt-3 mb-2">
-            <div class="fw-semibold">업로드 대기열</div>
-            <button class="btn btn-sm btn-primary" id="nasUploadBtn" type="button">업로드 실행</button>
-          </div>
-          <div class="nas-upload-queue d-grid gap-2" id="nasUploadQueue">
-            <div class="small text-secondary">선택된 파일이 없습니다.</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card shadow-sm nas-side-card">
-        <div class="card-header bg-white fw-semibold">
-          <i class="bi bi-stars me-2"></i>사용 팁
-        </div>
-        <div class="card-body small text-secondary">
-          <div class="mb-2">브레드크럼을 눌러 상위 폴더로 빠르게 이동할 수 있습니다.</div>
-          <div class="mb-2">업로드는 현재 열어둔 폴더 기준으로 저장됩니다.</div>
-          <div class="mb-0">파일명 검색은 현재 폴더 목록 안에서 즉시 필터링됩니다.</div>
-        </div>
-      </div>
     </div>
 
-    <div class="col-12 col-xl-8 d-flex">
+    <div class="col-12 col-xl-9 col-xxl-10 d-flex">
       <div class="card shadow-sm nas-browser-shell flex-fill">
+        <input id="nasUploadInput" type="file" class="d-none" multiple>
         <div class="nas-explorer-header">
-          <div class="nas-explorer-toolbar">
-            <div class="nas-toolbar-cluster">
-              <div class="nas-toolbar-group">
-                <button class="btn btn-outline-secondary btn-sm nas-toolbar-btn" id="nasRootBtn" type="button" title="루트로 이동">
-                  <i class="bi bi-house-door"></i>
-                </button>
-                <button class="btn btn-outline-secondary btn-sm nas-toolbar-btn" id="nasUpBtn" type="button" title="상위 폴더">
-                  <i class="bi bi-arrow-up-circle"></i>
-                </button>
-                <button class="btn btn-outline-secondary btn-sm nas-toolbar-btn" id="nasExplorerRefreshBtn" type="button" title="새로고침">
-                  <i class="bi bi-arrow-repeat"></i>
-                </button>
-              </div>
-
-              <div class="nas-toolbar-group">
-                <button class="btn btn-primary btn-sm nas-toolbar-btn" id="nasNewFolderBtn" type="button" data-bs-toggle="modal" data-bs-target="#nasNewFolderModal">
-                  <i class="bi bi-folder-plus me-1"></i>새 폴더
-                </button>
-                <button class="btn btn-outline-secondary btn-sm nas-toolbar-btn" id="nasExplorerQuickUploadBtn" type="button">
-                  <i class="bi bi-cloud-arrow-up me-1"></i>업로드
-                </button>
-                <button class="btn btn-outline-secondary btn-sm nas-toolbar-btn" id="nasTrashBtn" type="button" data-bs-toggle="modal" data-bs-target="#nasTrashModal">
-                  <i class="bi bi-trash3 me-1"></i>휴지통
-                </button>
-              </div>
+          <div class="nas-explorer-topbar">
+            <div class="nas-navtool-group">
+              <button class="nas-navtool-btn" id="nasRootBtn" type="button" title="루트로 이동">
+                <i class="bi bi-house-door"></i>
+              </button>
+              <button class="nas-navtool-btn" id="nasUpBtn" type="button" title="상위 폴더">
+                <i class="bi bi-arrow-up"></i>
+              </button>
+              <button class="nas-navtool-btn" id="nasExplorerRefreshBtn" type="button" title="새로고침">
+                <i class="bi bi-arrow-repeat"></i>
+              </button>
             </div>
 
-            <div class="nas-explorer-meta">
-              <div class="nas-explorer-badge">
-                <i class="bi bi-windows"></i><span>Explorer View</span>
-              </div>
-              <div class="nas-explorer-badge">
-                <i class="bi bi-layout-text-window-reverse"></i><span>Details</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="nas-address-row">
             <div class="nas-addressbar">
-              <span class="nas-addressbar__icon"><i class="bi bi-folder2-open"></i></span>
+              <span class="nas-addressbar__icon"><i class="bi bi-pc-display"></i></span>
               <div class="nas-addressbar__content">
                 <div class="nas-addressbar__label">Address</div>
                 <div class="nas-breadcrumbs" id="nasBreadcrumbs"></div>
@@ -686,46 +1054,97 @@
             </label>
           </div>
 
-          <div class="nas-explorer-summary">
-            <div>
-              <div class="nas-summary-title">파일 브라우저</div>
-              <div class="nas-summary-sub">윈도우 탐색기 스타일의 상세 보기로 현재 폴더를 빠르게 탐색합니다.</div>
+          <div class="nas-browser-toolbar">
+            <div class="nas-command-group">
+              <button class="btn btn-primary btn-sm" id="nasNewFolderBtn" type="button" data-bs-toggle="modal" data-bs-target="#nasNewFolderModal">
+                <i class="bi bi-folder-plus me-1"></i>새 폴더
+              </button>
+              <button class="btn btn-outline-secondary btn-sm" id="nasExplorerQuickUploadBtn" type="button">
+                <i class="bi bi-cloud-arrow-up me-1"></i>업로드
+              </button>
+              <button class="btn btn-outline-secondary btn-sm" id="nasTrashBtn" type="button" data-bs-toggle="modal" data-bs-target="#nasTrashModal">
+                <i class="bi bi-trash3 me-1"></i>휴지통
+              </button>
             </div>
 
-            <div class="nas-summary-pills">
-              <span class="nas-summary-pill">
-                <i class="bi bi-signpost-2"></i><span id="nasCurrentPath">/</span>
-              </span>
-              <span class="nas-summary-pill">
-                <i class="bi bi-collection"></i><span id="nasCountsText">항목 0개</span>
-              </span>
-              <span class="nas-summary-pill">
-                <i class="bi bi-clock-history"></i><span id="nasUpdatedAt">-</span>
-              </span>
+            <div class="nas-command-group">
+              <span class="nas-command-meta"><i class="bi bi-collection"></i><span id="nasCountsText">항목 0개</span></span>
+              <span class="nas-command-meta"><i class="bi bi-clock-history"></i><span id="nasUpdatedAt">-</span></span>
             </div>
           </div>
         </div>
 
-        <div class="card-body p-0 nas-explorer-list">
-          <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-              <thead class="table-light">
-                <tr>
-                  <th class="ps-3">이름</th>
-                  <th>수정 시각</th>
-                  <th>유형</th>
-                  <th>크기</th>
-                  <th class="pe-3 text-end">동작</th>
-                </tr>
-              </thead>
-              <tbody id="nasTableBody"></tbody>
-            </table>
+        <div class="nas-upload-strip">
+          <div>
+            <div class="nas-upload-strip__title">현재 폴더 업로드</div>
+            <div class="nas-upload-strip__sub">업로드 대상 폴더: <span id="nasUploadTarget">/</span></div>
           </div>
-          <div class="nas-empty d-none" id="nasEmptyState">
-            <div class="fs-4 mb-2"><i class="bi bi-inbox"></i></div>
-            <div class="fw-semibold mb-1">현재 폴더가 비어 있습니다.</div>
-            <div class="small">파일을 업로드하거나 다른 폴더로 이동해보세요.</div>
+          <div class="nas-upload-queue" id="nasUploadQueue">
+            <div class="nas-upload-empty">선택된 파일이 없습니다.</div>
           </div>
+          <div class="nas-upload-strip__actions">
+            <button class="btn btn-sm btn-primary" id="nasUploadBtn" type="button">업로드 실행</button>
+          </div>
+        </div>
+
+        <div class="card-body p-0 nas-explorer-main">
+          <aside class="nas-explorer-pane">
+            <div class="nas-pane-section">
+              <div class="nas-pane-section__title">빠른 액세스</div>
+              <button class="nas-pane-item" id="nasPaneRootBtn" type="button">
+                <i class="bi bi-house-door"></i><span>홈</span>
+              </button>
+              <button class="nas-pane-item" id="nasPaneCurrentBtn" type="button">
+                <i class="bi bi-folder2-open"></i><span id="nasPaneCurrentLabel">현재 폴더</span>
+              </button>
+              <button class="nas-pane-item" id="nasPaneUpBtn" type="button">
+                <i class="bi bi-arrow-up"></i><span>상위 폴더</span>
+              </button>
+              <button class="nas-pane-item" id="nasPaneTrashShortcutBtn" type="button">
+                <i class="bi bi-trash3"></i><span>휴지통</span>
+              </button>
+            </div>
+
+            <div class="nas-pane-section">
+              <div class="nas-pane-section__title">이 위치</div>
+              <div class="nas-pane-drive"><i class="bi bi-hdd-stack"></i><span id="nasPaneDriveLabel">{{ nas_drive.label if nas_drive else nas_model_hint }}</span></div>
+              <div class="nas-pane-location" id="nasPaneLocation"></div>
+            </div>
+          </aside>
+
+          <section class="nas-explorer-content">
+            <div class="nas-list-caption">
+              <div>
+                <div class="nas-list-caption__title">세부 정보</div>
+                <div class="nas-list-caption__sub" id="nasCurrentPath">/</div>
+              </div>
+              <div class="nas-list-caption__info">
+                <span class="nas-list-caption__chip"><i class="bi bi-display"></i><span>Details View</span></span>
+                <span class="nas-list-caption__chip"><i class="bi bi-shield-check"></i><span>Admin Workspace</span></span>
+              </div>
+            </div>
+
+            <div class="nas-explorer-list">
+              <div class="table-responsive" id="nasExplorerDropTarget">
+                <table class="table table-hover align-middle mb-0">
+                  <thead class="table-light">
+                    <tr>
+                      <th class="ps-3">이름</th>
+                      <th>수정한 날짜</th>
+                      <th>유형</th>
+                      <th>크기</th>
+                    </tr>
+                  </thead>
+                  <tbody id="nasTableBody"></tbody>
+                </table>
+              </div>
+              <div class="nas-empty d-none" id="nasEmptyState">
+                <div class="fs-4 mb-2"><i class="bi bi-inbox"></i></div>
+                <div class="fw-semibold mb-1">현재 폴더가 비어 있습니다.</div>
+                <div class="small">파일을 업로드하거나 다른 폴더로 이동해보세요.</div>
+              </div>
+            </div>
+          </section>
         </div>
 
         <div class="nas-statusbar">
@@ -734,8 +1153,7 @@
             <span class="nas-status-chip"><i class="bi bi-cursor"></i><span id="nasSelectionText">선택된 항목 없음</span></span>
           </div>
           <div class="nas-statusbar__right">
-            <span class="nas-status-chip"><i class="bi bi-display"></i><span>Details View</span></span>
-            <span class="nas-status-chip"><i class="bi bi-shield-check"></i><span>Admin Workspace</span></span>
+            <span class="nas-status-chip"><i class="bi bi-hdd"></i><span id="nasPaneStatusMirror">{{ nas_drive.label if nas_drive else nas_model_hint }}</span></span>
           </div>
         </div>
       </div>

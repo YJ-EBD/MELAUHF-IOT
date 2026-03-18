@@ -14,6 +14,7 @@
     contextPath: "",
     contextType: "",
     trashItems: [],
+    dropTargetDepth: 0,
   };
 
   const el = {
@@ -30,10 +31,19 @@
     upBtn: document.getElementById("nasUpBtn"),
     searchInput: document.getElementById("nasSearchInput"),
     breadcrumbs: document.getElementById("nasBreadcrumbs"),
+    paneLocation: document.getElementById("nasPaneLocation"),
+    paneRootBtn: document.getElementById("nasPaneRootBtn"),
+    paneCurrentBtn: document.getElementById("nasPaneCurrentBtn"),
+    paneCurrentLabel: document.getElementById("nasPaneCurrentLabel"),
+    paneUpBtn: document.getElementById("nasPaneUpBtn"),
+    paneTrashShortcutBtn: document.getElementById("nasPaneTrashShortcutBtn"),
+    paneDriveLabel: document.getElementById("nasPaneDriveLabel"),
+    paneStatusMirror: document.getElementById("nasPaneStatusMirror"),
     currentPath: document.getElementById("nasCurrentPath"),
     countsText: document.getElementById("nasCountsText"),
     updatedAt: document.getElementById("nasUpdatedAt"),
     tableBody: document.getElementById("nasTableBody"),
+    explorerDropTarget: document.getElementById("nasExplorerDropTarget"),
     emptyState: document.getElementById("nasEmptyState"),
     heroLabel: document.getElementById("nasHeroLabel"),
     heroCapacity: document.getElementById("nasHeroCapacity"),
@@ -74,6 +84,13 @@
     ? bootstrap.Modal.getOrCreateInstance(el.trashModal)
     : null;
 
+  function ensureContextMenuLayer() {
+    if (!el.contextMenu || !document.body) return;
+    if (el.contextMenu.parentElement !== document.body) {
+      document.body.appendChild(el.contextMenu);
+    }
+  }
+
   function escapeHtml(value) {
     return String(value || "")
       .replace(/&/g, "&amp;")
@@ -81,6 +98,13 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function displayNameForPath(path) {
+    const value = String(path || "/").trim() || "/";
+    if (value === "/") return "루트";
+    const parts = value.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "현재 폴더";
   }
 
   function setAlert(kind, message) {
@@ -133,6 +157,10 @@
     return "bi bi-file-earmark";
   }
 
+  function fileKey(file) {
+    return `${file.name}|${file.size}|${file.lastModified}`;
+  }
+
   function findItem(path) {
     return state.items.find((item) => item.path === path) || null;
   }
@@ -163,6 +191,7 @@
     state.contextType = "";
     if (!el.contextMenu) return;
     el.contextMenu.classList.add("d-none");
+    el.contextMenu.style.visibility = "hidden";
     el.contextMenu.setAttribute("aria-hidden", "true");
   }
 
@@ -175,6 +204,7 @@
 
   function showContextMenu(x, y, options) {
     if (!el.contextMenu) return;
+    ensureContextMenuLayer();
     const opts = options || {};
     state.contextPath = opts.path || "";
     state.contextType = opts.type || "";
@@ -191,14 +221,27 @@
 
     el.contextMenu.classList.remove("d-none");
     el.contextMenu.setAttribute("aria-hidden", "false");
+    el.contextMenu.style.visibility = "hidden";
     el.contextMenu.style.left = "0px";
     el.contextMenu.style.top = "0px";
 
     const menuRect = el.contextMenu.getBoundingClientRect();
-    const left = Math.min(x, Math.max(window.innerWidth - menuRect.width - 12, 12));
-    const top = Math.min(y, Math.max(window.innerHeight - menuRect.height - 12, 12));
+    const pointerOffset = 6;
+    let left = x + pointerOffset;
+    let top = y + 4;
+
+    if (left + menuRect.width > window.innerWidth - 8) {
+      left = x - menuRect.width - pointerOffset;
+    }
+    if (top + menuRect.height > window.innerHeight - 8) {
+      top = y - menuRect.height - pointerOffset;
+    }
+
+    left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
+    top = Math.max(8, Math.min(top, window.innerHeight - menuRect.height - 8));
     el.contextMenu.style.left = `${left}px`;
     el.contextMenu.style.top = `${top}px`;
+    el.contextMenu.style.visibility = "visible";
   }
 
   function renderDrive(drive) {
@@ -214,6 +257,8 @@
     const label = (drive && drive.label) || root.dataset.modelHint || "NAS";
     if (el.driveLabel) el.driveLabel.textContent = label;
     if (el.heroLabel) el.heroLabel.textContent = label;
+    if (el.paneDriveLabel) el.paneDriveLabel.textContent = label;
+    if (el.paneStatusMirror) el.paneStatusMirror.textContent = label;
     if (el.mountPath) el.mountPath.textContent = (drive && drive.mount_path) || "-";
     if (el.diskDevice) el.diskDevice.textContent = (drive && (drive.mount_device || drive.disk_device)) || "-";
     if (el.transport) el.transport.textContent = ((drive && drive.transport) || "-").toUpperCase();
@@ -232,6 +277,11 @@
     el.breadcrumbs.innerHTML = items.map((crumb) => {
       return `<button class="btn btn-sm btn-outline-secondary" type="button" data-action="crumb" data-path="${escapeHtml(crumb.path)}">${escapeHtml(crumb.name)}</button>`;
     }).join("");
+    if (el.paneLocation) {
+      el.paneLocation.innerHTML = items.map((crumb) => {
+        return `<button class="btn btn-sm btn-outline-secondary" type="button" data-action="crumb" data-path="${escapeHtml(crumb.path)}">${escapeHtml(crumb.name)}</button>`;
+      }).join("");
+    }
   }
 
   function filteredItems() {
@@ -265,12 +315,6 @@
     el.tableBody.innerHTML = items.map((item) => {
       const isDir = item.type === "directory";
       const isSelected = state.selectedPath === item.path;
-      const nameButton = isDir
-        ? `<button class="btn btn-link p-0 text-start text-decoration-none" type="button" data-action="open" data-path="${escapeHtml(item.path)}">${escapeHtml(item.name)}</button>`
-        : escapeHtml(item.name);
-      const actionButton = isDir
-        ? `<button class="btn btn-sm btn-outline-primary" type="button" data-action="open" data-path="${escapeHtml(item.path)}"><i class="bi bi-arrow-right-circle me-1"></i>열기</button>`
-        : `<button class="btn btn-sm btn-outline-success" type="button" data-action="download" data-path="${escapeHtml(item.path)}"><i class="bi bi-download me-1"></i>다운로드</button>`;
 
       return `
         <tr class="nas-file-row ${isSelected ? "is-selected" : ""}" data-row-path="${escapeHtml(item.path)}" data-row-type="${escapeHtml(item.type)}" data-row-name="${escapeHtml(item.name)}">
@@ -278,7 +322,7 @@
             <div class="nas-file-primary">
               <span class="nas-file-icon"><i class="${fileIcon(item)}"></i></span>
               <div class="min-w-0">
-                <div class="nas-file-name">${nameButton}</div>
+                <div class="nas-file-name">${escapeHtml(item.name)}</div>
                 <div class="nas-file-sub">${isDir ? "폴더" : (item.extension || "파일")}</div>
               </div>
             </div>
@@ -286,7 +330,6 @@
           <td>${escapeHtml(item.modified_at || "-")}</td>
           <td>${isDir ? "폴더" : "파일"}</td>
           <td>${escapeHtml(item.size_label || "-")}</td>
-          <td class="pe-3 text-end">${actionButton}</td>
         </tr>
       `;
     }).join("");
@@ -330,7 +373,7 @@
   function renderQueue() {
     if (!el.uploadQueue) return;
     if (!state.uploadFiles.length) {
-      el.uploadQueue.innerHTML = '<div class="small text-secondary">선택된 파일이 없습니다.</div>';
+      el.uploadQueue.innerHTML = '<div class="nas-upload-empty">선택된 파일이 없습니다.</div>';
       return;
     }
     el.uploadQueue.innerHTML = state.uploadFiles.map((file, index) => {
@@ -373,10 +416,12 @@
     renderBreadcrumbs(payload.breadcrumbs || []);
     if (el.currentPath) el.currentPath.textContent = state.currentPath;
     if (el.statusPath) el.statusPath.textContent = state.currentPath;
+    if (el.paneCurrentLabel) el.paneCurrentLabel.textContent = displayNameForPath(state.currentPath);
     if (el.updatedAt) el.updatedAt.textContent = payload.updated_at || "-";
     if (el.uploadTarget) el.uploadTarget.textContent = state.currentPath;
     if (el.newFolderPath) el.newFolderPath.textContent = state.currentPath;
     if (el.upBtn) el.upBtn.disabled = !state.parentPath;
+    if (el.paneUpBtn) el.paneUpBtn.disabled = !state.parentPath;
     renderItems();
   }
 
@@ -421,9 +466,9 @@
   function mergeUploadFiles(files) {
     const next = Array.from(files || []);
     if (!next.length) return;
-    const known = new Set(state.uploadFiles.map((file) => `${file.name}|${file.size}|${file.lastModified}`));
+    const known = new Set(state.uploadFiles.map((file) => fileKey(file)));
     next.forEach((file) => {
-      const key = `${file.name}|${file.size}|${file.lastModified}`;
+      const key = fileKey(file);
       if (!known.has(key)) {
         known.add(key);
         state.uploadFiles.push(file);
@@ -432,15 +477,17 @@
     renderQueue();
   }
 
-  async function uploadFiles() {
-    if (!state.uploadFiles.length) {
+  async function uploadFileBatch(files, options) {
+    const batch = Array.from(files || []);
+    const opts = options || {};
+    if (!batch.length) {
       setAlert("warning", "먼저 업로드할 파일을 선택해주세요.");
-      return;
+      return false;
     }
 
     const formData = new FormData();
     formData.append("path", state.currentPath || "/");
-    state.uploadFiles.forEach((file) => formData.append("files", file, file.name));
+    batch.forEach((file) => formData.append("files", file, file.name));
 
     setLoading(true, "파일을 업로드하는 중...");
     try {
@@ -450,15 +497,22 @@
       const successText = `업로드 완료: ${payload.saved_count || 0}개 저장`;
       const skippedText = payload.skipped_count ? `, ${payload.skipped_count}개 건너뜀` : "";
       setAlert("success", successText + skippedText);
-      state.uploadFiles = [];
+      const uploadedKeys = new Set(batch.map((file) => fileKey(file)));
+      state.uploadFiles = state.uploadFiles.filter((file) => !uploadedKeys.has(fileKey(file)));
       renderQueue();
-      if (el.uploadInput) el.uploadInput.value = "";
+      if (!opts.preserveInput && el.uploadInput) el.uploadInput.value = "";
       await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
+      return true;
     } catch (err) {
       setAlert("danger", err instanceof Error ? err.message : "업로드에 실패했습니다.");
+      return false;
     } finally {
       setLoading(false);
     }
+  }
+
+  async function uploadFiles() {
+    return uploadFileBatch(state.uploadFiles);
   }
 
   function openNewFolderModal() {
@@ -619,6 +673,11 @@
     el.dropzone.classList.toggle("is-dragover", active);
   }
 
+  function onExplorerDropDrag(active) {
+    if (!el.explorerDropTarget) return;
+    el.explorerDropTarget.classList.toggle("is-dragover", active);
+  }
+
   if (el.refreshBtn) {
     el.refreshBtn.addEventListener("click", () => loadFolder(state.currentPath || "/"));
   }
@@ -639,8 +698,22 @@
     el.rootBtn.addEventListener("click", () => loadFolder("/"));
   }
 
+  if (el.paneRootBtn) {
+    el.paneRootBtn.addEventListener("click", () => loadFolder("/"));
+  }
+
+  if (el.paneCurrentBtn) {
+    el.paneCurrentBtn.addEventListener("click", () => loadFolder(state.currentPath || "/"));
+  }
+
   if (el.trashBtn) {
     el.trashBtn.addEventListener("click", () => {
+      openTrashModal();
+    });
+  }
+
+  if (el.paneTrashShortcutBtn) {
+    el.paneTrashShortcutBtn.addEventListener("click", () => {
       openTrashModal();
     });
   }
@@ -653,6 +726,12 @@
 
   if (el.upBtn) {
     el.upBtn.addEventListener("click", () => {
+      if (state.parentPath) loadFolder(state.parentPath);
+    });
+  }
+
+  if (el.paneUpBtn) {
+    el.paneUpBtn.addEventListener("click", () => {
       if (state.parentPath) loadFolder(state.parentPath);
     });
   }
@@ -684,6 +763,36 @@
     el.dropzone.addEventListener("drop", (event) => {
       const files = event.dataTransfer && event.dataTransfer.files;
       mergeUploadFiles(files);
+    });
+  }
+
+  if (el.explorerDropTarget) {
+    el.explorerDropTarget.addEventListener("dragenter", (event) => {
+      event.preventDefault();
+      state.dropTargetDepth += 1;
+      onExplorerDropDrag(true);
+    });
+    el.explorerDropTarget.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      onExplorerDropDrag(true);
+    });
+    el.explorerDropTarget.addEventListener("dragleave", (event) => {
+      event.preventDefault();
+      state.dropTargetDepth = Math.max(0, state.dropTargetDepth - 1);
+      if (!state.dropTargetDepth || !el.explorerDropTarget.contains(event.relatedTarget)) {
+        state.dropTargetDepth = 0;
+        onExplorerDropDrag(false);
+      }
+    });
+    el.explorerDropTarget.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      state.dropTargetDepth = 0;
+      onExplorerDropDrag(false);
+      const files = event.dataTransfer && event.dataTransfer.files;
+      if (!files || !files.length) return;
+      mergeUploadFiles(files);
+      await uploadFileBatch(files, { preserveInput: true });
     });
   }
 
@@ -735,23 +844,19 @@
     });
   }
 
+  if (el.paneLocation) {
+    el.paneLocation.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-action='crumb']");
+      if (!button) return;
+      loadFolder(button.getAttribute("data-path") || "/");
+    });
+  }
+
   if (el.tableBody) {
     el.tableBody.addEventListener("click", (event) => {
       const row = event.target.closest("tr[data-row-path]");
       if (row) {
         setSelectedItem(row.getAttribute("data-row-path") || "", row.getAttribute("data-row-type") || "");
-      }
-
-      const button = event.target.closest("[data-action]");
-      if (button) {
-        const action = button.getAttribute("data-action");
-        const path = button.getAttribute("data-path") || "/";
-        if (action === "open") {
-          loadFolder(path);
-        } else if (action === "download") {
-          window.location.href = `/api/nas/download?path=${encodeURIComponent(path)}`;
-        }
-        return;
       }
 
       if (!row) return;
@@ -849,6 +954,7 @@
   window.addEventListener("scroll", hideContextMenu, true);
   window.addEventListener("resize", hideContextMenu);
 
+  ensureContextMenuLayer();
   renderQueue();
   loadFolder("/");
 })();

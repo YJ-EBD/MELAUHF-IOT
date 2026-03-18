@@ -204,3 +204,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 전체 관리자 콘솔 UI/UX 리뉴얼, 로그인/회원가입 화면 개편, 전역 다크모드와 NAS Center 다크모드 보정을 진행한 작업이었고, Arduino(ESP32) 코드는 수정하지 않았다.
   - Arduino 디렉토리는 기존 디바이스 제어/통신/OTA 동작을 그대로 유지한 채 `_devList` 기록만 추가했다.
+
+## 28. NAS Center 세부 UX 보정에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 NAS Center 탐색기형 UI 세부 조정, 우클릭 메뉴 위치 보정, 드래그앤드롭 업로드, 로그인 문구/지원 메일 수정 등을 정리하는 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
+  - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 갱신했다.
