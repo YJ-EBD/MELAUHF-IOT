@@ -1431,6 +1431,7 @@ static void p63_parse_line(char *line)
 	if (strcmp(cmdTok, "M") == 0)
 	{
 		char *modeTok = strtok_r(0, "|", &savep);
+		char *attemptTok = strtok_r(0, "|", &savep);
 		if (modeTok == 0)
 		{
 			return;
@@ -1439,15 +1440,27 @@ static void p63_parse_line(char *line)
 		{
 			case 'C':
 				p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_CONNECTING;
+				p63_boot_wifi_retry_attempt = 0U;
+				if (attemptTok != 0)
+				{
+					int attempt = atoi(attemptTok);
+					if (attempt > 0)
+					{
+						p63_boot_wifi_retry_attempt = (U08)attempt;
+					}
+				}
 				break;
 			case 'A':
 				p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_AP_READY;
+				p63_boot_wifi_retry_attempt = 0U;
 				break;
 			case 'E':
 				p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_ERROR;
+				p63_boot_wifi_retry_attempt = 0U;
 				break;
 			default:
 				p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_NONE;
+				p63_boot_wifi_retry_attempt = 0U;
 				break;
 		}
 		return;

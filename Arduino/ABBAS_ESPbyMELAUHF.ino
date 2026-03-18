@@ -61,6 +61,7 @@ static void webLogUploadTick();
 static void webMarkLogUploadDirty(const char* path);
 static void atmegaPublishSubscriptionActive(const char* planLabel, const char* range, int remainingDays);
 static void notifyAtmegaWifiConnectResult(bool ok);
+static void notifyAtmegaBootUiState(char state, uint8_t retryAttempt);
 static void webScheduleImmediateFirmwareCheck(const char* reason);
 static void webFirmwareImmediateCheckTick();
 static void webFirmwareDecisionTick();
@@ -1208,6 +1209,7 @@ static bool g_page63EntryLogged = false;
 static uint32_t g_page63LastStatusMs = 0;
 static uint8_t g_page63LastStatusConnected = 0xFF;
 static uint8_t g_atmegaBootUiStateLast = 0xFF;
+static uint8_t g_atmegaBootUiRetryLast = 0xFF;
 
 #ifndef WEB_SERVER_BASE_URL
 #define WEB_SERVER_BASE_URL "https://www.yjcooperation.com"
@@ -1881,7 +1883,6 @@ static bool waitForStaGotIP(uint32_t timeoutMs) {
 
 static bool tryConnectSTA(const String& ssid, const String& pass, int tries) {
   Serial.println("[STA] --- STA connect start ---");
-  notifyAtmegaBootUiState('C');
 
   WiFi.mode(WIFI_STA);
 
@@ -1891,6 +1892,7 @@ static bool tryConnectSTA(const String& ssid, const String& pass, int tries) {
   setBandModeSTA();
 
   for (int i = 1; i <= tries; i++) {
+    notifyAtmegaBootUiState('C', (uint8_t)i);
     Serial.printf("[STA] Try %d/%d -> SSID='%s' (pass_len=%d)\n",
                   i, tries, ssid.c_str(), (int)pass.length());
 
@@ -5595,7 +5597,7 @@ static void notifyAtmegaWifiConnectResult(bool ok) {
   Serial.printf("[ESP->AT] WIFI result=%u\n", ok ? 1U : 0U);
 }
 
-static void notifyAtmegaBootUiState(char state) {
+static void notifyAtmegaBootUiState(char state, uint8_t retryAttempt) {
   char line[24];
   uint8_t stateId = 0xFF;
 
@@ -5606,12 +5608,24 @@ static void notifyAtmegaBootUiState(char state) {
     default: stateId = 0U; break;
   }
 
-  if (stateId == g_atmegaBootUiStateLast) return;
-  g_atmegaBootUiStateLast = stateId;
+  if (state != 'C') retryAttempt = 0U;
 
-  snprintf(line, sizeof(line), "@P63|M|%c\n", state);
+  if ((stateId == g_atmegaBootUiStateLast) &&
+      (retryAttempt == g_atmegaBootUiRetryLast)) return;
+  g_atmegaBootUiStateLast = stateId;
+  g_atmegaBootUiRetryLast = retryAttempt;
+
+  if (state == 'C' && retryAttempt > 0U) {
+    snprintf(line, sizeof(line), "@P63|M|%c|%u\n", state, retryAttempt);
+  } else {
+    snprintf(line, sizeof(line), "@P63|M|%c\n", state);
+  }
   ATMEGA.print(line);
-  Serial.printf("[ESP->AT] boot wifi phase=%c\n", state);
+  if (state == 'C' && retryAttempt > 0U) {
+    Serial.printf("[ESP->AT] boot wifi phase=%c retry=%u\n", state, retryAttempt);
+  } else {
+    Serial.printf("[ESP->AT] boot wifi phase=%c\n", state);
+  }
 }
 
 static void atmegaCredentialConnectTick() {
@@ -6147,10 +6161,10 @@ static void startPortal() {
 
   if (!apOk) {
     Serial.println("[AP] ❌ AP start failed. (Check board/core, power, antenna, region/channel)");
-    notifyAtmegaBootUiState('E');
+    notifyAtmegaBootUiState('E', 0U);
   } else {
     Serial.println("[AP] ✅ AP should be visible now. (If not, try 2.4GHz Wi-Fi list on phone)");
-    notifyAtmegaBootUiState('A');
+    notifyAtmegaBootUiState('A', 0U);
   }
 
   dnsServer.start(DNS_PORT, "*", AP_IP);

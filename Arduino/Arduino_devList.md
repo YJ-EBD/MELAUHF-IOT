@@ -167,3 +167,10 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 MELAUHF ATmega 펌웨어에서 page62 운전 중 플랜 초과 시 즉시 정지/59페이지 전환을 보강하고, page68 상태 활동 대기를 60초로 늘리는 작업이었다.
   - Arduino(ESP32) 디렉토리는 기능 변경 없이 기존 `@SUB|`, `@ENG|`, `@WIFI|`, `@OTA|` 연동 구조를 유지하는 기준만 devList에 정리했다.
+
+## 23. page68 Wi-Fi 재시도 번호를 ESP에서 함께 전달하도록 정리
+- 수정코드
+  - `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 저장된 Wi-Fi 자동 연결 시 ESP가 각 부팅 재시도마다 `@P63|M|C|<attempt>`를 보내도록 바꿔, ATmega가 68페이지에서 첫 시도와 재연결 시도를 구분할 수 있게 정리했다.
+  - 첫 시도는 기존처럼 `Connecting Wi - Fi . . .`를 유지하고, 2번째/3번째 시도부터만 `Reconnecting Wi - Fi (1) . . .`, `Reconnecting Wi - Fi (2) . . .`로 표시되도록 ATmega 쪽 표시 기준과 맞췄다.

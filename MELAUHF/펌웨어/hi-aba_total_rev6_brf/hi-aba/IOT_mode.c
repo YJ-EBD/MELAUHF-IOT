@@ -122,6 +122,7 @@ static U16 p63_anim_last_ms = 0;
 static volatile U08 p63_wifi_connected_state = 0xFF;
 static volatile U08 p63_wifi_status_seen = 0;
 static volatile U08 p63_boot_wifi_phase = 0;
+static volatile U08 p63_boot_wifi_retry_attempt = 0;
 static volatile U08 reg_gate_status_seen = 0;
 static volatile U08 reg_gate_registered = 1;
 static volatile uint32_t p63_wifi_last_seen_sec = 0;
@@ -248,7 +249,8 @@ static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAU
 #define PAGE68_STEP_MIN_MS 500
 #define PAGE68_STATUS_ACTIVITY_WAIT_MS 60000
 #define PAGE68_WIFI_PHASE_WAIT_MS 15000
-#define PAGE68_WIFI_STATUS_FRAME_WAIT_MS 15000
+// Cover ESP boot retry flow: 3 x 25s STA attempts + retry/AP startup overhead.
+#define PAGE68_WIFI_STATUS_FRAME_WAIT_MS 90000UL
 #define PAGE68_REG_STATUS_WAIT_MS 3200
 #define PAGE68_SUB_STATUS_WAIT_MS 3200
 #define PAGE68_ENERGY_STATUS_WAIT_MS 3200
@@ -458,6 +460,7 @@ void IOT_mode_reset_boot_state(U08 bootResumePage)
 	p63_wifi_connected_state = 0xFF;
 	p63_wifi_status_seen = 0;
 	p63_boot_wifi_phase = 0;
+	p63_boot_wifi_retry_attempt = 0;
 	reg_gate_status_seen = 0;
 	reg_gate_registered = 1;
 	sub_state_seen = 0;

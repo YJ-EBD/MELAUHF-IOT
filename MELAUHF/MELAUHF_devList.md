@@ -259,3 +259,20 @@
 - 간단한 설명
   - `PAGE68_STATUS_ACTIVITY_WAIT_MS`를 `30000`에서 `60000`으로 조정해, 68페이지 부팅 중 상태 활동 대기 허용 시간을 60초로 늘렸다.
   - 기존 단계별 분기 구조는 유지한 채, 느린 연결/상태 응답 환경에서도 부팅 실패로 너무 빨리 떨어지지 않도록 여유 시간을 확대했다.
+
+## 29. 저장된 Wi-Fi 3회 실패 후 page68이 page10으로 먼저 떨어지던 타이밍 보정
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+- 간단한 설명
+  - ESP의 저장된 Wi-Fi 부팅 경로는 `25초 x 3회` STA 재시도 후에야 portal AP를 띄우고 `@P63|M|A`를 보내는데, MA5105 68페이지의 `Connecting Wi-Fi...` 단계 대기가 `15초`라서 AP 준비 전에 `ERR68-18`로 10페이지로 떨어질 수 있었다.
+  - `PAGE68_WIFI_STATUS_FRAME_WAIT_MS`를 `90000ms`로 늘려, 저장된 Wi-Fi 3회 실패 시 ESP가 재시도를 멈추고 portal AP를 띄운 뒤 68페이지가 63페이지로 정상 전환되도록 보정했다.
+
+## 30. page68 Wi-Fi 재시도 횟수를 부팅 텍스트에 표시
+- 수정코드
+  - `Arduino/ABBAS_ESPbyMELAUHF.ino`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_wifi_flow.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_boot.c`
+- 간단한 설명
+  - ESP가 저장된 Wi-Fi 부팅 재시도마다 `@P63|M|C|<attempt>` 형태로 현재 시도 번호를 ATmega에 보내도록 바꿨다.
+  - MA5105 68페이지는 첫 시도(`attempt=1`)에는 `"Connecting Wi - Fi . . ."`를 유지하고, 이후 재시도만 `"Reconnecting Wi - Fi (1) . . ."`, `"Reconnecting Wi - Fi (2) . . ."` 형식으로 다시 그리도록 보강했다.

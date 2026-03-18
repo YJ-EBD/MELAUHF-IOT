@@ -5,6 +5,8 @@
  * grouped separately while preserving the original translation-unit behavior.
  */
 
+static void page68_fill_step_text(U08 step, char *textBuf);
+
 static void page68_render_cached_step(void)
 {
 	if (page68_current_step >= PAGE68_CHECK_COUNT)
@@ -12,6 +14,8 @@ static void page68_render_cached_step(void)
 		return;
 	}
 
+	page68_fill_step_text(page68_current_step, page68_text_cache);
+	page68_text_cache[PAGE68_TEXT_LEN] = 0;
 	SetVarIcon(PAGE68_ICON_VP, (uint16_t)(PAGE68_ICON_INDEX_BASE + page68_current_step));
 	dwin_write_text(PAGE68_TEXT_VP, page68_text_cache, PAGE68_TEXT_LEN);
 }
@@ -69,7 +73,19 @@ static void page68_fill_step_text(U08 step, char *textBuf)
 		case 0: strcpy_P(textBuf, PSTR("Entering Safe Boot...")); break;
 		case 1: strcpy_P(textBuf, PSTR("Checking Local State...")); break;
 		case 2: strcpy_P(textBuf, PSTR("Waiting for ESP Link...")); break;
-		case 3: strcpy_P(textBuf, PSTR("Connecting Wi-Fi...")); break;
+		case 3:
+			if ((p63_boot_wifi_phase == P63_BOOT_WIFI_PHASE_CONNECTING) &&
+			    (p63_boot_wifi_retry_attempt > 1U))
+			{
+				snprintf(textBuf, PAGE68_TEXT_LEN + 1,
+				         "Reconnecting Wi - Fi (%u) . . .",
+				         (unsigned int)(p63_boot_wifi_retry_attempt - 1U));
+			}
+			else
+			{
+				strcpy_P(textBuf, PSTR("Connecting Wi - Fi . . ."));
+			}
+			break;
 		case 4: strcpy_P(textBuf, PSTR("Checking Registration...")); break;
 		case 5: strcpy_P(textBuf, PSTR("Checking Subscription...")); break;
 		case 6: strcpy_P(textBuf, PSTR("Checking Energy Sync...")); break;
@@ -344,9 +360,9 @@ static U08 page68_check_transport_state(char *errCode, U08 errSz)
 	return 1U;
 }
 
-static void page68_wait_step_10ms(uint16_t *remainMs)
+static void page68_wait_step_10ms(uint32_t *remainMs)
 {
-	if ((remainMs == 0) || (*remainMs == 0))
+	if ((remainMs == 0) || (*remainMs == 0U))
 	{
 		return;
 	}
@@ -358,7 +374,7 @@ static void page68_wait_step_10ms(uint16_t *remainMs)
 
 	if (*remainMs >= 10U)
 	{
-		*remainMs = (uint16_t)(*remainMs - 10U);
+		*remainMs -= 10U;
 	}
 	else
 	{
@@ -424,7 +440,7 @@ static U08 page68_run_boot_checks(U08 resumePage)
 	U08 otaPromptShown = 0U;
 	U08 targetPage = 0U;
 	U08 waitingStatus = 0U;
-	uint16_t waitMs;
+	uint32_t waitMs;
 	uint32_t nowSec;
 	char errCode[PAGE68_ERROR_TEXT_LEN + 1];
 
