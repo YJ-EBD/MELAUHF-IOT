@@ -8,6 +8,7 @@
 ## 주요 기능
 
 - 관리자 로그인, 로그아웃, 세션 인증
+- 사용자 `role` 기반 관리자 권한 구분(`admin`만 NAS 접근 허용)
 - 회원가입, 아이디 중복 확인, 이메일 인증 코드 검증
 - ESP32 디바이스 등록, 수정, 삭제, 등록 여부 확인
 - 디바이스 온라인/오프라인 상태, 마지막 연결 시각, 고객사별 상태 관리
@@ -20,6 +21,7 @@
 - 디바이스별 데이터 조회, 검색, 페이지네이션
 - SD 로그 조회, 다운로드, 삭제 전 백업
 - 서버 로그 저장 및 조회
+- 외장하드(Seagate Backup+ Desk) 파일 열람/업로드/다운로드용 NAS 페이지
 
 ## 기술 스택
 
@@ -71,6 +73,7 @@ ABBAS_WEB/
 - `/control-panel`
 - `/logs`
 - `/data`
+- `/nas`
 - `/plan`
 - `/settings`
 
@@ -208,6 +211,10 @@ ABBAS_DEVICE_REGISTER_REFRESH_SEC=21600
 ABBAS_ENABLE_LAN_DISCOVERY=0
 ABBAS_ENABLE_DIRECT_DEVICE_TCP=0
 ABBAS_ALLOW_AUTO_PROVISION=0
+
+ABBAS_ADMIN_USER_IDS=admin,abbas
+ABBAS_NAS_ROOT=/media/abbas/FORIVER_NAS1
+ABBAS_NAS_MODEL_CONTAINS=Backup+ Desk
 ```
 
 펌웨어 운영 기본값:

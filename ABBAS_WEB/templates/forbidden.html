@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-lg-7 col-xl-6">
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-4 p-lg-5 text-center">
+        <div class="display-5 mb-3 text-warning"><i class="bi bi-shield-lock"></i></div>
+        <h2 class="h4 fw-semibold mb-2">{{ forbidden_title or "접근 제한" }}</h2>
+        <p class="text-secondary mb-4">{{ forbidden_message or "이 페이지에 접근할 권한이 없습니다." }}</p>
+        <a class="btn btn-primary" href="/">
+          <i class="bi bi-house-door me-1"></i>대시보드로 이동
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

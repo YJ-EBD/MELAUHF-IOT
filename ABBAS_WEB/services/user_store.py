@@ -23,6 +23,7 @@ USER_HEADERS = [
     "BIRTH",
     "NAME",
     "NICKNAME",
+    "ROLE",
     "JOIN_DATE",
 ]
 
@@ -84,6 +85,20 @@ def read_user(user_id: str) -> Optional[Dict[str, str]]:
     return user_repo.get_user_row((user_id or "").strip())
 
 
+def get_user_role(user_id: str) -> str:
+    user = read_user(user_id)
+    if not user:
+        return "user"
+    role = str(user.get("ROLE") or "").strip().lower()
+    if role == "admin":
+        return "admin"
+    return "user"
+
+
+def is_admin_user(user_id: str) -> bool:
+    return get_user_role(user_id) == "admin"
+
+
 def create_user(
     user_id: str,
     password: str,
@@ -127,6 +142,7 @@ def create_user(
             birth=birth,
             name=name,
             nickname=nickname,
+            role="user",
             email_verified=True,
         )
     except Exception as e:

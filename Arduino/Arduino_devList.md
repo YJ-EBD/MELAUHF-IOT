@@ -188,3 +188,11 @@
 - 간단한 설명
   - DWIN 직접 word write helper(`dwinWriteWord`)를 추가하고, 현재 DWIN page가 62일 때만 ESP32가 `0x0AA5`에 현재 연결 Wi-Fi RSSI 기준 아이콘 index `0~3`을 1초 주기로 써주도록 `page62WifiIconTick()`을 추가했다.
   - 미연결 상태는 `0(매우약함)`으로 처리하고, 62페이지 재진입 시 즉시 반영되도록 마지막 페이지/아이콘 캐시를 함께 두어 화면이 계속 갱신되도록 정리했다.
+
+## 26. 관리자 NAS 페이지 개발에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 관리자 권한 기반 NAS 페이지와 파일 브라우저 UI/UX를 추가하는 작업이었고, Arduino(ESP32) 코드는 수정하지 않았다.
+  - ESP 디렉토리는 기존 시리얼 연동, OTA, Wi-Fi 상태 송신 동작을 그대로 유지한 채 `_devList` 기록만 갱신했다.

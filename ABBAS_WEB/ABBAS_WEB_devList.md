@@ -201,3 +201,17 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 Arduino(ESP32)에서 MA5105 62페이지 `VAR ICON 0x0AA5`를 현재 연결 Wi-Fi RSSI에 따라 0~3 단계로 갱신하는 작업이었고, ABBAS_WEB 기능 코드는 변경하지 않았다.
   - WEB 디렉토리는 기존 구독/OTA/API 동작을 그대로 유지한 채, 디렉토리별 devList 정리와 소스컨트롤 기준점만 업데이트했다.
+
+## 25. 관리자 전용 NAS 페이지 및 파일 브라우저 UI 추가
+- 수정코드
+  - `README.md`
+  - `SQL/01_tables.sql`
+  - `services/user_store.py`
+  - `router/pages.py`
+  - `templates/base.html`
+  - `templates/nas.html`
+  - `templates/forbidden.html`
+  - `static/js/nas_page.js`
+- 간단한 설명
+  - 사용자 `role` 기반 관리자 권한 구조를 정리하고, `admin`만 메뉴 노출과 `/nas` 접근이 가능하도록 맞췄다. 외장하드 `Seagate Backup+ Desk`를 대상으로 파일 열람, 업로드, 다운로드, 새 폴더 생성, 휴지통 이동/복원/영구삭제 흐름을 NAS 페이지에 추가했다.
+  - NAS UI는 우클릭 컨텍스트 메뉴, 전체 행 클릭 이동, Windows 탐색기 느낌의 파일 브라우저 카드, 시스템 폴더 숨김 처리, 브랜드 문구(`IOT Control Platforms` / `Control Console`) 반영까지 이번 채팅 기준으로 함께 정리했다.
