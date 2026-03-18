@@ -65,6 +65,8 @@ static void notifyAtmegaBootUiState(char state, uint8_t retryAttempt);
 static void webScheduleImmediateFirmwareCheck(const char* reason);
 static void webFirmwareImmediateCheckTick();
 static void webFirmwareDecisionTick();
+static void dwinWriteWord(uint16_t addr, uint16_t value);
+static void page62WifiIconTick();
 
 static const uint16_t CRC_TABLE[256] PROGMEM = {
   0x0000,0xc0c1,0xc181,0x0140,0xc301,0x03c0,0x0280,0xc241,
@@ -130,6 +132,25 @@ static void dwin_write_raw_atomic(const uint8_t* data, size_t len) {
   DWIN.flush();
 }
 
+static void dwinWriteWord(uint16_t addr, uint16_t value) {
+  const uint8_t payload[] = {
+    0x82,
+    (uint8_t)(addr >> 8),
+    (uint8_t)(addr & 0xFF),
+    (uint8_t)(value >> 8),
+    (uint8_t)(value & 0xFF)
+  };
+  const uint16_t crc = update_crc(payload, sizeof(payload));
+  const uint8_t frame[] = {
+    0x5A, 0xA5,
+    (uint8_t)(sizeof(payload) + 2U),
+    payload[0], payload[1], payload[2], payload[3], payload[4],
+    (uint8_t)(crc >> 8),
+    (uint8_t)(crc & 0xFF)
+  };
+  dwin_write_raw_atomic(frame, sizeof(frame));
+}
+
 struct _DwinParser {
   uint8_t buf[64];
   uint8_t idx;
@@ -141,6 +162,7 @@ static _DwinParser g_pAtmega2Dwin = {{0}, 0, 0, 0};
 static _DwinParser g_pDwin2Atmega = {{0}, 0, 0, 0};
 
 static const uint8_t DWIN_PAGE_WIFI_SCAN = 63;
+static const uint8_t DWIN_PAGE_RUNTIME = 62;
 static const uint16_t DWIN_KEY_PAGE63_SCAN = 0x4444;
 static const uint16_t DWIN_KEY_PAGE63_PREV = 0x4101;
 static const uint16_t DWIN_KEY_PAGE63_NEXT = 0x4102;
@@ -148,6 +170,8 @@ static const uint8_t DWIN_PAGE_DEVICE_READY = 61;
 static const uint8_t DWIN_PAGE_WIFI_CONNECTING = 67;
 static const uint8_t DWIN_PAGE_DEVICE_UNREGISTERED = 73;
 static const uint32_t ATMEGA_STATE_REPUBLISH_MS = 1000;
+static const uint16_t DWIN_PAGE62_WIFI_ICON_VP = 0x0AA5;
+static const uint32_t DWIN_PAGE62_WIFI_ICON_REFRESH_MS = 1000;
 
 static volatile bool g_page63ScanReq = false;
 static volatile bool g_page63PrevReq = false;
@@ -1208,6 +1232,9 @@ static uint8_t g_page63LastSeenPage = 0xFF;
 static bool g_page63EntryLogged = false;
 static uint32_t g_page63LastStatusMs = 0;
 static uint8_t g_page63LastStatusConnected = 0xFF;
+static uint8_t g_page62WifiIconLastSeenPage = 0xFF;
+static uint8_t g_page62WifiIconLastLevel = 0xFF;
+static uint32_t g_page62WifiIconLastPushMs = 0;
 static uint8_t g_atmegaBootUiStateLast = 0xFF;
 static uint8_t g_atmegaBootUiRetryLast = 0xFF;
 
@@ -5962,6 +5989,41 @@ static void page63SendWiFiStatusToAtmega() {
   }
 }
 
+static uint8_t page62WifiIconLevelFromRssi(int32_t rssi) {
+  if (rssi >= -60) return 3;
+  if (rssi >= -70) return 2;
+  if (rssi >= -80) return 1;
+  return 0;
+}
+
+static void page62WifiIconTick() {
+  const uint8_t pageNow = g_dwinCurrentPage;
+  const bool onPage62 = (pageNow == DWIN_PAGE_RUNTIME);
+  const bool pageChanged = (pageNow != g_page62WifiIconLastSeenPage);
+  g_page62WifiIconLastSeenPage = pageNow;
+
+  if (!onPage62) {
+    return;
+  }
+
+  uint8_t iconLevel = 0;
+  if (WiFi.status() == WL_CONNECTED) {
+    iconLevel = page62WifiIconLevelFromRssi((int32_t)WiFi.RSSI());
+  }
+
+  const uint32_t now = millis();
+  const bool refreshDue =
+      (g_page62WifiIconLastPushMs == 0) ||
+      ((uint32_t)(now - g_page62WifiIconLastPushMs) >= DWIN_PAGE62_WIFI_ICON_REFRESH_MS);
+  if (!pageChanged && !refreshDue && (iconLevel == g_page62WifiIconLastLevel)) {
+    return;
+  }
+
+  dwinWriteWord(DWIN_PAGE62_WIFI_ICON_VP, iconLevel);
+  g_page62WifiIconLastLevel = iconLevel;
+  g_page62WifiIconLastPushMs = now;
+}
+
 static void page63ResetResults() {
   g_page63WifiCount = 0;
   g_page63WifiPage = 0;
@@ -6394,6 +6456,7 @@ void loop() {
   webTelemetryTick();
 
   page63WifiTick();
+  page62WifiIconTick();
   atmegaRepublishStateTick();
 
   if (portalShutdownAtMs > 0 && (int32_t)(millis() - portalShutdownAtMs) >= 0) {

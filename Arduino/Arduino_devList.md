@@ -181,3 +181,10 @@
 - 간단한 설명
   - `ABBAS_ESPbyMELAUHF.ino`의 현재 핀 정의를 기준으로 `GPIO12/11/9` SPI 배선과 `GPIO24 + 2N3904`를 이용한 `ATmega RESET` 제어 구성을 문서로 정리했다.
   - `MISO` 분압(`10k/20k`), `SD SPI` 공용 버스 주의사항, 수동 RESET 대신 `2N3904`로 자동 제어하는 `1안` 설명을 함께 남겼다.
+
+## 25. MA5105 62페이지 Wi-Fi 세기 VAR ICON(`0x0AA5`) 실시간 갱신 추가
+- 수정코드
+  - `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - DWIN 직접 word write helper(`dwinWriteWord`)를 추가하고, 현재 DWIN page가 62일 때만 ESP32가 `0x0AA5`에 현재 연결 Wi-Fi RSSI 기준 아이콘 index `0~3`을 1초 주기로 써주도록 `page62WifiIconTick()`을 추가했다.
+  - 미연결 상태는 `0(매우약함)`으로 처리하고, 62페이지 재진입 시 즉시 반영되도록 마지막 페이지/아이콘 캐시를 함께 두어 화면이 계속 갱신되도록 정리했다.

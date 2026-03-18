@@ -193,3 +193,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 문서 추가는 `Arduino/OTA_ATmega_for_ESP32_Plan.md`에만 반영했고, ABBAS_WEB 디렉토리의 API/DB/UI 코드는 수정하지 않았다.
   - WEB 디렉토리는 기존 OTA/구독 응답 구조를 그대로 유지한 상태에서, 하드웨어 배선 정리와 소스컨트롤 기준만 맞추는 메모를 남겼다.
+
+## 24. MA5105 62페이지 Wi-Fi 세기 아이콘 연동 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `router/pages.py`, `DB/device_repo.py`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 Arduino(ESP32)에서 MA5105 62페이지 `VAR ICON 0x0AA5`를 현재 연결 Wi-Fi RSSI에 따라 0~3 단계로 갱신하는 작업이었고, ABBAS_WEB 기능 코드는 변경하지 않았다.
+  - WEB 디렉토리는 기존 구독/OTA/API 동작을 그대로 유지한 채, 디렉토리별 devList 정리와 소스컨트롤 기준점만 업데이트했다.
