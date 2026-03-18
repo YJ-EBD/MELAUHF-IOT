@@ -276,3 +276,11 @@
 - 간단한 설명
   - ESP가 저장된 Wi-Fi 부팅 재시도마다 `@P63|M|C|<attempt>` 형태로 현재 시도 번호를 ATmega에 보내도록 바꿨다.
   - MA5105 68페이지는 첫 시도(`attempt=1`)에는 `"Connecting Wi - Fi . . ."`를 유지하고, 이후 재시도만 `"Reconnecting Wi - Fi (1) . . ."`, `"Reconnecting Wi - Fi (2) . . ."` 형식으로 다시 그리도록 보강했다.
+
+## 31. ESP32-C5 ATmega ISP/RESET 배선 문서화 연동 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `../Arduino/OTA_ATmega_for_ESP32_Plan.md`
+- 간단한 설명
+  - 이번 채팅에서는 MELAUHF 펌웨어 코드를 변경하지 않고, ESP32-C5에서 ATmega를 ISP/OTA 준비 용도로 다루기 위한 `2N3904 RESET 제어` 배선안을 Arduino 디렉토리 문서로 정리했다.
+  - MELAUHF 디렉토리는 기존 동작에 영향 없이 유지하고, 하드웨어 배선 기준은 별도 문서로 관리하는 방향만 기록했다.

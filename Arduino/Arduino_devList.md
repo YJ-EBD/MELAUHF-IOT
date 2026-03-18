@@ -174,3 +174,10 @@
 - 간단한 설명
   - 저장된 Wi-Fi 자동 연결 시 ESP가 각 부팅 재시도마다 `@P63|M|C|<attempt>`를 보내도록 바꿔, ATmega가 68페이지에서 첫 시도와 재연결 시도를 구분할 수 있게 정리했다.
   - 첫 시도는 기존처럼 `Connecting Wi - Fi . . .`를 유지하고, 2번째/3번째 시도부터만 `Reconnecting Wi - Fi (1) . . .`, `Reconnecting Wi - Fi (2) . . .`로 표시되도록 ATmega 쪽 표시 기준과 맞췄다.
+
+## 24. ESP32-C5 기반 ATmega OTA/ISP 1안 배선 문서 추가
+- 수정코드
+  - `OTA_ATmega_for_ESP32_Plan.md`
+- 간단한 설명
+  - `ABBAS_ESPbyMELAUHF.ino`의 현재 핀 정의를 기준으로 `GPIO12/11/9` SPI 배선과 `GPIO24 + 2N3904`를 이용한 `ATmega RESET` 제어 구성을 문서로 정리했다.
+  - `MISO` 분압(`10k/20k`), `SD SPI` 공용 버스 주의사항, 수동 RESET 대신 `2N3904`로 자동 제어하는 `1안` 설명을 함께 남겼다.

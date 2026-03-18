@@ -185,3 +185,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 코드 변경은 `Arduino`와 `MELAUHF` 디렉토리에만 반영했고, `ABBAS_WEB`은 기능 수정 없이 기존 API/DB/UI 동작을 그대로 유지했다.
   - 디렉토리별 `_devList` 정리와 소스컨트롤 정리 기준만 맞추고, WEB 디렉토리에 영향이 갈 수 있는 추가 수정은 넣지 않았다.
+
+## 23. ESP32-C5 ATmega 배선 문서화 연동 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `router/pages.py`, `DB/device_repo.py`
+- 간단한 설명
+  - 이번 채팅의 실제 문서 추가는 `Arduino/OTA_ATmega_for_ESP32_Plan.md`에만 반영했고, ABBAS_WEB 디렉토리의 API/DB/UI 코드는 수정하지 않았다.
+  - WEB 디렉토리는 기존 OTA/구독 응답 구조를 그대로 유지한 상태에서, 하드웨어 배선 정리와 소스컨트롤 기준만 맞추는 메모를 남겼다.
