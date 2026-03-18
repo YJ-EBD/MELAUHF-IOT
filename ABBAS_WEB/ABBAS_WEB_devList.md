@@ -215,3 +215,15 @@
 - 간단한 설명
   - 사용자 `role` 기반 관리자 권한 구조를 정리하고, `admin`만 메뉴 노출과 `/nas` 접근이 가능하도록 맞췄다. 외장하드 `Seagate Backup+ Desk`를 대상으로 파일 열람, 업로드, 다운로드, 새 폴더 생성, 휴지통 이동/복원/영구삭제 흐름을 NAS 페이지에 추가했다.
   - NAS UI는 우클릭 컨텍스트 메뉴, 전체 행 클릭 이동, Windows 탐색기 느낌의 파일 브라우저 카드, 시스템 폴더 숨김 처리, 브랜드 문구(`IOT Control Platforms` / `Control Console`) 반영까지 이번 채팅 기준으로 함께 정리했다.
+
+## 26. 전체 WEB 콘솔 UI 리뉴얼 및 다크모드 보정
+- 수정코드
+  - `templates/base.html`
+  - `templates/login.html`
+  - `templates/signup.html`
+  - `static/css/cleanpay_theme.css`
+  - `static/css/auth_cleanpay.css`
+  - `static/js/common.js`
+- 간단한 설명
+  - 첨부 시안 방향에 맞춰 상단 1차 메뉴, 좌측 2차 메뉴, 밝은 업무형 카드/테이블/폼 중심으로 `ABBAS_WEB` 공통 레이아웃과 인증 화면을 전면 리뉴얼했다. `base.html`을 쓰는 전체 페이지와 메뉴가 같은 디자인 시스템을 공유하도록 전역 테마 CSS를 추가했다.
+  - 다크모드는 초기 페이지 진입 시 잠깐 밝게 보이던 플래시를 없애고, 카드/표/버튼/입력창/배지/모달과 NAS Center 내부 요소까지 어두운 배경 + 밝은 텍스트 기준으로 다시 맞춰 전체적으로 어색한 흰색 요소가 남지 않도록 보정했다.

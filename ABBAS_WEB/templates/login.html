@@ -1,55 +1,83 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Login | ABBA-S</title>
+  <title>로그인 | IOT Control Platforms</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
 
   <link href="{{ url_for('static', path='css/auth.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', path='css/auth_cleanpay.css') }}" rel="stylesheet">
 </head>
 <body class="auth-body">
-  <div class="auth-card">
-    <div class="auth-logo">ABBA<span class="dot"></span>S</div>
-    <h1 class="auth-title">Welcome to ABBA-S</h1>
-    <div class="auth-sub">Please login</div>
+  <div class="auth-shell">
+    <section class="auth-showcase">
+      <a href="/login" class="auth-showcase__brand">
+        <img src="{{ url_for('static', path='img/logo.png') }}" alt="IOT Control Platforms" class="auth-showcase__logo">
+        <span>
+          <span class="auth-showcase__brand-title">IOT Control Platforms</span>
+          <span class="auth-showcase__brand-sub">Control Console</span>
+        </span>
+      </a>
 
-    {% if error %}
-      <div class="auth-error">{{ error }}</div>
-    {% endif %}
+      <div class="auth-showcase__eyebrow">INDUSTRIAL CONTROL WORKSPACE</div>
+      <h1 class="auth-showcase__title">현장 장비 운영, 제어, 로그, NAS를 하나의 콘솔에서 관리하세요.</h1>
+      <p class="auth-showcase__text">
+        실시간 상태 확인부터 제어 패널, 데이터 조회, OTA, 관리자 전용 NAS까지
+        운영 흐름에 맞춰 빠르게 접근할 수 있는 통합 웹 콘솔입니다.
+      </p>
 
-    <form id="loginForm" class="auth-form" method="post" action="/login" autocomplete="off">
-      <input type="hidden" name="next" value="{{ next or '/' }}">
-      <input id="userIdInput" class="auth-input" type="text" name="user_id" placeholder="Please enter id" autocomplete="username">
-      <input class="auth-input" type="password" name="password" placeholder="Please enter Password." autocomplete="current-password">
-
-      <div class="auth-options">
-        <!-- 아이디 기억: 브라우저에 ID만 저장(로그인 유지 아님) -->
-        <label><input id="rememberId" type="checkbox" name="remember_id"> 아이디 기억</label>
-        <!-- 자동 로그인: 서버 세션 TTL을 길게 유지 -->
-        <label><input id="autoLogin" type="checkbox" name="auto_login"> 자동 로그인</label>
+      <div class="auth-showcase__chips">
+        <span class="auth-showcase__chip">Realtime Device Status</span>
+        <span class="auth-showcase__chip">Remote Control Panel</span>
+        <span class="auth-showcase__chip">Log & Data Explorer</span>
+        <span class="auth-showcase__chip">Admin NAS Center</span>
       </div>
 
-      <button class="auth-btn" type="submit">LOG-IN</button>
-    </form>
+      <div class="auth-showcase__support">
+        <div class="auth-showcase__support-label">Support</div>
+        <div>support@abbas.io</div>
+        <div>Tel 010-2566-5105</div>
+      </div>
+    </section>
 
-    <div class="auth-links">
-      <a href="#" onclick="alert('Forgot Password 기능은 현재 버전에서 제공되지 않습니다.'); return false;">Forgot Password?</a>
-      <a href="/signup">Create an account!</a>
-    </div>
+    <section class="auth-card">
+      <div class="auth-panel__eyebrow">Sign In</div>
+      <h1 class="auth-title">로그인</h1>
+      <div class="auth-sub">관리자 콘솔에 접속하려면 계정 정보를 입력하세요.</div>
 
-    <div class="auth-help">
-      A professional consultant can help you with your solution.<br>
-      support@abbas.io &nbsp;|&nbsp; Tel 010-2566-5105
-    </div>
+      {% if error %}
+        <div class="auth-error">{{ error }}</div>
+      {% endif %}
+
+      <form id="loginForm" class="auth-form" method="post" action="/login" autocomplete="off">
+        <input type="hidden" name="next" value="{{ next or '/' }}">
+        <input id="userIdInput" class="auth-input" type="text" name="user_id" placeholder="아이디를 입력하세요" autocomplete="username">
+        <input class="auth-input" type="password" name="password" placeholder="비밀번호를 입력하세요" autocomplete="current-password">
+
+        <div class="auth-options">
+          <label><input id="rememberId" type="checkbox" name="remember_id"> 아이디 기억</label>
+          <label><input id="autoLogin" type="checkbox" name="auto_login"> 자동 로그인</label>
+        </div>
+
+        <button class="auth-btn" type="submit">로그인</button>
+      </form>
+
+      <div class="auth-links">
+        <a href="#" onclick="alert('Forgot Password 기능은 현재 버전에서 제공되지 않습니다.'); return false;">비밀번호 찾기</a>
+        <a href="/signup">회원가입</a>
+      </div>
+
+      <div class="auth-help">
+        운영 중 문제가 있으면 관리자에게 문의하거나 지원 메일로 연락해주세요.
+      </div>
+    </section>
   </div>
 
   <script>
-    // 뒤로가기(bfcache)로 로그인 화면이 그대로 보이는 경우가 있어,
-    // pageshow(persisted)에서 강제 reload -> 서버가 /login 접근을 감지해 /로 리다이렉트.
     window.addEventListener('pageshow', function (e) {
       try {
         if (e && e.persisted) {
@@ -58,7 +86,6 @@
       } catch (_) {}
     });
 
-    // 아이디 기억 (localStorage)
     (function () {
       const KEY = 'for_rnd_web:remember_id';
       const KEY_ID = 'for_rnd_web:remember_id_value';
@@ -73,9 +100,7 @@
           const saved = localStorage.getItem(KEY_ID) || '';
           if (saved) input.value = saved;
         }
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
 
       function persist() {
         try {
@@ -86,9 +111,7 @@
             localStorage.removeItem(KEY);
             localStorage.removeItem(KEY_ID);
           }
-        } catch (e) {
-          // ignore
-        }
+        } catch (e) {}
       }
 
       if (cb) cb.addEventListener('change', persist);

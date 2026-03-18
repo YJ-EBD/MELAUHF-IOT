@@ -5,6 +5,7 @@
   function setTheme(theme) {
     const t = (theme === "dark") ? "dark" : "light";
     document.documentElement.setAttribute("data-bs-theme", t);
+    document.documentElement.style.colorScheme = t;
     try { localStorage.setItem("appTheme", t); } catch (_) {}
 
     const btn = $id("themeToggle");

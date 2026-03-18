@@ -3,124 +3,293 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ page_title }} | for_rnd 관리자 콘솔</title>
+  <title>{{ page_title }} | IOT Control Platforms</title>
 
-  <!-- Fonts -->
+  <script>
+    (function () {
+      var theme = "light";
+      try {
+        var saved = localStorage.getItem("appTheme") || "";
+        if (saved === "dark" || saved === "light") {
+          theme = saved;
+        } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+          theme = "dark";
+        }
+      } catch (_) {
+        try {
+          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            theme = "dark";
+          }
+        } catch (_) {}
+      }
+      document.documentElement.setAttribute("data-bs-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" rel="stylesheet">
 
-  <!-- Bootstrap 5 -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <!-- Bootstrap Icons -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 
   <link href="{{ url_for('static', path='css/admin.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', path='css/cleanpay_theme.css') }}" rel="stylesheet">
 
   {% block extra_head %}{% endblock %}
 </head>
-<body class="app page-{{ nav_active }}">
+{% if nav_active in ['dashboard', 'device_status', 'control_panel'] %}
+  {% set section_key = 'operations' %}
+  {% set section_title = '운영/제어' %}
+  {% set section_sub = '현장 운영 현황과 장치 제어 화면을 빠르게 오갈 수 있는 작업 영역입니다.' %}
+{% elif nav_active in ['logs', 'data', 'nas'] %}
+  {% set section_key = 'records' %}
+  {% set section_title = '기록/데이터' %}
+  {% set section_sub = '로그, 저장 데이터, NAS 파일 자산을 한 흐름으로 관리하는 공간입니다.' %}
+{% elif nav_active in ['plan', 'firmware_manage'] %}
+  {% set section_key = 'lifecycle' %}
+  {% set section_title = '플랜/배포' %}
+  {% set section_sub = '구독 상태와 OTA 배포 자산을 같은 맥락에서 정리하는 영역입니다.' %}
+{% else %}
+  {% set section_key = 'admin' %}
+  {% set section_title = '관리설정' %}
+  {% set section_sub = '콘솔 환경과 운영 규칙을 조정하는 기본 설정 공간입니다.' %}
+{% endif %}
+
+{% set page_icon = 'bi-grid-1x2-fill' %}
+{% set page_description = '현재 운영 상태와 핵심 지표를 빠르게 파악할 수 있도록 정리된 메인 대시보드입니다.' %}
+{% if nav_active == 'device_status' %}
+  {% set page_icon = 'bi-hdd-network-fill' %}
+  {% set page_description = '등록된 디바이스의 온라인 상태, 구독 상태, 최근 통신 정보를 목록 중심으로 확인합니다.' %}
+{% elif nav_active == 'control_panel' %}
+  {% set page_icon = 'bi-sliders2-vertical' %}
+  {% set page_description = '대상 장비를 선택해 명령을 보내고 실시간 로그를 함께 모니터링하는 제어 화면입니다.' %}
+{% elif nav_active == 'logs' %}
+  {% set page_icon = 'bi-journal-richtext' %}
+  {% set page_description = '디바이스 SD 로그와 분석 결과를 한 화면에서 검토하고 필요한 파일을 내려받습니다.' %}
+{% elif nav_active == 'data' %}
+  {% set page_icon = 'bi-database-fill-gear' %}
+  {% set page_description = '시술 이력과 설문 데이터를 장비별로 탐색하고 비교할 수 있는 데이터 조회 화면입니다.' %}
+{% elif nav_active == 'nas' %}
+  {% set page_icon = 'bi-hdd-stack-fill' %}
+  {% set page_description = '외장하드 자산을 Windows 탐색기 느낌으로 열람하고 업로드, 다운로드, 휴지통 작업을 처리합니다.' %}
+{% elif nav_active == 'plan' %}
+  {% set page_icon = 'bi-shield-check' %}
+  {% set page_description = '디바이스별 구독 상태와 잔여 에너지를 확인하고 부여 및 회수 작업을 수행합니다.' %}
+{% elif nav_active == 'firmware_manage' %}
+  {% set page_icon = 'bi-cloud-arrow-up-fill' %}
+  {% set page_description = '펌웨어 릴리스 업로드, 배정, OTA 상태 추적까지 배포 라이프사이클을 관리합니다.' %}
+{% elif nav_active == 'settings' %}
+  {% set page_icon = 'bi-gear-fill' %}
+  {% set page_description = '콘솔 동작 방식과 화면 옵션을 점검하고 저장하는 기본 설정 화면입니다.' %}
+{% elif nav_active == '' %}
+  {% set page_icon = 'bi-shield-lock-fill' %}
+  {% set page_description = '현재 계정 권한으로 접근할 수 없는 화면입니다.' %}
+{% endif %}
+
+<body class="app page-{{ nav_active }} section-{{ section_key }}">
 {% if not logged_in %}
 <script>window.location.replace("/login");</script>
 {% endif %}
 
-
 <div class="app-shell">
-  <!-- 좌측 사이드바 -->
-  <aside class="sidebar sidebar--dark">
-    <div class="sidebar-header px-3 py-3">
-      <a href="/" class="d-flex align-items-center gap-2 text-decoration-none">
-        <img
-          src="{{ url_for('static', path='img/logo.png') }}"
-          alt="for_rnd"
-          class="brand-logo"
-          loading="lazy"
-        >
-        <div class="brand-text">
-          <div class="brand-title">for_rnd</div>
-          <div class="brand-sub">Admin Console</div>
-        </div>
+  <header class="cleanpay-topbar">
+    <div class="cleanpay-brand">
+      <a href="/" class="cleanpay-brand__link">
+        <span class="cleanpay-brand__logo-wrap">
+          <img
+            src="{{ url_for('static', path='img/logo.png') }}"
+            alt="IOT Control Platforms"
+            class="cleanpay-brand__logo"
+            loading="lazy"
+          >
+        </span>
+        <span class="cleanpay-brand__text">
+          <span class="brand-title">IOT Control Platforms</span>
+          <span class="brand-sub">Control Console</span>
+        </span>
       </a>
     </div>
 
-    <nav class="px-2 py-2">
-      <ul class="nav nav-pills flex-column gap-1">
-        {% for item in nav_items %}
-          <li class="nav-item">
-            <a class="nav-link d-flex align-items-center gap-2 {% if nav_active == item.key %}active{% endif %}"
-               href="{{ item.path }}">
-              <span class="nav-ico">
-                {% if item.key == 'dashboard' %}<i class="bi bi-speedometer2"></i>{% endif %}
-                {% if item.key == 'device_status' %}<i class="bi bi-hdd-network"></i>{% endif %}
-                {% if item.key == 'control_panel' %}<i class="bi bi-toggles2"></i>{% endif %}
-                {% if item.key == 'logs' %}<i class="bi bi-journal-text"></i>{% endif %}
-                {% if item.key == 'data' %}<i class="bi bi-database"></i>{% endif %}
-                {% if item.key == 'plan' %}<i class="bi bi-shield-check"></i>{% endif %}
-                {% if item.key == 'firmware_manage' %}<i class="bi bi-cpu"></i>{% endif %}
-                {% if item.key == 'settings' %}<i class="bi bi-gear"></i>{% endif %}
-              </span>
-              <span class="nav-text">{{ item.label }}</span>
-            </a>
-          </li>
-        {% endfor %}
-      </ul>
+    <nav class="primary-nav" aria-label="주요 메뉴">
+      <a class="primary-nav__item {% if section_key == 'operations' %}is-active{% endif %}" href="/">
+        <span>운영/제어</span>
+        <i class="bi bi-chevron-down"></i>
+      </a>
+      <a class="primary-nav__item {% if section_key == 'records' %}is-active{% endif %}" href="/logs">
+        <span>기록/데이터</span>
+        <i class="bi bi-chevron-down"></i>
+      </a>
+      <a class="primary-nav__item {% if section_key == 'lifecycle' %}is-active{% endif %}" href="/plan">
+        <span>플랜/배포</span>
+        <i class="bi bi-chevron-down"></i>
+      </a>
+      <a class="primary-nav__item {% if section_key == 'admin' %}is-active{% endif %}" href="/settings">
+        <span>관리설정</span>
+      </a>
     </nav>
 
-    <div class="mt-auto px-3 py-3 sidebar-footer">
-      <div class="small text-secondary-emphasis">Industrial Control × Modern SaaS</div>
-      <div class="small text-secondary">v0.1 (UI)</div>
-    </div>
-  </aside>
-
-  <!-- 본문 -->
-  <main class="content">
-    <header class="content-header topbar">
-      <div class="container-fluid py-3">
-        <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
-          <div class="d-flex align-items-center gap-3">
-            <div>
-              <h1 class="h4 mb-0 topbar-title">{{ page_title }}</h1>
-              <div class="small text-secondary topbar-sub">다수 기기 조회 · 상태 모니터링 · 제어</div>
-            </div>
-          </div>
-
-          <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
-            <div class="status-pill" id="apiConnPill" title="API 연결 상태">
-              <span class="led led--pending" id="apiConnDot"></span>
-              <span class="status-text" id="apiConnText">API 확인 중</span>
-            </div>
-
-            <div class="status-pill status-pill--muted" title="현재 시간">
-              <i class="bi bi-clock me-1"></i><span id="clockNow">--:--:--</span>
-            </div>
-
-            <button class="btn btn-sm btn-icon btn-outline-secondary" id="themeToggle" type="button" aria-label="테마 전환">
-              <i class="bi bi-moon-stars"></i>
-            </button>
-
-            <a class="btn btn-sm btn-icon btn-outline-secondary" href="/logout" title="로그아웃" aria-label="로그아웃">
-              <i class="bi bi-box-arrow-right"></i>
-            </a>
-
-          </div>
+    <div class="topbar-tools">
+      <div class="topbar-user">
+        <div class="topbar-user__avatar">
+          {{ ((current_user_name or current_user_id or 'U')[:1])|upper }}
+        </div>
+        <div class="topbar-user__meta">
+          <div class="topbar-user__name">{{ current_user_name or current_user_id }}님</div>
+          <div class="topbar-user__sub">ID {{ current_user_id }} · {{ (current_user_role or 'user')|upper }}</div>
         </div>
       </div>
-    </header>
 
-    <section class="container-fluid py-4 page-enter">
-      {% block content %}{% endblock %}
-    </section>
+      <a class="header-btn header-btn--solid" href="/logout">로그아웃</a>
+      <button class="header-icon-btn" id="themeToggle" type="button" aria-label="테마 전환">
+        <i class="bi bi-moon-stars"></i>
+      </button>
+      <a class="header-icon-btn" href="/settings" title="설정" aria-label="설정">
+        <i class="bi bi-gear-fill"></i>
+      </a>
+      <button class="header-icon-btn header-icon-btn--notify" type="button" aria-label="알림">
+        <i class="bi bi-bell-fill"></i>
+        <span class="header-icon-btn__dot"></span>
+      </button>
+    </div>
+  </header>
 
-    <footer class="content-footer py-3">
-      <div class="container-fluid small text-secondary">
-        © for_rnd 관리자 콘솔
+  <div class="workspace-layout">
+    <aside class="section-sidebar">
+      <div class="section-sidebar__head">
+        <div class="section-sidebar__title">{{ section_title }}</div>
+        <div class="section-sidebar__sub">열기 <i class="bi bi-arrow-left-short"></i></div>
       </div>
-    </footer>
-  </main>
+
+      <nav class="section-nav" aria-label="서브 메뉴">
+        {% if section_key == 'operations' %}
+          <a class="section-nav__item {% if nav_active == 'dashboard' %}is-active{% endif %}" href="/">
+            <span class="section-nav__icon"><i class="bi bi-grid-1x2-fill"></i></span>
+            <span class="section-nav__label">대시보드</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+          <a class="section-nav__item {% if nav_active == 'device_status' %}is-active{% endif %}" href="/device-status">
+            <span class="section-nav__icon"><i class="bi bi-hdd-network-fill"></i></span>
+            <span class="section-nav__label">디바이스 목록</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+          <a class="section-nav__item {% if nav_active == 'control_panel' %}is-active{% endif %}" href="/control-panel">
+            <span class="section-nav__icon"><i class="bi bi-sliders2-vertical"></i></span>
+            <span class="section-nav__label">제어 패널</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+        {% elif section_key == 'records' %}
+          <a class="section-nav__item {% if nav_active == 'logs' %}is-active{% endif %}" href="/logs">
+            <span class="section-nav__icon"><i class="bi bi-journal-richtext"></i></span>
+            <span class="section-nav__label">로그</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+          <a class="section-nav__item {% if nav_active == 'data' %}is-active{% endif %}" href="/data">
+            <span class="section-nav__icon"><i class="bi bi-database-fill"></i></span>
+            <span class="section-nav__label">데이터</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+          {% if is_admin %}
+          <a class="section-nav__item {% if nav_active == 'nas' %}is-active{% endif %}" href="/nas">
+            <span class="section-nav__icon"><i class="bi bi-hdd-stack-fill"></i></span>
+            <span class="section-nav__label">NAS Center</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+          {% endif %}
+        {% elif section_key == 'lifecycle' %}
+          <a class="section-nav__item {% if nav_active == 'plan' %}is-active{% endif %}" href="/plan">
+            <span class="section-nav__icon"><i class="bi bi-shield-check"></i></span>
+            <span class="section-nav__label">플랜</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+          <a class="section-nav__item {% if nav_active == 'firmware_manage' %}is-active{% endif %}" href="/firmware-manage">
+            <span class="section-nav__icon"><i class="bi bi-cloud-arrow-up-fill"></i></span>
+            <span class="section-nav__label">Firmware Manage</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+        {% else %}
+          <a class="section-nav__item {% if nav_active == 'settings' %}is-active{% endif %}" href="/settings">
+            <span class="section-nav__icon"><i class="bi bi-gear-fill"></i></span>
+            <span class="section-nav__label">설정</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+        {% endif %}
+      </nav>
+
+      <div class="section-sidebar__footer">
+        <div class="section-sidebar__hint">{{ section_sub }}</div>
+        <div class="section-sidebar__meta">
+          <span class="section-sidebar__meta-pill">{{ (current_user_role or 'user')|upper }}</span>
+          <span class="section-sidebar__meta-pill">{{ current_user_id }}</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace-main">
+      <section class="workspace-strip">
+        <div class="workspace-selector">
+          <div class="workspace-selector__icon"><i class="bi {{ page_icon }}"></i></div>
+          <div class="workspace-selector__copy">
+            <div class="workspace-selector__label">현재 작업 화면</div>
+            <div class="workspace-selector__value">{{ page_title }}</div>
+          </div>
+          <div class="workspace-selector__caret"><i class="bi bi-chevron-down"></i></div>
+        </div>
+
+        <div class="workspace-strip__status">
+          <div class="status-pill status-pill--muted" title="현재 권한">
+            <i class="bi bi-shield-lock"></i>
+            <span>{{ (current_user_role or 'user')|upper }}</span>
+          </div>
+
+          <div class="status-pill" id="apiConnPill" title="API 연결 상태">
+            <span class="led led--pending" id="apiConnDot"></span>
+            <span class="status-text" id="apiConnText">API 확인 중</span>
+          </div>
+
+          <div class="status-pill status-pill--muted" title="현재 시간">
+            <i class="bi bi-clock"></i>
+            <span id="clockNow">--:--:--</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="workspace-canvas page-enter">
+        <div class="page-heading">
+          <div class="page-breadcrumb">
+            <i class="bi bi-house-fill"></i>
+            <span>{{ section_title }}</span>
+            <i class="bi bi-chevron-right"></i>
+            <span>{{ page_title }}</span>
+          </div>
+
+          <div class="page-heading__row">
+            <div>
+              <h1 class="page-heading__title">{{ page_title }}</h1>
+              <p class="page-heading__desc">{{ page_description }}</p>
+            </div>
+            <div class="page-heading__summary">
+              <div class="page-heading__summary-label">Workspace</div>
+              <div class="page-heading__summary-value">{{ section_title }}</div>
+            </div>
+          </div>
+        </div>
+
+        {% block content %}{% endblock %}
+      </section>
+
+      <footer class="content-footer">
+        <div class="content-footer__inner">
+          <span>© IOT Control Platforms</span>
+          <span>Industrial Control Administration Workspace</span>
+        </div>
+      </footer>
+    </main>
+  </div>
 </div>
 
-<!-- Global loading overlay (optional) -->
 <div class="app-loading d-none" id="appLoadingOverlay" aria-hidden="true">
   <div class="app-loading__inner">
     <div class="spinner-border" role="status" aria-label="Loading"></div>
