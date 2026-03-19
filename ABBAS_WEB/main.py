@@ -7,7 +7,7 @@ from core.env_loader import load_settings_env
 # sudo ss -lntp | grep :8000
 # sudo kill -9 
 
-# pkill -f "uvicor
+# pkill -f "uvicor"
 # nohup ./venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
 # sudo systemctl restart redis-server
 # cd ~/Desktop/ABBAS_WEB && source venv/bin/activate
@@ -27,7 +27,7 @@ from router.pages import router as pages_router
 from router.desktop_api import router as desktop_api_router
 from router.data_api import router as data_api_router
 from DB.runtime import get_mysql
-from DB import device_repo, device_ops_repo, firmware_repo
+from DB import device_repo, device_ops_repo, firmware_repo, user_repo
 
 app = FastAPI(title="for_rnd 관리자 콘솔")
 
@@ -67,6 +67,7 @@ async def on_startup() -> None:
     # MySQL/MariaDB 연결 확인 (CSV fallback 없음)
     try:
         get_mysql().ping()
+        user_repo.ensure_schema()
         device_repo.ensure_runtime_schema()
         device_ops_repo.ensure_schema()
         firmware_repo.ensure_schema()

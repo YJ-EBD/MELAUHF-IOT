@@ -612,6 +612,7 @@
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
+    --nas-drop-overlay-offset: 0px;
     transition: background .16s ease, box-shadow .16s ease;
   }
 
@@ -645,7 +646,10 @@
   .nas-explorer-list .table-responsive.is-dragover::after {
     content: "파일을 놓으면 현재 폴더에 업로드됩니다";
     position: absolute;
-    inset: 14px;
+    top: 14px;
+    left: 14px;
+    right: 14px;
+    height: calc(100% - 28px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -658,6 +662,8 @@
     letter-spacing: -.01em;
     pointer-events: none;
     z-index: 3;
+    transform: translateY(var(--nas-drop-overlay-offset, 0px));
+    will-change: transform;
   }
 
   .nas-explorer-list .table {
@@ -719,6 +725,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .nas-file-pin {
+    display: inline-flex;
+    align-items: center;
+    margin-left: .42rem;
+    color: #d97706;
+    font-size: .78rem;
+    vertical-align: middle;
   }
 
   .nas-file-name .btn-link {
@@ -1281,6 +1296,13 @@
 </div>
 
 <div class="nas-context-menu d-none" id="nasContextMenu" role="menu" aria-hidden="true">
+  <button class="nas-context-menu__item" type="button" data-menu-action="pin-top">
+    <i class="bi bi-pin-angle"></i><span>상단 고정</span>
+  </button>
+  <button class="nas-context-menu__item" type="button" data-menu-action="unpin-top">
+    <i class="bi bi-pin-angle-fill"></i><span>상단 고정 해제</span>
+  </button>
+  <div class="nas-context-menu__divider"></div>
   <button class="nas-context-menu__item" type="button" data-menu-action="open">
     <i class="bi bi-folder2-open"></i><span>열기</span>
   </button>
@@ -1405,7 +1427,7 @@
       </div>
       <div class="modal-body pt-3">
         <div class="d-flex align-items-center justify-content-between gap-3 mb-2">
-          <div class="nas-progress-modal__status">전송 진행률</div>
+          <div class="nas-progress-modal__status" id="nasUploadProgressStatus">전송 진행률</div>
           <div class="nas-progress-modal__percent" id="nasUploadProgressPercent">0%</div>
         </div>
         <div class="progress nas-progress-modal__track" aria-label="업로드 진행률">
@@ -1427,5 +1449,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-delete-v7"></script>
+<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-pin-v11"></script>
 {% endblock %}

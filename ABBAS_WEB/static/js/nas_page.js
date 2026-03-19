@@ -85,6 +85,7 @@
     uploadProgressModal: document.getElementById("nasUploadProgressModal"),
     uploadProgressTitle: document.getElementById("nasUploadProgressTitle"),
     uploadProgressMeta: document.getElementById("nasUploadProgressMeta"),
+    uploadProgressStatus: document.getElementById("nasUploadProgressStatus"),
     uploadProgressPercent: document.getElementById("nasUploadProgressPercent"),
     uploadProgressBar: document.getElementById("nasUploadProgressBar"),
     uploadProgressBytes: document.getElementById("nasUploadProgressBytes"),
@@ -385,14 +386,71 @@
 
   function setUploadProgressVisible(active) {
     if (uploadProgressModal) {
-      if (active) uploadProgressModal.show();
-      else uploadProgressModal.hide();
+      if (active) {
+        if (el.uploadProgressModal) {
+          el.uploadProgressModal.dataset.pendingHide = "false";
+        }
+        uploadProgressModal.show();
+      } else {
+        if (el.uploadProgressModal) {
+          el.uploadProgressModal.dataset.pendingHide = "true";
+        }
+        uploadProgressModal.hide();
+        window.setTimeout(() => {
+          if (!el.uploadProgressModal) return;
+          if (el.uploadProgressModal.dataset.pendingHide !== "true") return;
+          forceHideUploadProgressModal();
+        }, 250);
+      }
       return;
     }
     if (!el.uploadProgressModal) return;
-    el.uploadProgressModal.classList.toggle("show", Boolean(active));
-    el.uploadProgressModal.style.display = active ? "block" : "none";
-    el.uploadProgressModal.setAttribute("aria-hidden", active ? "false" : "true");
+    if (active) {
+      el.uploadProgressModal.classList.add("show");
+      el.uploadProgressModal.style.display = "block";
+      el.uploadProgressModal.setAttribute("aria-hidden", "false");
+      el.uploadProgressModal.dataset.pendingHide = "false";
+      return;
+    }
+    el.uploadProgressModal.dataset.pendingHide = "true";
+    forceHideUploadProgressModal();
+  }
+
+  function forceHideUploadProgressModal() {
+    if (!el.uploadProgressModal) return;
+    el.uploadProgressModal.classList.remove("show");
+    el.uploadProgressModal.style.display = "none";
+    el.uploadProgressModal.setAttribute("aria-hidden", "true");
+    el.uploadProgressModal.removeAttribute("aria-modal");
+    el.uploadProgressModal.dataset.pendingHide = "false";
+    if (document.body) {
+      const hasVisibleModal = Array.from(document.querySelectorAll(".modal.show"))
+        .some((modal) => modal !== el.uploadProgressModal);
+      if (!hasVisibleModal) {
+        document.body.classList.remove("modal-open");
+        document.body.style.removeProperty("padding-right");
+        document.querySelectorAll(".modal-backdrop").forEach((backdrop) => {
+          backdrop.remove();
+        });
+      }
+    }
+  }
+
+  function setUploadProgressStage(stage) {
+    const currentStage = String(stage || "uploading");
+    const statusMap = {
+      uploading: "전송 진행률",
+      finalizing: "서버 저장 확인 중",
+      complete: "업로드 완료",
+    };
+    if (el.uploadProgressStatus) {
+      el.uploadProgressStatus.textContent = statusMap[currentStage] || statusMap.uploading;
+    }
+    if (el.uploadProgressBar) {
+      const animate = currentStage === "uploading";
+      el.uploadProgressBar.classList.toggle("progress-bar-striped", animate);
+      el.uploadProgressBar.classList.toggle("progress-bar-animated", animate);
+    }
   }
 
   function updateUploadProgress(loadedBytes, totalBytes) {
@@ -414,18 +472,51 @@
     }
   }
 
-  function showUploadProgress(files, label) {
-    const batch = Array.from(files || []);
+  function showUploadProgress(files, label, options) {
+    const batch = normalizeUploadEntries(files);
+    const opts = options || {};
+    const directoryCount = normalizeUploadDirectoryPaths(opts.directories).length;
     const targetPath = state.currentPath || "/";
-    const totalBytes = batch.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    const totalBytes = batch.reduce((sum, entry) => sum + Number(entry.size || 0), 0);
     if (el.uploadProgressTitle) {
       el.uploadProgressTitle.textContent = label || "파일을 업로드하는 중...";
     }
     if (el.uploadProgressMeta) {
-      el.uploadProgressMeta.textContent = `파일 ${batch.length}개 · 대상 ${targetPath}`;
+      const parts = [];
+      if (batch.length) parts.push(`파일 ${batch.length}개`);
+      if (directoryCount) parts.push(`폴더 ${directoryCount}개`);
+      if (!parts.length) parts.push("항목 0개");
+      parts.push(`대상 ${targetPath}`);
+      el.uploadProgressMeta.textContent = parts.join(" · ");
     }
+    if (el.uploadProgressBytes && !totalBytes) {
+      el.uploadProgressBytes.textContent = "0 B / 0 B";
+    }
+    setUploadProgressStage("uploading");
     updateUploadProgress(0, totalBytes);
     setUploadProgressVisible(true);
+  }
+
+  function markUploadProgressFinalizing(totalBytes, options) {
+    const total = Math.max(Number(totalBytes || 0), 0);
+    const opts = options || {};
+    setUploadProgressStage("finalizing");
+    if (el.uploadProgressTitle) {
+      el.uploadProgressTitle.textContent = opts.label || "업로드를 마무리하는 중...";
+    }
+    if (total > 0) {
+      updateUploadProgress(total, total);
+      return;
+    }
+    if (el.uploadProgressPercent) el.uploadProgressPercent.textContent = "100%";
+    if (el.uploadProgressBar) {
+      el.uploadProgressBar.style.width = "100%";
+      el.uploadProgressBar.textContent = "100%";
+      el.uploadProgressBar.setAttribute("aria-valuenow", "100");
+    }
+    if (el.uploadProgressBytes) {
+      el.uploadProgressBytes.textContent = "서버에서 폴더 구조를 저장하는 중...";
+    }
   }
 
   function hideUploadProgress() {
@@ -436,6 +527,16 @@
     const opts = options || {};
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
+      let settled = false;
+      const finish = (kind, value) => {
+        if (settled) return;
+        settled = true;
+        if (kind === "resolve") {
+          resolve(value);
+          return;
+        }
+        reject(value);
+      };
       xhr.open("POST", "/api/nas/upload");
       xhr.responseType = "text";
       xhr.upload.addEventListener("progress", (event) => {
@@ -443,18 +544,33 @@
           opts.onProgress(event);
         }
       });
-      xhr.addEventListener("load", () => {
+      xhr.upload.addEventListener("load", () => {
+        if (typeof opts.onTransferComplete === "function") {
+          opts.onTransferComplete();
+        }
+      });
+      xhr.addEventListener("readystatechange", () => {
+        if (xhr.readyState !== XMLHttpRequest.DONE || settled) return;
         if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(parseJsonText(xhr.responseText) || {});
+          finish("resolve", parseJsonText(xhr.responseText) || {});
           return;
         }
-        reject(new Error(readXhrError(xhr)));
+        if (xhr.status) {
+          finish("reject", new Error(readXhrError(xhr)));
+        }
+      });
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          finish("resolve", parseJsonText(xhr.responseText) || {});
+          return;
+        }
+        finish("reject", new Error(readXhrError(xhr)));
       });
       xhr.addEventListener("error", () => {
-        reject(new Error("업로드 요청 전송에 실패했습니다."));
+        finish("reject", new Error("업로드 요청 전송에 실패했습니다."));
       });
       xhr.addEventListener("abort", () => {
-        reject(new Error("업로드가 중단되었습니다."));
+        finish("reject", new Error("업로드가 중단되었습니다."));
       });
       xhr.send(formData);
     });
@@ -490,8 +606,78 @@
     return "bi bi-file-earmark";
   }
 
+  function isFileLike(value) {
+    return Boolean(
+      value
+      && typeof value === "object"
+      && typeof value.name === "string"
+      && typeof value.size === "number"
+      && typeof value.slice === "function"
+    );
+  }
+
+  function normalizeUploadRelativePath(value) {
+    const raw = String(value || "").replace(/\\/g, "/").trim();
+    if (!raw) return "";
+    const parts = raw.split("/")
+      .map((part) => String(part || "").trim())
+      .filter(Boolean);
+    if (!parts.length) return "";
+    if (parts.some((part) => part === "." || part === "..")) return "";
+    return parts.join("/");
+  }
+
+  function normalizeUploadDirectoryPaths(paths) {
+    const next = [];
+    const seen = new Set();
+    Array.from(paths || []).forEach((value) => {
+      const relativePath = normalizeUploadRelativePath(value);
+      if (!relativePath || seen.has(relativePath)) return;
+      seen.add(relativePath);
+      next.push(relativePath);
+    });
+    return next;
+  }
+
+  function buildUploadEntry(file, relativePath) {
+    if (!isFileLike(file)) return null;
+    const fallbackName = String(file.name || "").trim();
+    const normalizedPath = normalizeUploadRelativePath(relativePath || file.webkitRelativePath || fallbackName);
+    const effectivePath = normalizedPath || normalizeUploadRelativePath(fallbackName);
+    if (!fallbackName || !effectivePath) return null;
+    const size = Number(file.size || 0);
+    const lastModified = Number(file.lastModified || 0);
+    const parts = effectivePath.split("/");
+    const displayName = parts[parts.length - 1] || fallbackName;
+    return {
+      file,
+      key: `${effectivePath}|${size}|${lastModified}`,
+      name: displayName,
+      relativePath: effectivePath,
+      size,
+      lastModified,
+    };
+  }
+
+  function normalizeUploadEntries(files) {
+    return Array.from(files || [])
+      .map((value) => {
+        if (value && isFileLike(value.file)) {
+          return buildUploadEntry(value.file, value.relativePath || value.name || value.file.webkitRelativePath || value.file.name);
+        }
+        if (isFileLike(value)) {
+          return buildUploadEntry(value, value.webkitRelativePath || value.name);
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }
+
   function fileKey(file) {
-    return `${file.name}|${file.size}|${file.lastModified}`;
+    const entry = normalizeUploadEntries([file])[0] || file;
+    return entry && entry.key
+      ? entry.key
+      : `${String(file && file.name || "")}|${Number(file && file.size || 0)}|${Number(file && file.lastModified || 0)}`;
   }
 
   function findItem(path) {
@@ -506,6 +692,10 @@
 
   function isPathSelected(path) {
     return Boolean(path) && state.selectedPaths.includes(path);
+  }
+
+  function isItemPinned(path) {
+    return Boolean(findItem(path)?.pinned);
   }
 
   function syncPrimarySelection(preferredPath, preferredType) {
@@ -606,6 +796,10 @@
     button.classList.toggle("d-none", !visible);
   }
 
+  function contextMenuItems() {
+    return state.contextPaths.map((path) => findItem(path)).filter(Boolean);
+  }
+
   function showContextMenu(x, y, options) {
     if (!el.contextMenu) return;
     ensureContextMenuLayer();
@@ -624,10 +818,15 @@
 
     const hasSelection = state.contextPaths.length > 0;
     const isDir = state.contextPaths.length === 1 && state.contextType === "directory";
+    const contextItems = contextMenuItems();
+    const anyPinned = contextItems.some((item) => Boolean(item.pinned));
+    const anyUnpinned = contextItems.some((item) => !item.pinned);
 
     setContextItemVisible("open", isDir);
     setContextItemVisible("download", hasSelection);
     setContextItemVisible("rename", Boolean(state.contextPath));
+    setContextItemVisible("pin-top", Boolean(contextItems.length) && anyUnpinned);
+    setContextItemVisible("unpin-top", Boolean(contextItems.length) && anyPinned);
     setContextItemVisible("move-to-trash", Boolean(state.contextPaths.length));
     setContextItemVisible("new-folder", true);
     setContextItemVisible("open-trash", true);
@@ -748,6 +947,11 @@
     el.tableBody.innerHTML = items.map((item) => {
       const isDir = item.type === "directory";
       const isSelected = isPathSelected(item.path);
+      const pinnedBadge = item.pinned
+        ? '<span class="nas-file-pin" title="상단 고정됨"><i class="bi bi-pin-angle-fill"></i></span>'
+        : "";
+      const baseSub = isDir ? "폴더" : (item.extension || "파일");
+      const subLabel = item.pinned ? `${baseSub} · 상단 고정` : baseSub;
 
       return `
         <tr class="nas-file-row ${isSelected ? "is-selected" : ""}" data-row-path="${escapeHtml(item.path)}" data-row-type="${escapeHtml(item.type)}" data-row-name="${escapeHtml(item.name)}">
@@ -755,8 +959,8 @@
             <div class="nas-file-primary">
               <span class="nas-file-icon"><i class="${fileIcon(item)}"></i></span>
               <div class="min-w-0">
-                <div class="nas-file-name">${escapeHtml(item.name)}</div>
-                <div class="nas-file-sub">${isDir ? "폴더" : (item.extension || "파일")}</div>
+                <div class="nas-file-name">${escapeHtml(item.name)}${pinnedBadge}</div>
+                <div class="nas-file-sub">${escapeHtml(subLabel)}</div>
               </div>
             </div>
           </td>
@@ -811,12 +1015,16 @@
       el.uploadQueue.innerHTML = '<div class="nas-upload-empty">선택된 파일이 없습니다.</div>';
       return;
     }
-    el.uploadQueue.innerHTML = state.uploadFiles.map((file, index) => {
+    el.uploadQueue.innerHTML = state.uploadFiles.map((entry, index) => {
+      const relativePath = entry.relativePath || entry.name || "";
+      const metaLabel = relativePath && relativePath !== entry.name
+        ? `${relativePath} · ${formatBytes(entry.size)}`
+        : formatBytes(entry.size);
       return `
         <div class="nas-upload-chip">
           <div class="min-w-0">
-            <div class="fw-semibold text-truncate">${escapeHtml(file.name)}</div>
-            <div class="small text-secondary">${escapeHtml(formatBytes(file.size))}</div>
+            <div class="fw-semibold text-truncate" title="${escapeHtml(relativePath)}">${escapeHtml(entry.name)}</div>
+            <div class="small text-secondary text-truncate">${escapeHtml(metaLabel)}</div>
           </div>
           <button class="btn btn-sm btn-outline-danger" type="button" data-action="remove-upload" data-index="${index}">
             <i class="bi bi-x-lg"></i>
@@ -901,37 +1109,43 @@
   }
 
   function mergeUploadFiles(files) {
-    const next = Array.from(files || []);
+    const next = normalizeUploadEntries(files);
     if (!next.length) return;
-    const known = new Set(state.uploadFiles.map((file) => fileKey(file)));
-    next.forEach((file) => {
-      const key = fileKey(file);
+    const known = new Set(state.uploadFiles.map((entry) => entry.key || fileKey(entry)));
+    next.forEach((entry) => {
+      const key = entry.key || fileKey(entry);
       if (!known.has(key)) {
         known.add(key);
-        state.uploadFiles.push(file);
+        state.uploadFiles.push(entry);
       }
     });
     renderQueue();
   }
 
   async function uploadFileBatch(files, options) {
-    const batch = Array.from(files || []);
+    const batch = normalizeUploadEntries(files);
     const opts = options || {};
+    const directoryPaths = normalizeUploadDirectoryPaths(opts.directories);
     if (state.uploadInFlight) {
       setAlert("warning", "이미 업로드가 진행 중입니다. 잠시만 기다려주세요.");
       return false;
     }
-    if (!batch.length) {
-      setAlert("warning", "먼저 업로드할 파일을 선택해주세요.");
+    if (!batch.length && !directoryPaths.length) {
+      setAlert("warning", "먼저 업로드할 파일이나 폴더를 선택해주세요.");
       return false;
     }
 
     const formData = new FormData();
     formData.append("path", state.currentPath || "/");
-    batch.forEach((file) => formData.append("files", file, file.name));
-    const totalFileBytes = batch.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    directoryPaths.forEach((directoryPath) => formData.append("directories", directoryPath));
+    batch.forEach((entry) => {
+      formData.append("file_paths", entry.relativePath);
+      formData.append("files", entry.file, entry.name);
+    });
+    const totalFileBytes = batch.reduce((sum, entry) => sum + Number(entry.size || 0), 0);
+    const progressLabel = opts.label || (directoryPaths.length ? "폴더를 업로드하는 중..." : "파일을 업로드하는 중...");
     state.uploadInFlight = true;
-    showUploadProgress(batch, "파일을 업로드하는 중...");
+    showUploadProgress(batch, progressLabel, { directories: directoryPaths });
     try {
       const payload = await sendNasUploadRequest(formData, {
         onProgress(event) {
@@ -943,18 +1157,32 @@
           }
           updateUploadProgress(Math.min(Number(event.loaded || 0), totalFileBytes), totalFileBytes);
         },
+        onTransferComplete() {
+          markUploadProgressFinalizing(totalFileBytes);
+        },
       });
-      updateUploadProgress(totalFileBytes, totalFileBytes);
-      const successText = `업로드 완료: ${payload.saved_count || 0}개 저장`;
+      if (totalFileBytes > 0) {
+        updateUploadProgress(totalFileBytes, totalFileBytes);
+      } else {
+        markUploadProgressFinalizing(0, { label: "업로드 완료" });
+      }
+      setUploadProgressStage("complete");
+      hideUploadProgress();
+      const resultParts = [];
+      if (payload.saved_count) resultParts.push(`파일 ${payload.saved_count}개 저장`);
+      if (payload.created_directory_count) resultParts.push(`폴더 ${payload.created_directory_count}개 생성`);
+      if (!resultParts.length) resultParts.push("처리 완료");
+      const successText = `업로드 완료: ${resultParts.join(", ")}`;
       const skippedText = payload.skipped_count ? `, ${payload.skipped_count}개 건너뜀` : "";
       setAlert("success", successText + skippedText);
-      const uploadedKeys = new Set(batch.map((file) => fileKey(file)));
-      state.uploadFiles = state.uploadFiles.filter((file) => !uploadedKeys.has(fileKey(file)));
+      const uploadedKeys = new Set(batch.map((entry) => entry.key || fileKey(entry)));
+      state.uploadFiles = state.uploadFiles.filter((entry) => !uploadedKeys.has(entry.key || fileKey(entry)));
       renderQueue();
       if (!opts.preserveInput && el.uploadInput) el.uploadInput.value = "";
       await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
       return true;
     } catch (err) {
+      hideUploadProgress();
       setAlert("danger", err instanceof Error ? err.message : "업로드에 실패했습니다.");
       return false;
     } finally {
@@ -965,6 +1193,135 @@
 
   async function uploadFiles() {
     return uploadFileBatch(state.uploadFiles);
+  }
+
+  async function readDirectoryEntries(reader) {
+    const entries = [];
+    while (reader && typeof reader.readEntries === "function") {
+      const chunk = await new Promise((resolve, reject) => {
+        reader.readEntries(resolve, reject);
+      });
+      if (!chunk || !chunk.length) break;
+      entries.push(...chunk);
+    }
+    return entries;
+  }
+
+  async function collectUploadEntriesFromWebkitEntry(entry, parentPath, bucket, directories) {
+    if (!entry) return;
+    const entryRelativePath = normalizeUploadRelativePath(String(entry.fullPath || "").replace(/^\/+/, ""));
+    if (entry.isFile) {
+      const file = await new Promise((resolve, reject) => {
+        entry.file(resolve, reject);
+      });
+      const uploadEntry = buildUploadEntry(
+        file,
+        entryRelativePath || (parentPath ? `${parentPath}/${file.name}` : file.name)
+      );
+      if (uploadEntry) bucket.push(uploadEntry);
+      return;
+    }
+    if (!entry.isDirectory) return;
+    const directoryPath = entryRelativePath || normalizeUploadRelativePath(parentPath ? `${parentPath}/${entry.name}` : entry.name);
+    if (directoryPath) directories.add(directoryPath);
+    const children = await readDirectoryEntries(entry.createReader());
+    for (const child of children) {
+      await collectUploadEntriesFromWebkitEntry(child, directoryPath, bucket, directories);
+    }
+  }
+
+  async function collectUploadEntriesFromHandle(handle, parentPath, bucket, directories) {
+    if (!handle) return;
+    if (handle.kind === "file") {
+      const file = await handle.getFile();
+      const uploadEntry = buildUploadEntry(file, parentPath ? `${parentPath}/${handle.name}` : handle.name);
+      if (uploadEntry) bucket.push(uploadEntry);
+      return;
+    }
+    if (handle.kind !== "directory" || typeof handle.values !== "function") return;
+    const directoryPath = normalizeUploadRelativePath(parentPath ? `${parentPath}/${handle.name}` : handle.name);
+    if (directoryPath) directories.add(directoryPath);
+    for await (const childHandle of handle.values()) {
+      await collectUploadEntriesFromHandle(childHandle, directoryPath, bucket, directories);
+    }
+  }
+
+  async function extractDroppedUploadPayload(dataTransfer) {
+    const directories = new Set();
+    const collected = [];
+    const fallbackFiles = Array.from(dataTransfer && dataTransfer.files || []);
+    const items = Array.from(dataTransfer && dataTransfer.items || [])
+      .filter((item) => item && item.kind === "file");
+    let usedStructuredItems = false;
+
+    for (const item of items) {
+      if (typeof item.webkitGetAsEntry === "function") {
+        const entry = item.webkitGetAsEntry();
+        if (entry) {
+          usedStructuredItems = true;
+          await collectUploadEntriesFromWebkitEntry(entry, "", collected, directories);
+          continue;
+        }
+      }
+      if (typeof item.getAsFileSystemHandle === "function") {
+        try {
+          const handle = await item.getAsFileSystemHandle();
+          if (handle) {
+            usedStructuredItems = true;
+            await collectUploadEntriesFromHandle(handle, "", collected, directories);
+            continue;
+          }
+        } catch (_) {
+        }
+      }
+    }
+
+    const normalizedStructuredEntries = normalizeUploadEntries(collected);
+    const normalizedFallbackEntries = normalizeUploadEntries(fallbackFiles);
+    const normalizedEntries = normalizedStructuredEntries.length
+      ? normalizedStructuredEntries
+      : normalizedFallbackEntries;
+    return {
+      directories: Array.from(directories),
+      entries: normalizedEntries,
+      used_structured_items: usedStructuredItems,
+    };
+  }
+
+  async function handleDroppedUpload(dataTransfer, options) {
+    const opts = options || {};
+    let payload = null;
+    setLoading(true, "업로드할 항목을 준비하는 중...");
+    try {
+      payload = await extractDroppedUploadPayload(dataTransfer);
+    } catch (err) {
+      setAlert("danger", err instanceof Error ? err.message : "드롭한 항목을 읽지 못했습니다.");
+      return false;
+    } finally {
+      setLoading(false);
+    }
+
+    const entries = normalizeUploadEntries(payload && payload.entries);
+    const directories = normalizeUploadDirectoryPaths(payload && payload.directories);
+    if (!entries.length && !directories.length) {
+      setAlert("warning", "업로드할 파일이나 폴더를 찾지 못했습니다.");
+      return false;
+    }
+    if (!entries.length && directories.length) {
+      setAlert("warning", "폴더는 감지됐지만 안쪽 파일을 읽지 못했습니다. 다시 드래그앤드롭 해주세요.");
+      return false;
+    }
+
+    mergeUploadFiles(entries);
+    if (opts.autoUpload === false) {
+      return true;
+    }
+
+    return uploadFileBatch(entries, {
+      directories,
+      label: directories.length ? "폴더를 업로드하는 중..." : "파일을 업로드하는 중...",
+      preserveInput: true,
+    });
   }
 
   function configureNameEditor(mode, options) {
@@ -1027,6 +1384,46 @@
       : [String(target || "").trim()].filter(Boolean);
     const items = paths.map((path) => findItem(path)).filter(Boolean);
     return { paths, items };
+  }
+
+  async function setPinnedState(target, pinned) {
+    const { paths, items } = resolveTrashTargets(target);
+    if (!paths.length || !items.length) {
+      setAlert("warning", pinned ? "상단 고정할 대상을 찾지 못했습니다." : "상단 고정을 해제할 대상을 찾지 못했습니다.");
+      return;
+    }
+
+    setLoading(true, pinned ? "상단 고정하는 중..." : "상단 고정을 해제하는 중...");
+    try {
+      const res = await fetch("/api/nas/pin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(paths.length === 1 ? { path: paths[0], pinned } : { paths, pinned }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const payload = await res.json();
+      hideContextMenu();
+      await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
+      setSelectedPaths(paths, {
+        primaryPath: paths[0] || "",
+        primaryType: items[0]?.type || "",
+      });
+      if (items.length === 1) {
+        setAlert("success", pinned
+          ? `${items[0].name} 항목을 상단에 고정했습니다.`
+          : `${items[0].name} 항목의 상단 고정을 해제했습니다.`);
+      } else {
+        setAlert("success", pinned
+          ? `${payload.count || items.length}개 항목을 상단에 고정했습니다.`
+          : `${payload.count || items.length}개 항목의 상단 고정을 해제했습니다.`);
+      }
+    } catch (err) {
+      setAlert("danger", err instanceof Error ? err.message : (pinned ? "상단 고정에 실패했습니다." : "상단 고정 해제에 실패했습니다."));
+    } finally {
+      setLoading(false);
+    }
   }
 
   function resetTrashConfirmState() {
@@ -1294,9 +1691,20 @@
     el.dropzone.classList.toggle("is-dragover", active);
   }
 
+  function syncExplorerDropOverlayPosition() {
+    if (!el.explorerDropTarget) return;
+    const scrollTop = Math.max(Number(el.explorerDropTarget.scrollTop || 0), 0);
+    el.explorerDropTarget.style.setProperty("--nas-drop-overlay-offset", `${scrollTop}px`);
+  }
+
   function onExplorerDropDrag(active) {
     if (!el.explorerDropTarget) return;
     el.explorerDropTarget.classList.toggle("is-dragover", active);
+    if (active) {
+      syncExplorerDropOverlayPosition();
+      return;
+    }
+    el.explorerDropTarget.style.setProperty("--nas-drop-overlay-offset", "0px");
   }
 
   function clampNumber(value, min, max) {
@@ -1584,9 +1992,8 @@
         onDropzoneDrag(false);
       });
     });
-    el.dropzone.addEventListener("drop", (event) => {
-      const files = event.dataTransfer && event.dataTransfer.files;
-      mergeUploadFiles(files);
+    el.dropzone.addEventListener("drop", async (event) => {
+      await handleDroppedUpload(event.dataTransfer, { autoUpload: false });
     });
   }
 
@@ -1605,8 +2012,14 @@
     el.explorerDropTarget.addEventListener("dragover", (event) => {
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      syncExplorerDropOverlayPosition();
       onExplorerDropDrag(true);
     });
+    el.explorerDropTarget.addEventListener("scroll", () => {
+      if (el.explorerDropTarget.classList.contains("is-dragover")) {
+        syncExplorerDropOverlayPosition();
+      }
+    }, { passive: true });
     el.explorerDropTarget.addEventListener("dragleave", (event) => {
       event.preventDefault();
       state.dropTargetDepth = Math.max(0, state.dropTargetDepth - 1);
@@ -1619,10 +2032,7 @@
       event.preventDefault();
       state.dropTargetDepth = 0;
       onExplorerDropDrag(false);
-      const files = event.dataTransfer && event.dataTransfer.files;
-      if (!files || !files.length) return;
-      mergeUploadFiles(files);
-      await uploadFileBatch(files, { preserveInput: true });
+      await handleDroppedUpload(event.dataTransfer, { autoUpload: true });
     });
   }
 
@@ -1657,6 +2067,17 @@
     });
     el.newFolderModal.addEventListener("hidden.bs.modal", () => {
       resetNewFolderForm();
+    });
+  }
+
+  if (el.uploadProgressModal) {
+    el.uploadProgressModal.addEventListener("shown.bs.modal", () => {
+      if (el.uploadProgressModal.dataset.pendingHide === "true") {
+        hideUploadProgress();
+      }
+    });
+    el.uploadProgressModal.addEventListener("hidden.bs.modal", () => {
+      forceHideUploadProgressModal();
     });
   }
 
@@ -1810,6 +2231,10 @@
         downloadItems(targetPaths);
       } else if (action === "rename" && targetPath && targetType) {
         renameItem(targetPath, targetType);
+      } else if (action === "pin-top" && targetPaths.length) {
+        setPinnedState(targetPaths, true);
+      } else if (action === "unpin-top" && targetPaths.length) {
+        setPinnedState(targetPaths, false);
       } else if (action === "new-folder") {
         openNewFolderModal();
       } else if (action === "open-trash") {

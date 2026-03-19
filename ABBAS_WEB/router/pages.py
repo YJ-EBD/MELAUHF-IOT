@@ -4,16 +4,21 @@ import hashlib
 import os
 import re
 import secrets
+import shutil
 import socket
+import subprocess
+import tempfile
 import time
 import asyncio
 import json
+import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 
 from DB import data_repo
 from DB import device_repo
@@ -21,6 +26,7 @@ from DB import device_ops_repo
 from DB import firmware_repo
 from DB.runtime import get_mysql
 from services.log_store import read_logs as db_read_logs
+from services.user_store import read_user
 from redis.session import SESSION_COOKIE_NAME, read_session_user
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -30,6 +36,24 @@ FIRMWARE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
 FIRMWARE_FAMILY_DEFAULT = (os.getenv("ABBAS_FIRMWARE_FAMILY_DEFAULT", "ABBAS_ESP32C5_MELAUHF").strip() or "ABBAS_ESP32C5_MELAUHF")
 DEVICE_FIRMWARE_CHECK_INTERVAL_SEC = int(os.getenv("ABBAS_DEVICE_FIRMWARE_CHECK_SEC", "1800"))
 FIRMWARE_MAX_UPLOAD_BYTES = int(os.getenv("ABBAS_FIRMWARE_MAX_UPLOAD_BYTES", "3342336"))
+NAS_MODEL_CONTAINS = (os.getenv("ABBAS_NAS_MODEL_CONTAINS", "Backup+ Desk").strip() or "Backup+ Desk")
+NAS_LABEL_DEFAULT = (os.getenv("ABBAS_NAS_LABEL", "Seagate Backup+ Desk").strip() or "Seagate Backup+ Desk")
+NAS_ROOT_OVERRIDE = (os.getenv("ABBAS_NAS_ROOT") or "").strip()
+NAS_LIST_LIMIT = max(int(os.getenv("ABBAS_NAS_LIST_LIMIT", "1000")), 100)
+NAS_UPLOAD_CHUNK_BYTES = max(int(os.getenv("ABBAS_NAS_UPLOAD_CHUNK_BYTES", str(1024 * 1024))), 65536)
+NAS_RECYCLE_DIR_NAME = ".ABBAS_NAS_RECYCLE_BIN"
+NAS_RECYCLE_META_SUFFIX = ".__nas_meta__.json"
+NAS_PIN_META_FILENAME = ".ABBAS_NAS_PINS.json"
+NAS_HIDDEN_ENTRY_NAMES = {
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    NAS_RECYCLE_DIR_NAME,
+    NAS_PIN_META_FILENAME,
+}
+_NAS_INFO_CACHE: dict[str, Any] = {}
+_NAS_INFO_CACHE_TS = 0.0
+_NAS_STATUS_CACHE: dict[str, Any] = {}
+_NAS_STATUS_CACHE_TS = 0.0
 
 
 def _fmt(dt: datetime) -> str:
@@ -205,8 +229,59 @@ def _merge_sd_payload(payload: dict[str, Any], prev: dict[str, Any] | None = Non
     return True, sd_total_mb, sd_used_mb, sd_free_mb
 
 
-def _nav_items() -> list[dict[str, str]]:
-    return [
+def _normalize_role(value: Any) -> str:
+    role = str(value or "").strip().lower()
+    if role == "admin":
+        return "admin"
+    return "user"
+
+
+def _request_user_row(request: Request) -> dict[str, Any]:
+    cached = getattr(request.state, "user_row", None)
+    if cached is not None:
+        return cached
+
+    user_id = getattr(request.state, "user_id", "") or _request_user_id(request)
+    row = read_user(user_id) if user_id else None
+    normalized = row or {}
+    try:
+        request.state.user_row = normalized
+    except Exception:
+        pass
+    return normalized
+
+
+def _request_user_role(request: Request) -> str:
+    row = _request_user_row(request)
+    return _normalize_role(row.get("ROLE") or "")
+
+
+def _request_is_admin(request: Request) -> bool:
+    return _request_user_role(request) == "admin"
+
+
+def _require_admin(request: Request) -> None:
+    if not _request_is_admin(request):
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
+
+
+def _admin_forbidden_page(request: Request, *, message: str = ""):
+    detail = message or "role 값이 admin인 계정만 이 페이지에 접근할 수 있습니다."
+    return templates.TemplateResponse(
+        "forbidden.html",
+        _base_context(
+            request,
+            "",
+            page_title="접근 제한",
+            forbidden_title="관리자 전용 페이지",
+            forbidden_message=detail,
+        ),
+        status_code=403,
+    )
+
+
+def _nav_items(*, is_admin: bool = False) -> list[dict[str, str]]:
+    items = [
         {"key": "dashboard", "label": "대시보드", "path": "/"},
         {"key": "device_status", "label": "디바이스 목록", "path": "/device-status"},
         {"key": "control_panel", "label": "제어 패널", "path": "/control-panel"},
@@ -216,6 +291,957 @@ def _nav_items() -> list[dict[str, str]]:
         {"key": "firmware_manage", "label": "Firmware Manage", "path": "/firmware-manage"},
         {"key": "settings", "label": "설정", "path": "/settings"},
     ]
+    if is_admin:
+        items.insert(6, {"key": "nas", "label": "NAS Center", "path": "/nas"})
+    return items
+
+
+def _format_bytes(value: Any) -> str:
+    try:
+        size = float(value or 0)
+    except Exception:
+        size = 0.0
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    unit_idx = 0
+    while size >= 1024.0 and unit_idx < (len(units) - 1):
+        size /= 1024.0
+        unit_idx += 1
+    if unit_idx == 0:
+        return f"{int(size)} {units[unit_idx]}"
+    return f"{size:.2f} {units[unit_idx]}"
+
+
+def _clean_drive_text(value: Any) -> str:
+    return str(value or "").replace("_", " ").strip()
+
+
+def _normalize_dev_path(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("/dev/"):
+        return raw
+    if raw.startswith("UUID=") or raw.startswith("LABEL="):
+        return ""
+    return f"/dev/{raw.lstrip('/')}"
+
+
+def _findmnt_source_for_target(path: str) -> str:
+    target = str(path or "").strip()
+    if not target:
+        return ""
+    try:
+        proc = subprocess.run(
+            ["findmnt", "-n", "-o", "SOURCE", "--target", target],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3.0,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return _normalize_dev_path(proc.stdout)
+
+
+def _lsblk_parent_device(dev_path: str) -> str:
+    device = _normalize_dev_path(dev_path)
+    if not device:
+        return ""
+    try:
+        proc = subprocess.run(
+            ["lsblk", "-no", "PKNAME", device],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3.0,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    parent_name = str(proc.stdout or "").strip()
+    return _normalize_dev_path(parent_name)
+
+
+def _udevadm_properties(dev_path: str) -> dict[str, str]:
+    device = _normalize_dev_path(dev_path)
+    if not device:
+        return {}
+    try:
+        proc = subprocess.run(
+            ["udevadm", "info", "--query=property", "--name", device],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3.0,
+        )
+    except Exception:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    props: dict[str, str] = {}
+    for line in str(proc.stdout or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = str(key or "").strip()
+        value = str(value or "").strip()
+        if key:
+            props[key] = value
+    return props
+
+
+def _nas_metadata_from_mount_path(mount_path: str) -> dict[str, Any]:
+    target = str(mount_path or "").strip()
+    if not target or not os.path.isdir(target):
+        return {}
+
+    mount_device = _findmnt_source_for_target(target)
+    if not mount_device:
+        return {}
+
+    disk_device = _lsblk_parent_device(mount_device) or mount_device
+    disk_props = _udevadm_properties(disk_device)
+    mount_props = _udevadm_properties(mount_device)
+
+    serial = (
+        str(disk_props.get("ID_SERIAL_SHORT") or "").strip()
+        or str(mount_props.get("ID_SERIAL_SHORT") or "").strip()
+        or str(disk_props.get("ID_SERIAL") or "").strip()
+        or str(mount_props.get("ID_SERIAL") or "").strip()
+    )
+    transport = (
+        str(disk_props.get("ID_BUS") or "").strip().lower()
+        or str(mount_props.get("ID_BUS") or "").strip().lower()
+    )
+    model = _clean_drive_text(disk_props.get("ID_MODEL") or mount_props.get("ID_MODEL") or "")
+    vendor = _clean_drive_text(disk_props.get("ID_VENDOR") or mount_props.get("ID_VENDOR") or "")
+
+    return {
+        "root": os.path.realpath(target),
+        "mount_path": target,
+        "mount_device": mount_device,
+        "disk_device": disk_device,
+        "transport": transport,
+        "serial": serial,
+        "model": model,
+        "vendor": vendor,
+    }
+
+
+def _enrich_nas_candidate(item: dict[str, Any]) -> dict[str, Any]:
+    current = dict(item or {})
+    mount_path = str(current.get("mount_path") or "").strip()
+    extra = _nas_metadata_from_mount_path(mount_path)
+    if extra:
+        for key, value in extra.items():
+            if value and not str(current.get(key) or "").strip():
+                current[key] = value
+        if extra.get("root"):
+            current["root"] = str(current.get("root") or extra.get("root")).strip() or str(extra.get("root") or "")
+
+    vendor = _clean_drive_text(current.get("vendor") or "Seagate") or "Seagate"
+    model = _clean_drive_text(current.get("model") or NAS_LABEL_DEFAULT) or NAS_LABEL_DEFAULT
+    label = " ".join(part for part in [vendor, model] if part).strip() or NAS_LABEL_DEFAULT
+    current["vendor"] = vendor
+    current["model"] = model
+    current["label"] = label
+    return current
+
+
+def _nas_identity_incomplete(item: dict[str, Any]) -> bool:
+    current = dict(item or {})
+    if not bool(current.get("mounted")):
+        return False
+    return not (
+        str(current.get("mount_device") or "").strip()
+        and str(current.get("disk_device") or "").strip()
+        and str(current.get("serial") or "").strip()
+    )
+
+
+def _walk_lsblk_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for node in nodes:
+        out.append(node)
+        children = node.get("children") or []
+        if children:
+            out.extend(_walk_lsblk_nodes(children))
+    return out
+
+
+def _find_mounted_descendant(node: dict[str, Any]) -> dict[str, Any] | None:
+    mountpoint = str(node.get("mountpoint") or "").strip()
+    if mountpoint:
+        return node
+    for child in node.get("children") or []:
+        found = _find_mounted_descendant(child)
+        if found:
+            return found
+    return None
+
+
+def _lsblk_candidates(*, require_mounted: bool = True) -> list[dict[str, Any]]:
+    try:
+        proc = subprocess.run(
+            [
+                "lsblk",
+                "-J",
+                "-b",
+                "-o",
+                "NAME,MODEL,VENDOR,SIZE,TYPE,MOUNTPOINT,TRAN,SERIAL",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3.0,
+        )
+    except Exception:
+        return []
+
+    if proc.returncode != 0:
+        return []
+
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for node in _walk_lsblk_nodes(payload.get("blockdevices") or []):
+        if str(node.get("type") or "").strip() != "disk":
+            continue
+
+        mounted = _find_mounted_descendant(node)
+        mountpoint = str((mounted or {}).get("mountpoint") or "").strip()
+        is_mounted = bool(mountpoint) and os.path.isdir(mountpoint)
+        if require_mounted and not is_mounted:
+            continue
+
+        disk_name = str(node.get("name") or "").strip()
+        mounted_name = str((mounted or {}).get("name") or disk_name).strip()
+        model = _clean_drive_text(node.get("model") or NAS_LABEL_DEFAULT)
+        vendor = _clean_drive_text(node.get("vendor") or "")
+        label = " ".join(part for part in [vendor, model] if part).strip() or NAS_LABEL_DEFAULT
+        candidates.append(
+            {
+                "root": os.path.realpath(mountpoint) if is_mounted else "",
+                "mount_path": mountpoint if is_mounted else "",
+                "disk_device": f"/dev/{disk_name}" if disk_name else "",
+                "mount_device": f"/dev/{mounted_name}" if is_mounted and mounted_name else "",
+                "model": model or NAS_LABEL_DEFAULT,
+                "vendor": vendor,
+                "transport": str(node.get("tran") or "").strip(),
+                "serial": str(node.get("serial") or "").strip(),
+                "reported_size_bytes": _payload_int(node.get("size"), 0),
+                "label": label,
+                "connected": True,
+                "mounted": is_mounted,
+            }
+        )
+    return candidates
+
+
+def _path_usage(path: str) -> dict[str, Any]:
+    st = os.statvfs(path)
+    total_bytes = int(st.f_blocks * st.f_frsize)
+    free_bytes = int(st.f_bavail * st.f_frsize)
+    used_bytes = max(total_bytes - free_bytes, 0)
+    usage_percent = round((used_bytes / total_bytes * 100.0), 1) if total_bytes > 0 else 0.0
+    return {
+        "total_bytes": total_bytes,
+        "free_bytes": free_bytes,
+        "used_bytes": used_bytes,
+        "usage_percent": usage_percent,
+        "total_label": _format_bytes(total_bytes),
+        "free_label": _format_bytes(free_bytes),
+        "used_label": _format_bytes(used_bytes),
+    }
+
+
+def _nas_placeholder_drive(*, connected: bool = False) -> dict[str, Any]:
+    return {
+        "root": "",
+        "mount_path": "",
+        "disk_device": "",
+        "mount_device": "",
+        "model": NAS_LABEL_DEFAULT,
+        "vendor": "Seagate",
+        "transport": "",
+        "serial": "",
+        "reported_size_bytes": 0,
+        "label": NAS_LABEL_DEFAULT,
+        "connected": connected,
+        "mounted": False,
+        "total_bytes": 0,
+        "free_bytes": 0,
+        "used_bytes": 0,
+        "usage_percent": 0.0,
+        "total_label": "-",
+        "free_label": "-",
+        "used_label": "-",
+        "reported_size_label": "-",
+    }
+
+
+def _nas_candidate_matches_target(item: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        [
+            str(item.get("label") or ""),
+            str(item.get("model") or ""),
+            str(item.get("vendor") or ""),
+        ]
+    ).strip().lower()
+    if not haystack:
+        return False
+
+    hints = [
+        str(NAS_MODEL_CONTAINS or "").strip().lower(),
+        str(NAS_LABEL_DEFAULT or "").strip().lower(),
+        "seagate backup+ desk",
+    ]
+    return any(hint and hint in haystack for hint in hints)
+
+
+def _select_nas_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    matches = [dict(item) for item in candidates if _nas_candidate_matches_target(item)]
+    if not matches:
+        return None
+
+    if NAS_ROOT_OVERRIDE and os.path.isdir(NAS_ROOT_OVERRIDE):
+        override_root = os.path.realpath(NAS_ROOT_OVERRIDE)
+        for item in matches:
+            mount_path = str(item.get("mount_path") or "").strip()
+            if mount_path and os.path.realpath(mount_path) == override_root:
+                return item
+            root = str(item.get("root") or "").strip()
+            if root and root == override_root:
+                return item
+
+    return matches[0]
+
+
+def _default_nas_candidate_from_override() -> dict[str, Any] | None:
+    if not NAS_ROOT_OVERRIDE or not os.path.isdir(NAS_ROOT_OVERRIDE):
+        return None
+    if not os.path.ismount(NAS_ROOT_OVERRIDE):
+        return None
+    root = os.path.realpath(NAS_ROOT_OVERRIDE)
+    for item in _lsblk_candidates(require_mounted=True):
+        mount_path = str(item.get("mount_path") or "").strip()
+        if mount_path and os.path.realpath(mount_path) == root:
+            candidate = _nas_placeholder_drive(connected=True)
+            candidate.update(item)
+            candidate["root"] = root
+            candidate["mount_path"] = NAS_ROOT_OVERRIDE
+            candidate["connected"] = True
+            candidate["mounted"] = True
+            return candidate
+
+    candidate = _nas_placeholder_drive(connected=True)
+    candidate.update(
+        {
+            "root": root,
+            "mount_path": NAS_ROOT_OVERRIDE,
+            "transport": "usb",
+            "connected": True,
+            "mounted": True,
+        }
+    )
+    return _enrich_nas_candidate(candidate)
+
+
+def _get_nas_mount_info(*, force_refresh: bool = False) -> dict[str, Any] | None:
+    global _NAS_INFO_CACHE, _NAS_INFO_CACHE_TS
+    now_ts = time.time()
+    if (not force_refresh) and _NAS_INFO_CACHE and (now_ts - _NAS_INFO_CACHE_TS) < 5.0:
+        cached = _enrich_nas_candidate(_NAS_INFO_CACHE)
+        if not _nas_identity_incomplete(cached):
+            _NAS_INFO_CACHE = dict(cached)
+            _NAS_INFO_CACHE_TS = now_ts
+            return dict(cached)
+
+    candidate = _default_nas_candidate_from_override()
+    if candidate is None:
+        candidate = _select_nas_candidate(_lsblk_candidates(require_mounted=True))
+
+    if candidate is None:
+        _NAS_INFO_CACHE = {}
+        _NAS_INFO_CACHE_TS = now_ts
+        return None
+
+    try:
+        usage = _path_usage(str(candidate.get("root") or ""))
+    except Exception:
+        _NAS_INFO_CACHE = {}
+        _NAS_INFO_CACHE_TS = now_ts
+        return None
+
+    info = _enrich_nas_candidate({**candidate, **usage, "connected": True, "mounted": True})
+    _NAS_INFO_CACHE = dict(info)
+    _NAS_INFO_CACHE_TS = now_ts
+    return info
+
+
+def _get_nas_drive_status(*, force_refresh: bool = False) -> dict[str, Any]:
+    global _NAS_STATUS_CACHE, _NAS_STATUS_CACHE_TS
+    now_ts = time.time()
+    if (not force_refresh) and _NAS_STATUS_CACHE and (now_ts - _NAS_STATUS_CACHE_TS) < 5.0:
+        cached = _enrich_nas_candidate(_NAS_STATUS_CACHE)
+        if not _nas_identity_incomplete(cached):
+            _NAS_STATUS_CACHE = dict(cached)
+            _NAS_STATUS_CACHE_TS = now_ts
+            return dict(cached)
+
+    mounted_info = _get_nas_mount_info(force_refresh=force_refresh)
+    if mounted_info:
+        status = dict(mounted_info)
+    else:
+        candidate = _select_nas_candidate(_lsblk_candidates(require_mounted=False))
+        if candidate is None:
+            status = _nas_placeholder_drive(connected=False)
+        else:
+            status = _nas_placeholder_drive(connected=True)
+            status.update(candidate)
+            status["connected"] = True
+            status["mounted"] = bool(candidate.get("mounted"))
+            status["label"] = NAS_LABEL_DEFAULT
+            if not status["mounted"]:
+                status["root"] = ""
+                status["mount_path"] = ""
+                status["mount_device"] = ""
+
+    status = _enrich_nas_candidate(status)
+    reported_size = int(status.get("reported_size_bytes") or 0)
+    status["reported_size_label"] = _format_bytes(reported_size) if reported_size > 0 else "-"
+    status["label"] = str(status.get("label") or NAS_LABEL_DEFAULT).strip() or NAS_LABEL_DEFAULT
+    status["model"] = str(status.get("model") or NAS_LABEL_DEFAULT).strip() or NAS_LABEL_DEFAULT
+    status["vendor"] = str(status.get("vendor") or "Seagate").strip() or "Seagate"
+    status["connected"] = bool(status.get("connected"))
+    status["mounted"] = bool(status.get("mounted"))
+
+    if not status["mounted"]:
+        status["total_label"] = "-"
+        status["free_label"] = "-"
+        status["used_label"] = "-"
+        status["usage_percent"] = 0.0
+
+    _NAS_STATUS_CACHE = dict(status)
+    _NAS_STATUS_CACHE_TS = now_ts
+    return status
+
+
+def _nas_unavailable_detail() -> str:
+    status = _get_nas_drive_status(force_refresh=True)
+    if status.get("connected") and not status.get("mounted"):
+        return "Seagate Backup+ Desk는 연결되어 있지만 아직 마운트되지 않았습니다."
+    return "Seagate Backup+ Desk가 연결되어 있지 않습니다."
+
+
+def _normalize_nas_rel_path(value: Any) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    normalized = os.path.normpath("/" + raw.lstrip("/")).replace("\\", "/")
+    if normalized in {"", "/."}:
+        return "/"
+    if normalized == "/..":
+        raise HTTPException(status_code=400, detail="올바르지 않은 경로입니다.")
+    if normalized.startswith("/../"):
+        raise HTTPException(status_code=400, detail="허용되지 않은 경로입니다.")
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return normalized
+
+
+def _resolve_nas_path(path: Any, *, allow_missing: bool = False) -> tuple[dict[str, Any], str, str]:
+    info = _get_nas_mount_info()
+    if not info:
+        raise HTTPException(status_code=503, detail=_nas_unavailable_detail())
+
+    root = os.path.realpath(str(info.get("root") or ""))
+    if not root or not os.path.isdir(root):
+        raise HTTPException(status_code=503, detail="NAS 저장소 루트를 찾을 수 없습니다.")
+
+    rel_path = _normalize_nas_rel_path(path)
+    if _is_nas_recycle_rel_path(rel_path):
+        raise HTTPException(status_code=403, detail="휴지통 전용 경로는 일반 탐색으로 열 수 없습니다.")
+    target = os.path.realpath(os.path.join(root, rel_path.lstrip("/")))
+    try:
+        inside_root = os.path.commonpath([root, target]) == root
+    except Exception:
+        inside_root = False
+    if not inside_root:
+        raise HTTPException(status_code=400, detail="NAS 루트 밖으로 이동할 수 없습니다.")
+    if (not allow_missing) and (not os.path.exists(target)):
+        raise HTTPException(status_code=404, detail="대상을 찾을 수 없습니다.")
+    return info, rel_path, target
+
+
+def _nas_breadcrumbs(rel_path: str) -> list[dict[str, str]]:
+    crumbs = [{"name": "ROOT", "path": "/"}]
+    parts = [part for part in str(rel_path or "/").strip("/").split("/") if part]
+    acc: list[str] = []
+    for part in parts:
+        acc.append(part)
+        crumbs.append({"name": part, "path": "/" + "/".join(acc)})
+    return crumbs
+
+
+def _nas_file_kind(name: str, is_dir: bool) -> str:
+    if is_dir:
+        return "folder"
+    ext = os.path.splitext(name)[1].strip().lower()
+    if ext in {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"}:
+        return "image"
+    if ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+        return "video"
+    if ext in {".mp3", ".wav", ".aac", ".flac", ".m4a"}:
+        return "audio"
+    if ext in {".zip", ".7z", ".rar", ".tar", ".gz"}:
+        return "archive"
+    if ext in {".pdf"}:
+        return "pdf"
+    if ext in {".csv", ".txt", ".log", ".json", ".xml", ".md"}:
+        return "text"
+    if ext in {".bin", ".hex", ".uf2"}:
+        return "binary"
+    return "file"
+
+
+def _safe_unlink(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def _nas_archive_root_name(rel_path: str) -> str:
+    normalized = _normalize_nas_rel_path(rel_path).lstrip("/")
+    return normalized or "ROOT"
+
+
+def _nas_archive_download_name(paths: list[str]) -> str:
+    if len(paths) == 1:
+        base_name = os.path.basename(str(paths[0] or "/").rstrip("/")) or "ROOT"
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", base_name).strip("._-") or "nas_item"
+        return f"{safe_name}.zip"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"nas_selection_{timestamp}.zip"
+
+
+def _write_nas_directory_to_zip(archive: zipfile.ZipFile, full_path: str, arc_root: str) -> None:
+    root_name = str(arc_root or "ROOT").strip("/").replace("\\", "/") or "ROOT"
+    archive.writestr(f"{root_name}/", "")
+
+    for current_root, dirnames, filenames in os.walk(full_path):
+        dirnames.sort()
+        filenames.sort()
+        rel_dir = os.path.relpath(current_root, full_path)
+        current_arc = root_name if rel_dir == "." else f"{root_name}/{rel_dir.replace(os.sep, '/')}"
+        if rel_dir != ".":
+            archive.writestr(f"{current_arc}/", "")
+        for filename in filenames:
+            file_path = os.path.join(current_root, filename)
+            rel_file = filename if rel_dir == "." else f"{rel_dir.replace(os.sep, '/')}/{filename}"
+            archive.write(file_path, arcname=f"{root_name}/{rel_file}")
+
+
+def _relative_nas_path(root: str, absolute_path: str) -> str:
+    rel = os.path.relpath(absolute_path, root)
+    if rel in {".", ""}:
+        return "/"
+    return "/" + rel.replace(os.sep, "/")
+
+
+def _list_nas_directory(rel_path: str) -> dict[str, Any]:
+    info, normalized_path, full_path = _resolve_nas_path(rel_path)
+    if not os.path.isdir(full_path):
+        raise HTTPException(status_code=400, detail="폴더만 열람할 수 있습니다.")
+
+    root = os.path.realpath(str(info.get("root") or ""))
+    pin_meta = _read_nas_pin_meta(root)
+    entries: list[dict[str, Any]] = []
+    dir_count = 0
+    file_count = 0
+
+    for entry in os.scandir(full_path):
+        try:
+            if _is_hidden_nas_entry(entry.name):
+                continue
+
+            resolved = os.path.realpath(entry.path)
+            if os.path.commonpath([root, resolved]) != root:
+                continue
+
+            is_dir = os.path.isdir(resolved)
+            stat_result = os.stat(resolved)
+            item_rel_path = _relative_nas_path(root, resolved)
+            pinned_at = float(pin_meta.get(item_rel_path) or 0.0)
+            size_bytes = 0 if is_dir else int(stat_result.st_size)
+            if is_dir:
+                dir_count += 1
+            else:
+                file_count += 1
+
+            entries.append(
+                {
+                    "name": entry.name,
+                    "path": item_rel_path,
+                    "type": "directory" if is_dir else "file",
+                    "kind": _nas_file_kind(entry.name, is_dir),
+                    "extension": os.path.splitext(entry.name)[1].strip().lower(),
+                    "size_bytes": size_bytes,
+                    "size_label": "-" if is_dir else _format_bytes(size_bytes),
+                    "modified_at": datetime.fromtimestamp(stat_result.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    "downloadable": not is_dir,
+                    "pinned": pinned_at > 0,
+                    "pinned_at": pinned_at,
+                }
+            )
+        except Exception:
+            continue
+
+    entries.sort(
+        key=lambda item: (
+            0 if item.get("pinned") else 1,
+            -float(item.get("pinned_at") or 0.0) if item.get("pinned") else 0.0,
+            0 if item.get("type") == "directory" else 1,
+            str(item.get("name") or "").lower(),
+        )
+    )
+    truncated = len(entries) > NAS_LIST_LIMIT
+    if truncated:
+        entries = entries[:NAS_LIST_LIMIT]
+
+    parent_path = None
+    if normalized_path != "/":
+        parent_path = os.path.dirname(normalized_path.rstrip("/")) or "/"
+
+    drive = dict(info)
+    drive["reported_size_label"] = _format_bytes(int(drive.get("reported_size_bytes") or 0))
+
+    return {
+        "ok": True,
+        "drive": drive,
+        "current_path": normalized_path,
+        "current_name": os.path.basename(normalized_path.rstrip("/")) if normalized_path != "/" else str(info.get("label") or NAS_LABEL_DEFAULT),
+        "parent_path": parent_path,
+        "is_root": normalized_path == "/",
+        "breadcrumbs": _nas_breadcrumbs(normalized_path),
+        "counts": {
+            "total": len(entries),
+            "directories": dir_count,
+            "files": file_count,
+        },
+        "truncated": truncated,
+        "items": entries,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _safe_upload_name(filename: str) -> str:
+    cleaned = os.path.basename(str(filename or "").replace("\\", "/")).strip()
+    if cleaned in {"", ".", ".."}:
+        return ""
+    return cleaned
+
+
+def _safe_upload_rel_path(value: Any) -> str:
+    raw = str(value or "").replace("\\", "/").strip()
+    if not raw:
+        return ""
+    parts = [part.strip() for part in raw.split("/") if str(part or "").strip()]
+    if not parts:
+        return ""
+    for part in parts:
+        if part in {".", ".."}:
+            return ""
+        if "\x00" in part:
+            return ""
+        if _is_hidden_nas_entry(part):
+            return ""
+    return "/".join(parts)
+
+
+def _is_hidden_nas_entry(name: str) -> bool:
+    return str(name or "").strip() in NAS_HIDDEN_ENTRY_NAMES
+
+
+def _validate_nas_new_folder_name(name: Any) -> str:
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="새 폴더 이름을 입력해주세요.")
+    if cleaned in {".", ".."}:
+        raise HTTPException(status_code=400, detail="이 폴더 이름은 사용할 수 없습니다.")
+    if "/" in cleaned or "\\" in cleaned:
+        raise HTTPException(status_code=400, detail="폴더 이름에는 경로 구분자를 사용할 수 없습니다.")
+    if "\x00" in cleaned:
+        raise HTTPException(status_code=400, detail="폴더 이름에 허용되지 않은 문자가 포함되어 있습니다.")
+    if _is_hidden_nas_entry(cleaned):
+        raise HTTPException(status_code=400, detail="시스템 예약 폴더 이름은 사용할 수 없습니다.")
+    return cleaned
+
+
+def _validate_nas_rename_name(name: Any) -> str:
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="새 이름을 입력해주세요.")
+    if cleaned in {".", ".."}:
+        raise HTTPException(status_code=400, detail="이 이름은 사용할 수 없습니다.")
+    if "/" in cleaned or "\\" in cleaned:
+        raise HTTPException(status_code=400, detail="이름에는 경로 구분자를 사용할 수 없습니다.")
+    if "\x00" in cleaned:
+        raise HTTPException(status_code=400, detail="이름에 허용되지 않은 문자가 포함되어 있습니다.")
+    if _is_hidden_nas_entry(cleaned):
+        raise HTTPException(status_code=400, detail="시스템 예약 이름은 사용할 수 없습니다.")
+    return cleaned
+
+
+def _is_nas_recycle_rel_path(rel_path: str) -> bool:
+    recycle_prefix = f"/{NAS_RECYCLE_DIR_NAME}"
+    return rel_path == recycle_prefix or rel_path.startswith(recycle_prefix + "/")
+
+
+def _ensure_nas_recycle_dir(root: str) -> str:
+    recycle_dir = os.path.join(root, NAS_RECYCLE_DIR_NAME)
+    os.makedirs(recycle_dir, exist_ok=True)
+    return recycle_dir
+
+
+def _validate_nas_recycle_item_id(item_id: Any) -> str:
+    cleaned = str(item_id or "").strip()
+    if not cleaned or cleaned in {".", ".."}:
+        raise HTTPException(status_code=400, detail="휴지통 항목 식별자가 올바르지 않습니다.")
+    if "/" in cleaned or "\\" in cleaned:
+        raise HTTPException(status_code=400, detail="휴지통 항목 식별자가 올바르지 않습니다.")
+    return cleaned
+
+
+def _make_nas_recycle_item_id(original_name: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9._()-]+", "_", str(original_name or "").strip()).strip("._")
+    safe_name = safe_name or "item"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{ts}_{secrets.token_hex(4)}_{safe_name}"
+
+
+def _nas_recycle_meta_path(recycle_dir: str, item_id: str) -> str:
+    return os.path.join(recycle_dir, f"{item_id}{NAS_RECYCLE_META_SUFFIX}")
+
+
+def _nas_size_label(path: str) -> str:
+    if os.path.isdir(path):
+        return "-"
+    try:
+        return _format_bytes(os.path.getsize(path))
+    except Exception:
+        return "-"
+
+
+def _nas_pin_meta_path(root: str) -> str:
+    return os.path.join(root, NAS_PIN_META_FILENAME)
+
+
+def _read_nas_pin_meta(root: str) -> dict[str, float]:
+    meta_path = _nas_pin_meta_path(root)
+    if not meta_path or not os.path.exists(meta_path):
+        return {}
+    try:
+        with open(meta_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except Exception:
+        return {}
+    raw_pins = payload.get("pins") if isinstance(payload, dict) else {}
+    if not isinstance(raw_pins, dict):
+        return {}
+
+    pins: dict[str, float] = {}
+    for raw_path, raw_value in raw_pins.items():
+        try:
+            rel_path = _normalize_nas_rel_path(raw_path)
+        except HTTPException:
+            continue
+        if rel_path == "/" or _is_nas_recycle_rel_path(rel_path):
+            continue
+        try:
+            pins[rel_path] = float(raw_value)
+        except Exception:
+            continue
+    return pins
+
+
+def _write_nas_pin_meta(root: str, pins: dict[str, float]) -> None:
+    meta_path = _nas_pin_meta_path(root)
+    payload = {
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "pins": dict(sorted(pins.items(), key=lambda item: item[1], reverse=True)),
+    }
+    temp_path = f"{meta_path}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2)
+        os.replace(temp_path, meta_path)
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+
+
+def _set_nas_pin_state(root: str, rel_paths: list[str], *, pinned: bool) -> tuple[dict[str, float], list[str]]:
+    pins = _read_nas_pin_meta(root)
+    changed_paths: list[str] = []
+    timestamp_base = time.time()
+    for index, raw_path in enumerate(rel_paths):
+        rel_path = _normalize_nas_rel_path(raw_path)
+        if rel_path == "/" or _is_nas_recycle_rel_path(rel_path):
+            continue
+        if pinned:
+            pins[rel_path] = timestamp_base + (index * 0.000001)
+            changed_paths.append(rel_path)
+            continue
+        if rel_path in pins:
+            pins.pop(rel_path, None)
+            changed_paths.append(rel_path)
+    _write_nas_pin_meta(root, pins)
+    return pins, changed_paths
+
+
+def _rename_nas_pin_state(root: str, old_rel_path: str, new_rel_path: str) -> None:
+    old_path = _normalize_nas_rel_path(old_rel_path)
+    new_path = _normalize_nas_rel_path(new_rel_path)
+    if old_path == new_path:
+        return
+    pins = _read_nas_pin_meta(root)
+    if old_path not in pins:
+        return
+    pins[new_path] = float(pins.pop(old_path))
+    _write_nas_pin_meta(root, pins)
+
+
+def _move_nas_item_to_recycle(rel_path: str) -> dict[str, Any]:
+    info, normalized_path, full_path = _resolve_nas_path(rel_path)
+    if normalized_path == "/":
+        raise HTTPException(status_code=400, detail="루트 폴더는 휴지통으로 이동할 수 없습니다.")
+
+    root = os.path.realpath(str(info.get("root") or ""))
+    recycle_dir = _ensure_nas_recycle_dir(root)
+    original_name = os.path.basename(full_path.rstrip(os.sep)) or os.path.basename(full_path)
+    item_id = _make_nas_recycle_item_id(original_name)
+    recycle_path = os.path.join(recycle_dir, item_id)
+    meta_path = _nas_recycle_meta_path(recycle_dir, item_id)
+    deleted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    item_type = "directory" if os.path.isdir(full_path) else "file"
+
+    meta = {
+        "item_id": item_id,
+        "original_name": original_name,
+        "original_path": normalized_path,
+        "deleted_at": deleted_at,
+        "type": item_type,
+    }
+
+    moved = False
+    try:
+        shutil.move(full_path, recycle_path)
+        moved = True
+        with open(meta_path, "w", encoding="utf-8") as fp:
+            json.dump(meta, fp, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        if moved:
+            try:
+                if os.path.exists(recycle_path) and not os.path.exists(full_path):
+                    shutil.move(recycle_path, full_path)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"휴지통 이동에 실패했습니다: {exc}")
+
+    _set_nas_pin_state(root, [normalized_path], pinned=False)
+    return {
+        **meta,
+        "size_label": _nas_size_label(recycle_path),
+    }
+
+
+def _list_nas_recycle_items() -> dict[str, Any]:
+    info = _get_nas_mount_info()
+    if not info:
+        raise HTTPException(status_code=503, detail=_nas_unavailable_detail())
+
+    root = os.path.realpath(str(info.get("root") or ""))
+    recycle_dir = _ensure_nas_recycle_dir(root)
+    items: list[dict[str, Any]] = []
+
+    for entry in os.scandir(recycle_dir):
+        if (not entry.is_file()) or (not entry.name.endswith(NAS_RECYCLE_META_SUFFIX)):
+            continue
+
+        item_id = entry.name[:-len(NAS_RECYCLE_META_SUFFIX)]
+        meta_path = entry.path
+        recycle_path = os.path.join(recycle_dir, item_id)
+        if not os.path.exists(recycle_path):
+            continue
+
+        try:
+            with open(meta_path, "r", encoding="utf-8") as fp:
+                meta = json.load(fp)
+        except Exception:
+            meta = {}
+
+        items.append(
+            {
+                "item_id": item_id,
+                "name": str(meta.get("original_name") or item_id),
+                "original_path": str(meta.get("original_path") or "/"),
+                "deleted_at": str(meta.get("deleted_at") or datetime.fromtimestamp(os.path.getmtime(meta_path)).strftime("%Y-%m-%d %H:%M:%S")),
+                "type": str(meta.get("type") or ("directory" if os.path.isdir(recycle_path) else "file")),
+                "size_label": _nas_size_label(recycle_path),
+            }
+        )
+
+    items.sort(key=lambda item: str(item.get("deleted_at") or ""), reverse=True)
+    return {"ok": True, "count": len(items), "items": items}
+
+
+def _resolve_nas_recycle_item(item_id: Any) -> tuple[dict[str, Any], str, str, str, dict[str, Any]]:
+    info = _get_nas_mount_info()
+    if not info:
+        raise HTTPException(status_code=503, detail=_nas_unavailable_detail())
+
+    root = os.path.realpath(str(info.get("root") or ""))
+    recycle_dir = _ensure_nas_recycle_dir(root)
+    resolved_item_id = _validate_nas_recycle_item_id(item_id)
+    recycle_path = os.path.join(recycle_dir, resolved_item_id)
+    meta_path = _nas_recycle_meta_path(recycle_dir, resolved_item_id)
+
+    if not os.path.exists(recycle_path) or not os.path.exists(meta_path):
+        raise HTTPException(status_code=404, detail="휴지통 항목을 찾을 수 없습니다.")
+
+    try:
+        with open(meta_path, "r", encoding="utf-8") as fp:
+            meta = json.load(fp)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"휴지통 메타데이터를 읽지 못했습니다: {exc}")
+
+    return info, recycle_dir, recycle_path, meta_path, meta
+
+
+def _unique_restore_target(path: str) -> str:
+    if not os.path.exists(path):
+        return path
+
+    parent = os.path.dirname(path)
+    filename = os.path.basename(path)
+    stem, ext = os.path.splitext(filename)
+    suffix = 1
+    while True:
+        label = "restored" if suffix == 1 else f"restored {suffix}"
+        candidate = os.path.join(parent, f"{stem} ({label}){ext}")
+        if not os.path.exists(candidate):
+            return candidate
+        suffix += 1
 
 
 def _dummy_devices(now: datetime) -> list[dict[str, Any]]:
@@ -425,7 +1451,25 @@ def _subscription_response_or_default(device_id: str) -> dict[str, Any]:
 def _base_context(request: Request, active_key: str, **kwargs: Any) -> dict[str, Any]:
     user_id = getattr(request.state, "user_id", "") or ""
     logged_in = bool(user_id)
-    return {"request": request, "nav_items": _nav_items(), "nav_active": active_key, "logged_in": logged_in, "current_user_id": user_id, **kwargs}
+    current_user_role = _request_user_role(request) if logged_in else "user"
+    is_admin = current_user_role == "admin"
+    current_user = _request_user_row(request) if logged_in else {}
+    current_user_name = (
+        str(current_user.get("NICKNAME") or "").strip()
+        or str(current_user.get("NAME") or "").strip()
+        or user_id
+    )
+    return {
+        "request": request,
+        "nav_items": _nav_items(is_admin=is_admin),
+        "nav_active": active_key,
+        "logged_in": logged_in,
+        "current_user_id": user_id,
+        "current_user_name": current_user_name,
+        "current_user_role": current_user_role,
+        "is_admin": is_admin,
+        **kwargs,
+    }
 
 
 # ==============================================================
@@ -668,14 +1712,22 @@ def _device_record_or_403(device_id: str, token: str) -> dict[str, Any] | None:
     return rec
 
 
-def _require_device_identity(request: Request, payload: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+def _require_device_identity(
+    request: Request,
+    payload: dict[str, Any],
+    *,
+    require_registered: bool = False,
+) -> tuple[str, str, dict[str, Any] | None]:
     token = _extract_auth_token(request, payload)
     device_id = _norm_device_id(str(payload.get("device_id") or "").strip())
     if not device_id:
         raise HTTPException(status_code=400, detail="device_id required")
     if not token:
         raise HTTPException(status_code=400, detail="token required")
-    return token, device_id, _device_record_or_403(device_id, token)
+    rec = _device_record_or_403(device_id, token)
+    if require_registered and not rec:
+        raise HTTPException(status_code=404, detail="device not found")
+    return token, device_id, rec
 
 
 def _device_api_meta(device_id: str, ip: str, customer: str) -> dict[str, Any]:
@@ -1422,6 +2474,504 @@ def logs(request: Request):
     )
 
 
+@router.get("/nas", name="nas")
+def nas_page(request: Request):
+    if not _request_is_admin(request):
+        return _admin_forbidden_page(request, message="role 값이 admin인 계정만 NAS 메뉴를 보고 NAS 페이지에 접속할 수 있습니다.")
+
+    drive = _get_nas_drive_status(force_refresh=True)
+    return templates.TemplateResponse(
+        "nas.html",
+        _base_context(
+            request,
+            "nas",
+            page_title="NAS Center",
+            nas_drive=drive,
+            nas_model_hint=NAS_LABEL_DEFAULT,
+        ),
+    )
+
+
+@router.get("/api/nas/status")
+def api_nas_status(request: Request):
+    _require_admin(request)
+    drive = _get_nas_drive_status(force_refresh=True)
+    return JSONResponse({"ok": True, "drive": drive})
+
+
+@router.get("/api/nas/browse")
+def api_nas_browse(request: Request, path: str = "/"):
+    _require_admin(request)
+    return JSONResponse(_list_nas_directory(path))
+
+
+@router.get("/api/nas/download")
+def api_nas_download(request: Request, path: str = "/"):
+    _require_admin(request)
+    _info, _rel_path, full_path = _resolve_nas_path(path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=400, detail="파일만 다운로드할 수 있습니다.")
+    filename = os.path.basename(full_path) or "download.bin"
+    return FileResponse(full_path, filename=filename)
+
+
+@router.post("/api/nas/download-batch")
+def api_nas_download_batch(request: Request, payload: dict[str, Any] = Body(default={})):
+    _require_admin(request)
+
+    raw_paths = payload.get("paths")
+    if not isinstance(raw_paths, list):
+        single_path = str(payload.get("path") or "").strip()
+        raw_paths = [single_path] if single_path else []
+
+    paths: list[str] = []
+    seen_paths: set[str] = set()
+    for raw_path in raw_paths:
+        normalized_path = _normalize_nas_rel_path(raw_path)
+        if normalized_path in seen_paths:
+            continue
+        seen_paths.add(normalized_path)
+        paths.append(normalized_path)
+
+    if not paths:
+        raise HTTPException(status_code=400, detail="다운로드할 항목을 선택해주세요.")
+
+    resolved_items: list[tuple[str, str, str]] = []
+    for path in paths:
+        _info, rel_path, full_path = _resolve_nas_path(path)
+        if os.path.isfile(full_path):
+            resolved_items.append((rel_path, full_path, "file"))
+            continue
+        if os.path.isdir(full_path):
+            resolved_items.append((rel_path, full_path, "directory"))
+            continue
+        raise HTTPException(status_code=400, detail="파일 또는 폴더만 다운로드할 수 있습니다.")
+
+    archive_file = tempfile.NamedTemporaryFile(prefix="abbas_nas_", suffix=".zip", delete=False)
+    archive_path = archive_file.name
+    archive_file.close()
+
+    try:
+        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for rel_path, full_path, item_type in resolved_items:
+                archive_root = _nas_archive_root_name(rel_path)
+                if item_type == "file":
+                    archive.write(full_path, arcname=archive_root)
+                else:
+                    _write_nas_directory_to_zip(archive, full_path, archive_root)
+    except Exception:
+        _safe_unlink(archive_path)
+        raise
+
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=_nas_archive_download_name(paths),
+        background=BackgroundTask(_safe_unlink, archive_path),
+    )
+
+
+@router.post("/api/nas/upload")
+async def api_nas_upload(
+    request: Request,
+    path: str = Form("/"),
+    directories: list[str] = Form(default=[]),
+    file_paths: list[str] = Form(default=[]),
+    files: list[UploadFile] = File(default=[]),
+):
+    _require_admin(request)
+    info, rel_path, full_path = _resolve_nas_path(path)
+    if not os.path.isdir(full_path):
+        raise HTTPException(status_code=400, detail="업로드 대상은 폴더여야 합니다.")
+
+    saved: list[dict[str, Any]] = []
+    created_directories: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    root = os.path.realpath(str(info.get("root") or full_path))
+    seen_directories: set[str] = set()
+
+    for raw_directory in directories or []:
+        safe_directory = _safe_upload_rel_path(raw_directory)
+        if not safe_directory:
+            skipped.append({"name": str(raw_directory or ""), "reason": "폴더 경로가 올바르지 않습니다."})
+            continue
+        if safe_directory in seen_directories:
+            continue
+
+        destination_dir = os.path.realpath(os.path.join(full_path, safe_directory))
+        if os.path.commonpath([root, destination_dir]) != root:
+            skipped.append({"name": safe_directory, "reason": "허용되지 않은 경로입니다."})
+            continue
+        if os.path.isfile(destination_dir):
+            skipped.append({"name": safe_directory, "reason": "동일한 이름의 파일이 이미 있습니다."})
+            continue
+
+        try:
+            existed_before = os.path.isdir(destination_dir)
+            os.makedirs(destination_dir, exist_ok=True)
+            seen_directories.add(safe_directory)
+            if not existed_before:
+                created_directories.append(
+                    {
+                        "name": os.path.basename(safe_directory),
+                        "path": rel_path.rstrip("/") + "/" + safe_directory if rel_path != "/" else "/" + safe_directory,
+                    }
+                )
+        except Exception as exc:
+            skipped.append({"name": safe_directory, "reason": f"폴더 생성 실패: {exc}"})
+
+    for index, upload in enumerate(files or []):
+        raw_rel_path = ""
+        if index < len(file_paths or []):
+            raw_rel_path = str(file_paths[index] or "")
+        if not raw_rel_path:
+            raw_rel_path = upload.filename or ""
+
+        safe_rel_path = _safe_upload_rel_path(raw_rel_path)
+        if not safe_rel_path:
+            skipped.append({"name": raw_rel_path or upload.filename or "", "reason": "파일명이 올바르지 않습니다."})
+            try:
+                await upload.close()
+            except Exception:
+                pass
+            continue
+
+        safe_name = _safe_upload_name(safe_rel_path)
+        destination = os.path.realpath(os.path.join(full_path, safe_rel_path))
+        if os.path.commonpath([root, destination]) != root:
+            skipped.append({"name": safe_rel_path, "reason": "허용되지 않은 경로입니다."})
+            try:
+                await upload.close()
+            except Exception:
+                pass
+            continue
+        if os.path.isdir(destination):
+            skipped.append({"name": safe_name, "reason": "동일한 이름의 폴더가 이미 있습니다."})
+            try:
+                await upload.close()
+            except Exception:
+                pass
+            continue
+
+        parent_dir = os.path.dirname(destination)
+        try:
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+        except Exception as exc:
+            skipped.append({"name": safe_rel_path, "reason": f"폴더 생성 실패: {exc}"})
+            try:
+                await upload.close()
+            except Exception:
+                pass
+            continue
+        size_bytes = 0
+        try:
+            with open(destination, "wb") as fp:
+                while True:
+                    chunk = await upload.read(NAS_UPLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    fp.write(chunk)
+                    size_bytes += len(chunk)
+            saved.append(
+                {
+                    "name": safe_name,
+                    "path": rel_path.rstrip("/") + "/" + safe_rel_path if rel_path != "/" else "/" + safe_rel_path,
+                    "relative_path": safe_rel_path,
+                    "size_bytes": size_bytes,
+                    "size_label": _format_bytes(size_bytes),
+                }
+            )
+        except Exception as exc:
+            try:
+                if os.path.exists(destination):
+                    os.remove(destination)
+            except Exception:
+                pass
+            skipped.append({"name": safe_name, "reason": f"저장 실패: {exc}"})
+        finally:
+            try:
+                await upload.close()
+            except Exception:
+                pass
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "path": rel_path,
+            "saved": saved,
+            "created_directories": created_directories,
+            "skipped": skipped,
+            "saved_count": len(saved),
+            "created_directory_count": len(created_directories),
+            "skipped_count": len(skipped),
+        }
+    )
+
+
+@router.post("/api/nas/mkdir")
+def api_nas_mkdir(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+):
+    _require_admin(request)
+    path = payload.get("path") or "/"
+    name = _validate_nas_new_folder_name(payload.get("name") or "")
+    info, rel_path, full_path = _resolve_nas_path(path)
+    if not os.path.isdir(full_path):
+        raise HTTPException(status_code=400, detail="새 폴더를 만들 위치는 폴더여야 합니다.")
+
+    target = os.path.realpath(os.path.join(full_path, name))
+    root = os.path.realpath(str(info.get("root") or full_path))
+    if os.path.commonpath([root, target]) != root:
+        raise HTTPException(status_code=400, detail="NAS 루트 밖에는 폴더를 만들 수 없습니다.")
+    if os.path.exists(target):
+        raise HTTPException(status_code=409, detail="같은 이름의 파일 또는 폴더가 이미 존재합니다.")
+
+    try:
+        os.mkdir(target)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="같은 이름의 파일 또는 폴더가 이미 존재합니다.")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"폴더 생성에 실패했습니다: {exc}")
+
+    created_path = rel_path.rstrip("/") + "/" + name if rel_path != "/" else "/" + name
+    return JSONResponse(
+        {
+            "ok": True,
+            "name": name,
+            "path": created_path,
+            "parent_path": rel_path,
+        }
+    )
+
+
+@router.post("/api/nas/delete")
+def api_nas_delete(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+):
+    _require_admin(request)
+    raw_paths = payload.get("paths")
+    paths: list[str] = []
+
+    if isinstance(raw_paths, list):
+        seen: set[str] = set()
+        for value in raw_paths:
+            normalized = str(value or "").strip()
+            if (not normalized) or (normalized in seen):
+                continue
+            seen.add(normalized)
+            paths.append(normalized)
+
+    if not paths:
+        single_path = str(payload.get("path") or "").strip() or "/"
+        paths = [single_path]
+
+    if not paths:
+        raise HTTPException(status_code=400, detail="휴지통으로 이동할 항목이 없습니다.")
+
+    results = [_move_nas_item_to_recycle(path) for path in paths]
+    if len(results) == 1:
+        return JSONResponse({"ok": True, "moved_count": 1, **results[0]})
+    return JSONResponse({"ok": True, "moved_count": len(results), "items": results})
+
+
+@router.post("/api/nas/pin")
+def api_nas_pin(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+):
+    _require_admin(request)
+    raw_paths = payload.get("paths")
+    pinned = bool(payload.get("pinned", True))
+    paths: list[str] = []
+
+    if isinstance(raw_paths, list):
+        seen: set[str] = set()
+        for value in raw_paths:
+            normalized = str(value or "").strip()
+            if (not normalized) or (normalized in seen):
+                continue
+            seen.add(normalized)
+            paths.append(normalized)
+
+    if not paths:
+        single_path = str(payload.get("path") or "").strip()
+        if single_path:
+            paths = [single_path]
+
+    if not paths:
+        raise HTTPException(status_code=400, detail="상단 고정할 항목이 없습니다.")
+
+    info = _get_nas_mount_info()
+    if not info:
+        raise HTTPException(status_code=503, detail=_nas_unavailable_detail())
+    root = os.path.realpath(str(info.get("root") or ""))
+
+    normalized_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for path in paths:
+        _info, rel_path, full_path = _resolve_nas_path(path)
+        if rel_path == "/":
+            continue
+        if not os.path.exists(full_path):
+            continue
+        if rel_path in seen_paths:
+            continue
+        seen_paths.add(rel_path)
+        normalized_paths.append(rel_path)
+
+    if not normalized_paths:
+        raise HTTPException(status_code=400, detail="상단 고정할 수 있는 항목이 없습니다.")
+
+    _pins, changed_paths = _set_nas_pin_state(root, normalized_paths, pinned=pinned)
+    action_label = "pinned" if pinned else "unpinned"
+    return JSONResponse(
+        {
+            "ok": True,
+            "action": action_label,
+            "pinned": pinned,
+            "count": len(changed_paths),
+            "paths": changed_paths,
+        }
+    )
+
+
+@router.post("/api/nas/rename")
+def api_nas_rename(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+):
+    _require_admin(request)
+    path = payload.get("path") or "/"
+    new_name = _validate_nas_rename_name(payload.get("name") or "")
+    info, rel_path, full_path = _resolve_nas_path(path)
+    if rel_path == "/":
+        raise HTTPException(status_code=400, detail="루트 폴더 이름은 변경할 수 없습니다.")
+
+    root = os.path.realpath(str(info.get("root") or full_path))
+    item_type = "directory" if os.path.isdir(full_path) else "file"
+    original_name = os.path.basename(full_path.rstrip(os.sep)) or os.path.basename(full_path)
+    if new_name == original_name:
+        return JSONResponse(
+            {
+                "ok": True,
+                "old_name": original_name,
+                "name": new_name,
+                "old_path": rel_path,
+                "path": rel_path,
+                "type": item_type,
+            }
+        )
+
+    parent_dir = os.path.dirname(full_path)
+    target_path = os.path.realpath(os.path.join(parent_dir, new_name))
+    if os.path.commonpath([root, target_path]) != root:
+        raise HTTPException(status_code=400, detail="NAS 루트 밖으로 이름을 변경할 수 없습니다.")
+    if os.path.exists(target_path):
+        raise HTTPException(status_code=409, detail="같은 이름의 파일 또는 폴더가 이미 존재합니다.")
+
+    try:
+        os.rename(full_path, target_path)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="같은 이름의 파일 또는 폴더가 이미 존재합니다.")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"이름 변경에 실패했습니다: {exc}")
+
+    next_rel_path = _relative_nas_path(root, target_path)
+    _rename_nas_pin_state(root, rel_path, next_rel_path)
+    return JSONResponse(
+        {
+            "ok": True,
+            "old_name": original_name,
+            "name": new_name,
+            "old_path": rel_path,
+            "path": next_rel_path,
+            "type": item_type,
+        }
+    )
+
+
+@router.get("/api/nas/trash")
+def api_nas_trash(request: Request):
+    _require_admin(request)
+    return JSONResponse(_list_nas_recycle_items())
+
+
+@router.post("/api/nas/trash/restore")
+def api_nas_trash_restore(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+):
+    _require_admin(request)
+    info, _recycle_dir, recycle_path, meta_path, meta = _resolve_nas_recycle_item(payload.get("item_id"))
+    root = os.path.realpath(str(info.get("root") or ""))
+    original_path = _normalize_nas_rel_path(meta.get("original_path") or "/")
+    if original_path == "/" or _is_nas_recycle_rel_path(original_path):
+        raise HTTPException(status_code=400, detail="복원할 원래 경로가 올바르지 않습니다.")
+
+    target_path = os.path.realpath(os.path.join(root, original_path.lstrip("/")))
+    if os.path.commonpath([root, target_path]) != root:
+        raise HTTPException(status_code=400, detail="복원 대상 경로가 NAS 루트 밖입니다.")
+
+    parent_dir = os.path.dirname(target_path)
+    os.makedirs(parent_dir, exist_ok=True)
+    final_target = _unique_restore_target(target_path)
+
+    try:
+        shutil.move(recycle_path, final_target)
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"휴지통 복원에 실패했습니다: {exc}")
+
+    restored_rel_path = _relative_nas_path(root, final_target)
+    return JSONResponse({"ok": True, "path": restored_rel_path})
+
+
+@router.post("/api/nas/trash/purge")
+def api_nas_trash_purge(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+):
+    _require_admin(request)
+    _info, _recycle_dir, recycle_path, meta_path, _meta = _resolve_nas_recycle_item(payload.get("item_id"))
+
+    try:
+        if os.path.isdir(recycle_path):
+            shutil.rmtree(recycle_path)
+        else:
+            os.remove(recycle_path)
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"휴지통 항목 삭제에 실패했습니다: {exc}")
+
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/nas/trash/empty")
+def api_nas_trash_empty(request: Request):
+    _require_admin(request)
+    removed_count = 0
+    recycle_items = _list_nas_recycle_items().get("items") or []
+    for item in recycle_items:
+        try:
+            _info, _recycle_dir, recycle_path, meta_path, _meta = _resolve_nas_recycle_item(item.get("item_id"))
+            if os.path.isdir(recycle_path):
+                shutil.rmtree(recycle_path)
+            else:
+                os.remove(recycle_path)
+            if os.path.exists(meta_path):
+                os.remove(meta_path)
+            removed_count += 1
+        except Exception:
+            continue
+
+    return JSONResponse({"ok": True, "removed_count": removed_count})
+
+
 @router.get("/settings", name="settings")
 def settings(request: Request):
     return templates.TemplateResponse("settings.html", _base_context(request, "settings", page_title="설정"))
@@ -1778,7 +3328,9 @@ def api_device_ota_check(request: Request, device_id: str = ""):
     token = _extract_auth_token(request, {})
     if not did:
         raise HTTPException(status_code=400, detail="device_id required")
-    _device_record_or_403(did, token)
+    rec = _device_record_or_403(did, token)
+    if not rec:
+        raise HTTPException(status_code=404, detail="device not found")
 
     firmware_repo.record_device_check(device_id=did)
     info = firmware_repo.get_target_release_for_device(device_id=did) or {}
@@ -1849,7 +3401,9 @@ def api_device_ota_download(request: Request, release_id: int, device_id: str = 
     token = _extract_auth_token(request, {})
     if not did:
         raise HTTPException(status_code=400, detail="device_id required")
-    _device_record_or_403(did, token)
+    rec = _device_record_or_403(did, token)
+    if not rec:
+        raise HTTPException(status_code=404, detail="device not found")
 
     info = firmware_repo.get_target_release_for_device(device_id=did) or {}
     target_release_id = int(info.get("target_release_id") or 0)
@@ -1871,7 +3425,7 @@ def api_device_ota_report(request: Request, payload: dict[str, Any] = Body(...))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="invalid payload")
 
-    token, device_id, rec = _require_device_identity(request, payload)
+    token, device_id, rec = _require_device_identity(request, payload, require_registered=True)
     _ = token
     customer = _auth_customer(request, payload) or str((rec or {}).get("customer") or "-")
     public_ip = _request_client_ip(request)
