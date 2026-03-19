@@ -44,11 +44,14 @@ NAS_UPLOAD_CHUNK_BYTES = max(int(os.getenv("ABBAS_NAS_UPLOAD_CHUNK_BYTES", str(1
 NAS_RECYCLE_DIR_NAME = ".ABBAS_NAS_RECYCLE_BIN"
 NAS_RECYCLE_META_SUFFIX = ".__nas_meta__.json"
 NAS_PIN_META_FILENAME = ".ABBAS_NAS_PINS.json"
+NAS_MARK_META_FILENAME = ".ABBAS_NAS_MARKS.json"
+NAS_MARK_COLOR_SET = {"red", "orange", "yellow", "green", "blue", "purple"}
 NAS_HIDDEN_ENTRY_NAMES = {
     "$RECYCLE.BIN",
     "System Volume Information",
     NAS_RECYCLE_DIR_NAME,
     NAS_PIN_META_FILENAME,
+    NAS_MARK_META_FILENAME,
 }
 _NAS_INFO_CACHE: dict[str, Any] = {}
 _NAS_INFO_CACHE_TS = 0.0
@@ -862,6 +865,7 @@ def _list_nas_directory(rel_path: str) -> dict[str, Any]:
 
     root = os.path.realpath(str(info.get("root") or ""))
     pin_meta = _read_nas_pin_meta(root)
+    mark_meta = _read_nas_mark_meta(root)
     entries: list[dict[str, Any]] = []
     dir_count = 0
     file_count = 0
@@ -879,6 +883,7 @@ def _list_nas_directory(rel_path: str) -> dict[str, Any]:
             stat_result = os.stat(resolved)
             item_rel_path = _relative_nas_path(root, resolved)
             pinned_at = float(pin_meta.get(item_rel_path) or 0.0)
+            mark_color = _normalize_nas_mark_color((mark_meta.get(item_rel_path) or {}).get("color"))
             size_bytes = 0 if is_dir else int(stat_result.st_size)
             if is_dir:
                 dir_count += 1
@@ -898,6 +903,8 @@ def _list_nas_directory(rel_path: str) -> dict[str, Any]:
                     "downloadable": not is_dir,
                     "pinned": pinned_at > 0,
                     "pinned_at": pinned_at,
+                    "marked": bool(mark_color),
+                    "mark_color": mark_color,
                 }
             )
         except Exception:
@@ -963,6 +970,75 @@ def _safe_upload_rel_path(value: Any) -> str:
         if _is_hidden_nas_entry(part):
             return ""
     return "/".join(parts)
+
+
+def _normalize_nas_mark_color(value: Any) -> str:
+    color = str(value or "").strip().lower()
+    if color in NAS_MARK_COLOR_SET:
+        return color
+    return ""
+
+
+def _nas_rel_path_has_prefix(path: Any, prefix: Any) -> bool:
+    normalized_path = _normalize_nas_rel_path(path)
+    normalized_prefix = _normalize_nas_rel_path(prefix)
+    if normalized_prefix == "/":
+        return True
+    return normalized_path == normalized_prefix or normalized_path.startswith(normalized_prefix + "/")
+
+
+def _collapse_nas_rel_paths(paths: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_path in paths:
+        rel_path = _normalize_nas_rel_path(raw_path)
+        if rel_path in seen:
+            continue
+        seen.add(rel_path)
+        normalized.append(rel_path)
+
+    normalized.sort(key=lambda value: (value.count("/"), len(value), value))
+    collapsed: list[str] = []
+    for rel_path in normalized:
+        if any(_nas_rel_path_has_prefix(rel_path, parent_path) for parent_path in collapsed):
+            continue
+        collapsed.append(rel_path)
+    return collapsed
+
+
+def _drop_nas_meta_paths(entries: dict[str, Any], rel_path: str) -> dict[str, Any]:
+    target_path = _normalize_nas_rel_path(rel_path)
+    next_entries: dict[str, Any] = {}
+    for raw_path, value in (entries or {}).items():
+        try:
+            current_path = _normalize_nas_rel_path(raw_path)
+        except HTTPException:
+            continue
+        if _nas_rel_path_has_prefix(current_path, target_path):
+            continue
+        next_entries[current_path] = value
+    return next_entries
+
+
+def _remap_nas_meta_paths(entries: dict[str, Any], old_rel_path: str, new_rel_path: str) -> dict[str, Any]:
+    source_path = _normalize_nas_rel_path(old_rel_path)
+    target_path = _normalize_nas_rel_path(new_rel_path)
+    if source_path == "/" or source_path == target_path:
+        return dict(entries or {})
+
+    remapped: dict[str, Any] = {}
+    for raw_path, value in (entries or {}).items():
+        try:
+            current_path = _normalize_nas_rel_path(raw_path)
+        except HTTPException:
+            continue
+        if not _nas_rel_path_has_prefix(current_path, source_path):
+            remapped[current_path] = value
+            continue
+        suffix = current_path[len(source_path):]
+        next_path = _normalize_nas_rel_path((target_path.rstrip("/") + suffix) if target_path != "/" else (suffix or "/"))
+        remapped[next_path] = value
+    return remapped
 
 
 def _is_hidden_nas_entry(name: str) -> bool:
@@ -1043,6 +1119,10 @@ def _nas_pin_meta_path(root: str) -> str:
     return os.path.join(root, NAS_PIN_META_FILENAME)
 
 
+def _nas_mark_meta_path(root: str) -> str:
+    return os.path.join(root, NAS_MARK_META_FILENAME)
+
+
 def _read_nas_pin_meta(root: str) -> dict[str, float]:
     meta_path = _nas_pin_meta_path(root)
     if not meta_path or not os.path.exists(meta_path):
@@ -1073,6 +1153,9 @@ def _read_nas_pin_meta(root: str) -> dict[str, float]:
 
 def _write_nas_pin_meta(root: str, pins: dict[str, float]) -> None:
     meta_path = _nas_pin_meta_path(root)
+    if not pins:
+        _safe_unlink(meta_path)
+        return
     payload = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "pins": dict(sorted(pins.items(), key=lambda item: item[1], reverse=True)),
@@ -1109,16 +1192,124 @@ def _set_nas_pin_state(root: str, rel_paths: list[str], *, pinned: bool) -> tupl
     return pins, changed_paths
 
 
-def _rename_nas_pin_state(root: str, old_rel_path: str, new_rel_path: str) -> None:
-    old_path = _normalize_nas_rel_path(old_rel_path)
-    new_path = _normalize_nas_rel_path(new_rel_path)
-    if old_path == new_path:
-        return
+def _remove_nas_pin_state(root: str, rel_path: str) -> None:
     pins = _read_nas_pin_meta(root)
-    if old_path not in pins:
+    next_pins = _drop_nas_meta_paths(pins, rel_path)
+    if next_pins == pins:
         return
-    pins[new_path] = float(pins.pop(old_path))
-    _write_nas_pin_meta(root, pins)
+    _write_nas_pin_meta(root, next_pins)
+
+
+def _rename_nas_pin_state(root: str, old_rel_path: str, new_rel_path: str) -> None:
+    pins = _read_nas_pin_meta(root)
+    next_pins = _remap_nas_meta_paths(pins, old_rel_path, new_rel_path)
+    if next_pins == pins:
+        return
+    _write_nas_pin_meta(root, next_pins)
+
+
+def _read_nas_mark_meta(root: str) -> dict[str, dict[str, Any]]:
+    meta_path = _nas_mark_meta_path(root)
+    if not meta_path or not os.path.exists(meta_path):
+        return {}
+    try:
+        with open(meta_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except Exception:
+        return {}
+    raw_marks = payload.get("marks") if isinstance(payload, dict) else {}
+    if not isinstance(raw_marks, dict):
+        return {}
+
+    marks: dict[str, dict[str, Any]] = {}
+    for raw_path, raw_value in raw_marks.items():
+        try:
+            rel_path = _normalize_nas_rel_path(raw_path)
+        except HTTPException:
+            continue
+        if rel_path == "/" or _is_nas_recycle_rel_path(rel_path):
+            continue
+        if not isinstance(raw_value, dict):
+            continue
+        color = _normalize_nas_mark_color(raw_value.get("color"))
+        if not color:
+            continue
+        try:
+            updated_at = float(raw_value.get("updated_at") or 0.0)
+        except Exception:
+            updated_at = 0.0
+        marks[rel_path] = {
+            "color": color,
+            "updated_at": updated_at,
+        }
+    return marks
+
+
+def _write_nas_mark_meta(root: str, marks: dict[str, dict[str, Any]]) -> None:
+    meta_path = _nas_mark_meta_path(root)
+    if not marks:
+        _safe_unlink(meta_path)
+        return
+    payload = {
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "marks": dict(
+            sorted(
+                marks.items(),
+                key=lambda item: float((item[1] or {}).get("updated_at") or 0.0),
+                reverse=True,
+            )
+        ),
+    }
+    temp_path = f"{meta_path}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2)
+        os.replace(temp_path, meta_path)
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+
+
+def _set_nas_mark_state(root: str, rel_paths: list[str], color: str | None) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    normalized_color = _normalize_nas_mark_color(color)
+    marks = _read_nas_mark_meta(root)
+    changed_paths: list[str] = []
+    timestamp_base = time.time()
+    for index, raw_path in enumerate(rel_paths):
+        rel_path = _normalize_nas_rel_path(raw_path)
+        if rel_path == "/" or _is_nas_recycle_rel_path(rel_path):
+            continue
+        if normalized_color:
+            marks[rel_path] = {
+                "color": normalized_color,
+                "updated_at": timestamp_base + (index * 0.000001),
+            }
+            changed_paths.append(rel_path)
+            continue
+        if rel_path in marks:
+            marks.pop(rel_path, None)
+            changed_paths.append(rel_path)
+    _write_nas_mark_meta(root, marks)
+    return marks, changed_paths
+
+
+def _remove_nas_mark_state(root: str, rel_path: str) -> None:
+    marks = _read_nas_mark_meta(root)
+    next_marks = _drop_nas_meta_paths(marks, rel_path)
+    if next_marks == marks:
+        return
+    _write_nas_mark_meta(root, next_marks)
+
+
+def _rename_nas_mark_state(root: str, old_rel_path: str, new_rel_path: str) -> None:
+    marks = _read_nas_mark_meta(root)
+    next_marks = _remap_nas_meta_paths(marks, old_rel_path, new_rel_path)
+    if next_marks == marks:
+        return
+    _write_nas_mark_meta(root, next_marks)
 
 
 def _move_nas_item_to_recycle(rel_path: str) -> dict[str, Any]:
@@ -1158,11 +1349,181 @@ def _move_nas_item_to_recycle(rel_path: str) -> dict[str, Any]:
                 pass
         raise HTTPException(status_code=500, detail=f"휴지통 이동에 실패했습니다: {exc}")
 
-    _set_nas_pin_state(root, [normalized_path], pinned=False)
+    _remove_nas_pin_state(root, normalized_path)
+    _remove_nas_mark_state(root, normalized_path)
     return {
         **meta,
         "size_label": _nas_size_label(recycle_path),
     }
+
+
+def _nas_join_rel_path(base_rel_path: str, child_rel_path: str) -> str:
+    base = _normalize_nas_rel_path(base_rel_path)
+    child = _safe_upload_rel_path(child_rel_path)
+    if not child:
+        return base
+    return (base.rstrip("/") + "/" + child) if base != "/" else "/" + child
+
+
+def _collect_nas_upload_conflicts(path: str, directories: list[str], file_paths: list[str]) -> list[dict[str, Any]]:
+    info, rel_path, full_path = _resolve_nas_path(path)
+    if not os.path.isdir(full_path):
+        raise HTTPException(status_code=400, detail="업로드 대상은 폴더여야 합니다.")
+
+    root = os.path.realpath(str(info.get("root") or full_path))
+    conflicts: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    for safe_directory in directories:
+        destination_dir = os.path.realpath(os.path.join(full_path, safe_directory))
+        if os.path.commonpath([root, destination_dir]) != root:
+            continue
+        if safe_directory in seen_paths:
+            continue
+        if os.path.isdir(destination_dir):
+            seen_paths.add(safe_directory)
+            conflicts.append(
+                {
+                    "relative_path": safe_directory,
+                    "target_path": _nas_join_rel_path(rel_path, safe_directory),
+                    "name": os.path.basename(safe_directory),
+                    "incoming_type": "directory",
+                    "existing_type": "directory",
+                    "can_overwrite": True,
+                }
+            )
+            continue
+        if os.path.isfile(destination_dir):
+            seen_paths.add(safe_directory)
+            conflicts.append(
+                {
+                    "relative_path": safe_directory,
+                    "target_path": _nas_join_rel_path(rel_path, safe_directory),
+                    "name": os.path.basename(safe_directory),
+                    "incoming_type": "directory",
+                    "existing_type": "file",
+                    "can_overwrite": False,
+                }
+            )
+
+    for safe_rel_path in file_paths:
+        destination = os.path.realpath(os.path.join(full_path, safe_rel_path))
+        if os.path.commonpath([root, destination]) != root:
+            continue
+        if safe_rel_path in seen_paths:
+            continue
+        if os.path.isfile(destination):
+            seen_paths.add(safe_rel_path)
+            conflicts.append(
+                {
+                    "relative_path": safe_rel_path,
+                    "target_path": _nas_join_rel_path(rel_path, safe_rel_path),
+                    "name": os.path.basename(safe_rel_path),
+                    "incoming_type": "file",
+                    "existing_type": "file",
+                    "can_overwrite": True,
+                }
+            )
+            continue
+        if os.path.isdir(destination):
+            seen_paths.add(safe_rel_path)
+            conflicts.append(
+                {
+                    "relative_path": safe_rel_path,
+                    "target_path": _nas_join_rel_path(rel_path, safe_rel_path),
+                    "name": os.path.basename(safe_rel_path),
+                    "incoming_type": "file",
+                    "existing_type": "directory",
+                    "can_overwrite": False,
+                }
+            )
+
+    conflicts.sort(
+        key=lambda item: (
+            str(item.get("relative_path") or "").count("/"),
+            0 if str(item.get("incoming_type") or "") == "directory" else 1,
+            str(item.get("relative_path") or ""),
+        )
+    )
+    return conflicts
+
+
+def _prepare_nas_move_item(rel_path: str, destination_path: str) -> dict[str, Any]:
+    info, normalized_source, full_source = _resolve_nas_path(rel_path)
+    _dest_info, normalized_destination, full_destination = _resolve_nas_path(destination_path)
+    if normalized_source == "/":
+        raise HTTPException(status_code=400, detail="루트 폴더는 이동할 수 없습니다.")
+    if not os.path.isdir(full_destination):
+        raise HTTPException(status_code=400, detail="이동 대상은 폴더여야 합니다.")
+    if normalized_source == normalized_destination:
+        raise HTTPException(status_code=400, detail="같은 위치로는 이동할 수 없습니다.")
+    if _nas_rel_path_has_prefix(normalized_destination, normalized_source):
+        raise HTTPException(status_code=400, detail="폴더를 자기 자신 또는 하위 폴더 안으로 이동할 수 없습니다.")
+
+    root = os.path.realpath(str(info.get("root") or full_source))
+    source_name = os.path.basename(full_source.rstrip(os.sep)) or os.path.basename(full_source)
+    target_path = os.path.realpath(os.path.join(full_destination, source_name))
+    if os.path.commonpath([root, target_path]) != root:
+        raise HTTPException(status_code=400, detail="NAS 루트 밖으로 이동할 수 없습니다.")
+    if target_path == full_source:
+        raise HTTPException(status_code=400, detail="이미 이 위치에 있는 항목입니다.")
+    if os.path.exists(target_path):
+        raise HTTPException(status_code=409, detail="대상 폴더에 같은 이름의 파일 또는 폴더가 이미 존재합니다.")
+
+    return {
+        "root": root,
+        "source_name": source_name,
+        "item_type": "directory" if os.path.isdir(full_source) else "file",
+        "normalized_source": normalized_source,
+        "normalized_destination": normalized_destination,
+        "full_source": full_source,
+        "full_destination": full_destination,
+        "target_path": target_path,
+    }
+
+
+def _execute_nas_prepared_move(move_item: dict[str, Any]) -> dict[str, Any]:
+    root = os.path.realpath(str(move_item.get("root") or ""))
+    normalized_source = _normalize_nas_rel_path(move_item.get("normalized_source") or "/")
+    normalized_destination = _normalize_nas_rel_path(move_item.get("normalized_destination") or "/")
+    full_source = os.path.realpath(str(move_item.get("full_source") or ""))
+    target_path = os.path.realpath(str(move_item.get("target_path") or ""))
+    source_name = str(move_item.get("source_name") or "").strip()
+    item_type = "directory" if str(move_item.get("item_type") or "") == "directory" else "file"
+
+    try:
+        shutil.move(full_source, target_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"이동에 실패했습니다: {exc}")
+
+    next_rel_path = _relative_nas_path(root, target_path)
+    _rename_nas_pin_state(root, normalized_source, next_rel_path)
+    _rename_nas_mark_state(root, normalized_source, next_rel_path)
+    return {
+        "ok": True,
+        "name": source_name,
+        "old_path": normalized_source,
+        "path": next_rel_path,
+        "destination_path": normalized_destination,
+        "type": item_type,
+    }
+
+
+def _rollback_nas_prepared_move(move_item: dict[str, Any]) -> None:
+    root = os.path.realpath(str(move_item.get("root") or ""))
+    original_source = os.path.realpath(str(move_item.get("full_source") or ""))
+    current_target = os.path.realpath(str(move_item.get("target_path") or ""))
+    if (not original_source) or (not current_target) or (not os.path.exists(current_target)):
+        return
+    shutil.move(current_target, original_source)
+    moved_rel_path = _relative_nas_path(root, current_target)
+    original_rel_path = _relative_nas_path(root, original_source)
+    _rename_nas_pin_state(root, moved_rel_path, original_rel_path)
+    _rename_nas_mark_state(root, moved_rel_path, original_rel_path)
+
+
+def _move_nas_item(rel_path: str, destination_path: str) -> dict[str, Any]:
+    return _execute_nas_prepared_move(_prepare_nas_move_item(rel_path, destination_path))
 
 
 def _list_nas_recycle_items() -> dict[str, Any]:
@@ -2571,29 +2932,71 @@ def api_nas_download_batch(request: Request, payload: dict[str, Any] = Body(defa
     )
 
 
-@router.post("/api/nas/upload")
-async def api_nas_upload(
-    request: Request,
-    path: str = Form("/"),
-    directories: list[str] = Form(default=[]),
-    file_paths: list[str] = Form(default=[]),
-    files: list[UploadFile] = File(default=[]),
-):
+@router.post("/api/nas/upload/conflicts")
+def api_nas_upload_conflicts(request: Request, payload: dict[str, Any] = Body(default={})):
     _require_admin(request)
+    path = payload.get("path") or "/"
+
+    directories: list[str] = []
+    seen_directories: set[str] = set()
+    for raw_directory in payload.get("directories") or []:
+        safe_directory = _safe_upload_rel_path(raw_directory)
+        if (not safe_directory) or (safe_directory in seen_directories):
+            continue
+        seen_directories.add(safe_directory)
+        directories.append(safe_directory)
+
+    file_paths: list[str] = []
+    seen_file_paths: set[str] = set()
+    for raw_file_path in payload.get("file_paths") or []:
+        safe_file_path = _safe_upload_rel_path(raw_file_path)
+        if (not safe_file_path) or (safe_file_path in seen_file_paths):
+            continue
+        seen_file_paths.add(safe_file_path)
+        file_paths.append(safe_file_path)
+
+    conflicts = _collect_nas_upload_conflicts(path, directories, file_paths)
+    return JSONResponse({"ok": True, "count": len(conflicts), "conflicts": conflicts})
+
+
+@router.post("/api/nas/upload/directories")
+def api_nas_upload_directories(request: Request, payload: dict[str, Any] = Body(default={})):
+    _require_admin(request)
+    path = payload.get("path") or "/"
     info, rel_path, full_path = _resolve_nas_path(path)
     if not os.path.isdir(full_path):
         raise HTTPException(status_code=400, detail="업로드 대상은 폴더여야 합니다.")
 
-    saved: list[dict[str, Any]] = []
     created_directories: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
     root = os.path.realpath(str(info.get("root") or full_path))
     seen_directories: set[str] = set()
+    skipped_directory_paths: set[str] = set()
+    overwrite_set: set[str] = set()
 
-    for raw_directory in directories or []:
+    for raw_overwrite_path in payload.get("overwrite_paths") or []:
+        safe_overwrite_path = _safe_upload_rel_path(raw_overwrite_path)
+        if safe_overwrite_path:
+            overwrite_set.add(safe_overwrite_path)
+
+    def has_skipped_directory_ancestor(rel_value: str) -> bool:
+        rel_candidate = _safe_upload_rel_path(rel_value)
+        if not rel_candidate:
+            return False
+        normalized_candidate = "/" + rel_candidate
+        return any(
+            normalized_candidate == ("/" + skipped_dir)
+            or normalized_candidate.startswith("/" + skipped_dir + "/")
+            for skipped_dir in skipped_directory_paths
+        )
+
+    for raw_directory in payload.get("directories") or []:
         safe_directory = _safe_upload_rel_path(raw_directory)
         if not safe_directory:
             skipped.append({"name": str(raw_directory or ""), "reason": "폴더 경로가 올바르지 않습니다."})
+            continue
+        if has_skipped_directory_ancestor(safe_directory):
+            skipped.append({"name": safe_directory, "reason": "상위 폴더 업로드를 건너뛰도록 선택했습니다."})
             continue
         if safe_directory in seen_directories:
             continue
@@ -2601,9 +3004,15 @@ async def api_nas_upload(
         destination_dir = os.path.realpath(os.path.join(full_path, safe_directory))
         if os.path.commonpath([root, destination_dir]) != root:
             skipped.append({"name": safe_directory, "reason": "허용되지 않은 경로입니다."})
+            skipped_directory_paths.add(safe_directory)
             continue
         if os.path.isfile(destination_dir):
             skipped.append({"name": safe_directory, "reason": "동일한 이름의 파일이 이미 있습니다."})
+            skipped_directory_paths.add(safe_directory)
+            continue
+        if os.path.isdir(destination_dir) and safe_directory not in overwrite_set:
+            skipped.append({"name": safe_directory, "reason": "동일한 이름의 폴더가 이미 있습니다."})
+            skipped_directory_paths.add(safe_directory)
             continue
 
         try:
@@ -2619,6 +3028,98 @@ async def api_nas_upload(
                 )
         except Exception as exc:
             skipped.append({"name": safe_directory, "reason": f"폴더 생성 실패: {exc}"})
+            skipped_directory_paths.add(safe_directory)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "path": rel_path,
+            "saved": [],
+            "created_directories": created_directories,
+            "skipped": skipped,
+            "saved_count": 0,
+            "created_directory_count": len(created_directories),
+            "skipped_count": len(skipped),
+        }
+    )
+
+
+@router.post("/api/nas/upload")
+async def api_nas_upload(
+    request: Request,
+    path: str = Form("/"),
+    directories: list[str] | None = Form(default=None),
+    file_paths: list[str] | None = Form(default=None),
+    overwrite_paths: list[str] | None = Form(default=None),
+    files: list[UploadFile] | None = File(default=None),
+):
+    _require_admin(request)
+    info, rel_path, full_path = _resolve_nas_path(path)
+    if not os.path.isdir(full_path):
+        raise HTTPException(status_code=400, detail="업로드 대상은 폴더여야 합니다.")
+
+    saved: list[dict[str, Any]] = []
+    created_directories: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    root = os.path.realpath(str(info.get("root") or full_path))
+    seen_directories: set[str] = set()
+    skipped_directory_paths: set[str] = set()
+    overwrite_set: set[str] = set()
+    for raw_overwrite_path in overwrite_paths or []:
+        safe_overwrite_path = _safe_upload_rel_path(raw_overwrite_path)
+        if safe_overwrite_path:
+            overwrite_set.add(safe_overwrite_path)
+
+    def has_skipped_directory_ancestor(rel_value: str) -> bool:
+        rel_candidate = _safe_upload_rel_path(rel_value)
+        if not rel_candidate:
+            return False
+        normalized_candidate = "/" + rel_candidate
+        return any(
+            normalized_candidate == ("/" + skipped_dir)
+            or normalized_candidate.startswith("/" + skipped_dir + "/")
+            for skipped_dir in skipped_directory_paths
+        )
+
+    for raw_directory in directories or []:
+        safe_directory = _safe_upload_rel_path(raw_directory)
+        if not safe_directory:
+            skipped.append({"name": str(raw_directory or ""), "reason": "폴더 경로가 올바르지 않습니다."})
+            continue
+        if has_skipped_directory_ancestor(safe_directory):
+            skipped.append({"name": safe_directory, "reason": "상위 폴더 업로드를 건너뛰도록 선택했습니다."})
+            continue
+        if safe_directory in seen_directories:
+            continue
+
+        destination_dir = os.path.realpath(os.path.join(full_path, safe_directory))
+        if os.path.commonpath([root, destination_dir]) != root:
+            skipped.append({"name": safe_directory, "reason": "허용되지 않은 경로입니다."})
+            skipped_directory_paths.add(safe_directory)
+            continue
+        if os.path.isfile(destination_dir):
+            skipped.append({"name": safe_directory, "reason": "동일한 이름의 파일이 이미 있습니다."})
+            skipped_directory_paths.add(safe_directory)
+            continue
+        if os.path.isdir(destination_dir) and safe_directory not in overwrite_set:
+            skipped.append({"name": safe_directory, "reason": "동일한 이름의 폴더가 이미 있습니다."})
+            skipped_directory_paths.add(safe_directory)
+            continue
+
+        try:
+            existed_before = os.path.isdir(destination_dir)
+            os.makedirs(destination_dir, exist_ok=True)
+            seen_directories.add(safe_directory)
+            if not existed_before:
+                created_directories.append(
+                    {
+                        "name": os.path.basename(safe_directory),
+                        "path": rel_path.rstrip("/") + "/" + safe_directory if rel_path != "/" else "/" + safe_directory,
+                    }
+                )
+        except Exception as exc:
+            skipped.append({"name": safe_directory, "reason": f"폴더 생성 실패: {exc}"})
+            skipped_directory_paths.add(safe_directory)
 
     for index, upload in enumerate(files or []):
         raw_rel_path = ""
@@ -2637,6 +3138,13 @@ async def api_nas_upload(
             continue
 
         safe_name = _safe_upload_name(safe_rel_path)
+        if has_skipped_directory_ancestor(safe_rel_path):
+            skipped.append({"name": safe_name, "reason": "상위 폴더 업로드를 건너뛰도록 선택했습니다."})
+            try:
+                await upload.close()
+            except Exception:
+                pass
+            continue
         destination = os.path.realpath(os.path.join(full_path, safe_rel_path))
         if os.path.commonpath([root, destination]) != root:
             skipped.append({"name": safe_rel_path, "reason": "허용되지 않은 경로입니다."})
@@ -2647,6 +3155,13 @@ async def api_nas_upload(
             continue
         if os.path.isdir(destination):
             skipped.append({"name": safe_name, "reason": "동일한 이름의 폴더가 이미 있습니다."})
+            try:
+                await upload.close()
+            except Exception:
+                pass
+            continue
+        if os.path.isfile(destination) and safe_rel_path not in overwrite_set:
+            skipped.append({"name": safe_name, "reason": "동일한 이름의 파일이 이미 있습니다."})
             try:
                 await upload.close()
             except Exception:
@@ -2746,6 +3261,80 @@ def api_nas_mkdir(
     )
 
 
+@router.post("/api/nas/move")
+def api_nas_move(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+):
+    _require_admin(request)
+    destination = payload.get("destination") or payload.get("target_path") or "/"
+    raw_paths = payload.get("paths")
+    paths: list[str] = []
+
+    if isinstance(raw_paths, list):
+        seen: set[str] = set()
+        for value in raw_paths:
+            normalized = str(value or "").strip()
+            if (not normalized) or (normalized in seen):
+                continue
+            seen.add(normalized)
+            paths.append(normalized)
+
+    if not paths:
+        single_path = str(payload.get("path") or "").strip()
+        if single_path:
+            paths = [single_path]
+
+    if not paths:
+        raise HTTPException(status_code=400, detail="이동할 항목이 없습니다.")
+
+    normalized_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for path in paths:
+        _info, rel_path, full_path = _resolve_nas_path(path)
+        if rel_path == "/" or (not os.path.exists(full_path)):
+            continue
+        if rel_path in seen_paths:
+            continue
+        seen_paths.add(rel_path)
+        normalized_paths.append(rel_path)
+
+    collapsed_paths = _collapse_nas_rel_paths(normalized_paths)
+    if not collapsed_paths:
+        raise HTTPException(status_code=400, detail="이동할 수 있는 항목이 없습니다.")
+
+    prepared_moves = [_prepare_nas_move_item(path, destination) for path in collapsed_paths]
+    target_paths: set[str] = set()
+    for move_item in prepared_moves:
+        target_path = os.path.realpath(str(move_item.get("target_path") or ""))
+        if not target_path:
+            raise HTTPException(status_code=400, detail="이동 대상 경로를 확인하지 못했습니다.")
+        if target_path in target_paths:
+            raise HTTPException(status_code=409, detail="대상 폴더에 같은 이름의 파일 또는 폴더가 이미 존재합니다.")
+        target_paths.add(target_path)
+
+    completed_moves: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    try:
+        for move_item in prepared_moves:
+            results.append(_execute_nas_prepared_move(move_item))
+            completed_moves.append(move_item)
+    except HTTPException as exc:
+        rollback_failed = False
+        for move_item in reversed(completed_moves):
+            try:
+                _rollback_nas_prepared_move(move_item)
+            except Exception:
+                rollback_failed = True
+        if rollback_failed:
+            raise HTTPException(status_code=500, detail="항목 이동 중 문제가 발생했고 일부 항목을 원래 위치로 되돌리지 못했습니다.") from exc
+        raise
+
+    if len(results) == 1:
+        return JSONResponse({"ok": True, "moved_count": 1, **results[0]})
+    return JSONResponse({"ok": True, "moved_count": len(results), "items": results})
+
+
 @router.post("/api/nas/delete")
 def api_nas_delete(
     request: Request,
@@ -2771,7 +3360,7 @@ def api_nas_delete(
     if not paths:
         raise HTTPException(status_code=400, detail="휴지통으로 이동할 항목이 없습니다.")
 
-    results = [_move_nas_item_to_recycle(path) for path in paths]
+    results = [_move_nas_item_to_recycle(path) for path in _collapse_nas_rel_paths(paths)]
     if len(results) == 1:
         return JSONResponse({"ok": True, "moved_count": 1, **results[0]})
     return JSONResponse({"ok": True, "moved_count": len(results), "items": results})
@@ -2838,6 +3427,69 @@ def api_nas_pin(
     )
 
 
+@router.post("/api/nas/mark")
+def api_nas_mark(
+    request: Request,
+    payload: dict[str, Any] = Body(default={}),
+):
+    _require_admin(request)
+    raw_paths = payload.get("paths")
+    raw_color = payload.get("color")
+    color = _normalize_nas_mark_color(raw_color)
+    clear_mark = bool(payload.get("clear")) or (raw_color is None) or (str(raw_color or "").strip() == "")
+    if (not clear_mark) and (not color):
+        raise HTTPException(status_code=400, detail="지원하지 않는 마킹 색상입니다.")
+
+    paths: list[str] = []
+    if isinstance(raw_paths, list):
+        seen: set[str] = set()
+        for value in raw_paths:
+            normalized = str(value or "").strip()
+            if (not normalized) or (normalized in seen):
+                continue
+            seen.add(normalized)
+            paths.append(normalized)
+
+    if not paths:
+        single_path = str(payload.get("path") or "").strip()
+        if single_path:
+            paths = [single_path]
+
+    if not paths:
+        raise HTTPException(status_code=400, detail="마킹할 항목이 없습니다.")
+
+    info = _get_nas_mount_info()
+    if not info:
+        raise HTTPException(status_code=503, detail=_nas_unavailable_detail())
+    root = os.path.realpath(str(info.get("root") or ""))
+
+    normalized_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for path in paths:
+        _info, rel_path, full_path = _resolve_nas_path(path)
+        if rel_path == "/" or (not os.path.exists(full_path)):
+            continue
+        if rel_path in seen_paths:
+            continue
+        seen_paths.add(rel_path)
+        normalized_paths.append(rel_path)
+
+    if not normalized_paths:
+        raise HTTPException(status_code=400, detail="마킹할 수 있는 항목이 없습니다.")
+
+    _marks, changed_paths = _set_nas_mark_state(root, normalized_paths, None if clear_mark else color)
+    action_label = "unmarked" if clear_mark else "marked"
+    return JSONResponse(
+        {
+            "ok": True,
+            "action": action_label,
+            "color": "" if clear_mark else color,
+            "count": len(changed_paths),
+            "paths": changed_paths,
+        }
+    )
+
+
 @router.post("/api/nas/rename")
 def api_nas_rename(
     request: Request,
@@ -2881,6 +3533,7 @@ def api_nas_rename(
 
     next_rel_path = _relative_nas_path(root, target_path)
     _rename_nas_pin_state(root, rel_path, next_rel_path)
+    _rename_nas_mark_state(root, rel_path, next_rel_path)
     return JSONResponse(
         {
             "ok": True,

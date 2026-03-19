@@ -7,6 +7,7 @@
     items: [],
     drive: null,
     uploadFiles: [],
+    uploadDirectories: [],
     uploadInFlight: false,
     pendingTrashPaths: [],
     pendingTrashItems: [],
@@ -33,6 +34,12 @@
     nameEditorTargetPath: "",
     nameEditorTargetType: "",
     explorerKeyboardActive: false,
+    dragMovePaths: [],
+    dragMoveTargetPath: "",
+    dragMoveCrumbPath: "",
+    dragMoveCrumbButton: null,
+    markEditorPaths: [],
+    markEditorColor: "yellow",
   };
 
   const el = {
@@ -99,6 +106,24 @@
     createFolderConfirmBtn: document.getElementById("nasCreateFolderConfirmBtn"),
     nameEditorConfirmIcon: document.getElementById("nasNameEditorConfirmIcon"),
     nameEditorConfirmText: document.getElementById("nasNameEditorConfirmText"),
+    markModal: document.getElementById("nasMarkModal"),
+    markTargetLabel: document.getElementById("nasMarkTargetLabel"),
+    markColorOptions: document.getElementById("nasMarkColorOptions"),
+    markConfirmBtn: document.getElementById("nasMarkConfirmBtn"),
+    duplicateConflictModal: document.getElementById("nasDuplicateConflictModal"),
+    duplicateConflictTitle: document.getElementById("nasDuplicateConflictTitle"),
+    duplicateConflictMessage: document.getElementById("nasDuplicateConflictMessage"),
+    duplicateConflictPath: document.getElementById("nasDuplicateConflictPath"),
+    duplicateConflictMeta: document.getElementById("nasDuplicateConflictMeta"),
+    duplicateConflictHint: document.getElementById("nasDuplicateConflictHint"),
+    duplicateApplyAllWrap: document.getElementById("nasDuplicateApplyAllWrap"),
+    duplicateApplyAll: document.getElementById("nasDuplicateApplyAll"),
+    duplicateSkipBtn: document.getElementById("nasDuplicateSkipBtn"),
+    duplicateOverwriteBtn: document.getElementById("nasDuplicateOverwriteBtn"),
+    duplicateCancelBtn: document.getElementById("nasDuplicateCancelBtn"),
+    emptyFolderModal: document.getElementById("nasEmptyFolderModal"),
+    emptyFolderMessage: document.getElementById("nasEmptyFolderMessage"),
+    emptyFolderMeta: document.getElementById("nasEmptyFolderMeta"),
     trashConfirmModal: document.getElementById("nasTrashConfirmModal"),
     trashConfirmMessage: document.getElementById("nasTrashConfirmMessage"),
     trashConfirmMeta: document.getElementById("nasTrashConfirmMeta"),
@@ -115,6 +140,15 @@
   const newFolderModal = (el.newFolderModal && window.bootstrap)
     ? bootstrap.Modal.getOrCreateInstance(el.newFolderModal)
     : null;
+  const markModal = (el.markModal && window.bootstrap)
+    ? bootstrap.Modal.getOrCreateInstance(el.markModal)
+    : null;
+  const duplicateConflictModal = (el.duplicateConflictModal && window.bootstrap)
+    ? bootstrap.Modal.getOrCreateInstance(el.duplicateConflictModal, { backdrop: "static", keyboard: false })
+    : null;
+  const emptyFolderModal = (el.emptyFolderModal && window.bootstrap)
+    ? bootstrap.Modal.getOrCreateInstance(el.emptyFolderModal)
+    : null;
   const trashConfirmModal = (el.trashConfirmModal && window.bootstrap)
     ? bootstrap.Modal.getOrCreateInstance(el.trashConfirmModal)
     : null;
@@ -128,6 +162,70 @@
     ? window.matchMedia("(min-width: 1200px)")
     : null;
   let shellSyncFrame = 0;
+  const INTERNAL_NAS_DRAG_TYPE = "application/x-abbas-nas-paths";
+  const MARK_COLOR_OPTIONS = {
+    red: {
+      label: "레드",
+      sub: "긴급/주의 항목",
+      accent: "#dc2626",
+      soft: "rgba(220, 38, 38, 0.18)",
+      rowBg: "rgba(248, 113, 113, 0.16)",
+      rowHover: "rgba(248, 113, 113, 0.22)",
+      rowSelected: "rgba(248, 113, 113, 0.28)",
+      rowBorder: "rgba(220, 38, 38, 0.32)",
+    },
+    orange: {
+      label: "오렌지",
+      sub: "처리 예정 항목",
+      accent: "#ea580c",
+      soft: "rgba(234, 88, 12, 0.18)",
+      rowBg: "rgba(251, 146, 60, 0.16)",
+      rowHover: "rgba(251, 146, 60, 0.22)",
+      rowSelected: "rgba(251, 146, 60, 0.28)",
+      rowBorder: "rgba(234, 88, 12, 0.3)",
+    },
+    yellow: {
+      label: "옐로",
+      sub: "기본 중요 표시",
+      accent: "#ca8a04",
+      soft: "rgba(202, 138, 4, 0.18)",
+      rowBg: "rgba(250, 204, 21, 0.16)",
+      rowHover: "rgba(250, 204, 21, 0.22)",
+      rowSelected: "rgba(250, 204, 21, 0.28)",
+      rowBorder: "rgba(202, 138, 4, 0.3)",
+    },
+    green: {
+      label: "그린",
+      sub: "완료/보관 항목",
+      accent: "#16a34a",
+      soft: "rgba(22, 163, 74, 0.18)",
+      rowBg: "rgba(74, 222, 128, 0.16)",
+      rowHover: "rgba(74, 222, 128, 0.22)",
+      rowSelected: "rgba(74, 222, 128, 0.28)",
+      rowBorder: "rgba(22, 163, 74, 0.3)",
+    },
+    blue: {
+      label: "블루",
+      sub: "참조/공유 항목",
+      accent: "#2563eb",
+      soft: "rgba(37, 99, 235, 0.18)",
+      rowBg: "rgba(96, 165, 250, 0.16)",
+      rowHover: "rgba(96, 165, 250, 0.22)",
+      rowSelected: "rgba(96, 165, 250, 0.28)",
+      rowBorder: "rgba(37, 99, 235, 0.3)",
+    },
+    purple: {
+      label: "퍼플",
+      sub: "개인 중요 항목",
+      accent: "#7c3aed",
+      soft: "rgba(124, 58, 237, 0.18)",
+      rowBg: "rgba(167, 139, 250, 0.16)",
+      rowHover: "rgba(167, 139, 250, 0.22)",
+      rowSelected: "rgba(167, 139, 250, 0.28)",
+      rowBorder: "rgba(124, 58, 237, 0.3)",
+    },
+  };
+  let duplicateConflictPending = null;
 
   function syncBrowserShellHeight() {
     if (!el.browserShell) return;
@@ -171,6 +269,14 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function escapeSelectorValue(value) {
+    const raw = String(value || "");
+    if (window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(raw);
+    }
+    return raw.replace(/["\\]/g, "\\$&");
   }
 
   function displayNameForPath(path) {
@@ -576,6 +682,18 @@
     });
   }
 
+  async function sendNasDirectoryUploadRequest(payload) {
+    const res = await fetch("/api/nas/upload/directories", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    return res.json();
+  }
+
   function fallbackDrive(extra) {
     return Object.assign({
       label: root.dataset.modelHint || "Seagate Backup+ Desk",
@@ -637,6 +755,46 @@
       next.push(relativePath);
     });
     return next;
+  }
+
+  function hasNasPathPrefix(path, prefix) {
+    const normalizedPath = String(path || "").trim();
+    const normalizedPrefix = String(prefix || "").trim();
+    if (!normalizedPath || !normalizedPrefix) return false;
+    return normalizedPath === normalizedPrefix || normalizedPath.startsWith(`${normalizedPrefix}/`);
+  }
+
+  function collapsePathSelection(paths) {
+    const next = normalizePathList(paths).sort((a, b) => {
+      const depthDiff = a.split("/").filter(Boolean).length - b.split("/").filter(Boolean).length;
+      if (depthDiff !== 0) return depthDiff;
+      return a.localeCompare(b);
+    });
+    return next.filter((path, index) => !next.slice(0, index).some((parentPath) => hasNasPathPrefix(path, parentPath)));
+  }
+
+  function hasUploadPathPrefix(path, prefix) {
+    const normalizedPath = normalizeUploadRelativePath(path);
+    const normalizedPrefix = normalizeUploadRelativePath(prefix);
+    if (!normalizedPath || !normalizedPrefix) return false;
+    return normalizedPath === normalizedPrefix || normalizedPath.startsWith(`${normalizedPrefix}/`);
+  }
+
+  function getMarkTone(color) {
+    const key = String(color || "").trim().toLowerCase();
+    return MARK_COLOR_OPTIONS[key] || null;
+  }
+
+  function markStyleVars(color) {
+    const tone = getMarkTone(color);
+    if (!tone) return "";
+    return [
+      `--nas-mark-bg:${tone.rowBg}`,
+      `--nas-mark-hover:${tone.rowHover}`,
+      `--nas-mark-selected:${tone.rowSelected}`,
+      `--nas-mark-border:${tone.rowBorder}`,
+      `--nas-mark-accent:${tone.accent}`,
+    ].join(";");
   }
 
   function buildUploadEntry(file, relativePath) {
@@ -821,12 +979,16 @@
     const contextItems = contextMenuItems();
     const anyPinned = contextItems.some((item) => Boolean(item.pinned));
     const anyUnpinned = contextItems.some((item) => !item.pinned);
+    const anyMarked = contextItems.some((item) => Boolean(item.marked));
+    const anyUnmarked = contextItems.some((item) => !item.marked);
 
     setContextItemVisible("open", isDir);
     setContextItemVisible("download", hasSelection);
     setContextItemVisible("rename", Boolean(state.contextPath));
     setContextItemVisible("pin-top", Boolean(contextItems.length) && anyUnpinned);
     setContextItemVisible("unpin-top", Boolean(contextItems.length) && anyPinned);
+    setContextItemVisible("mark", Boolean(contextItems.length) && anyUnmarked);
+    setContextItemVisible("unmark", Boolean(contextItems.length) && anyMarked);
     setContextItemVisible("move-to-trash", Boolean(state.contextPaths.length));
     setContextItemVisible("new-folder", true);
     setContextItemVisible("open-trash", true);
@@ -947,19 +1109,27 @@
     el.tableBody.innerHTML = items.map((item) => {
       const isDir = item.type === "directory";
       const isSelected = isPathSelected(item.path);
+      const markTone = getMarkTone(item.mark_color);
+      const rowStyle = item.marked ? markStyleVars(item.mark_color) : "";
+      const markBadge = item.marked && markTone
+        ? `<span class="nas-file-mark" title="${escapeHtml(`${markTone.label} 마킹됨`)}" style="--nas-mark-accent:${markTone.accent}"><i class="bi bi-bookmark-fill"></i></span>`
+        : "";
       const pinnedBadge = item.pinned
         ? '<span class="nas-file-pin" title="상단 고정됨"><i class="bi bi-pin-angle-fill"></i></span>'
         : "";
       const baseSub = isDir ? "폴더" : (item.extension || "파일");
-      const subLabel = item.pinned ? `${baseSub} · 상단 고정` : baseSub;
+      const subParts = [baseSub];
+      if (item.pinned) subParts.push("상단 고정");
+      if (item.marked && markTone) subParts.push(`${markTone.label} 마킹`);
+      const subLabel = subParts.join(" · ");
 
       return `
-        <tr class="nas-file-row ${isSelected ? "is-selected" : ""}" data-row-path="${escapeHtml(item.path)}" data-row-type="${escapeHtml(item.type)}" data-row-name="${escapeHtml(item.name)}">
+        <tr class="nas-file-row ${isSelected ? "is-selected" : ""} ${item.marked ? "is-marked" : ""}" data-row-path="${escapeHtml(item.path)}" data-row-type="${escapeHtml(item.type)}" data-row-name="${escapeHtml(item.name)}" draggable="true" ${rowStyle ? `style="${escapeHtml(rowStyle)}"` : ""}>
           <td class="ps-3">
             <div class="nas-file-primary">
               <span class="nas-file-icon"><i class="${fileIcon(item)}"></i></span>
               <div class="min-w-0">
-                <div class="nas-file-name">${escapeHtml(item.name)}${pinnedBadge}</div>
+                <div class="nas-file-name">${escapeHtml(item.name)}${markBadge}${pinnedBadge}</div>
                 <div class="nas-file-sub">${escapeHtml(subLabel)}</div>
               </div>
             </div>
@@ -1009,24 +1179,55 @@
     }).join("");
   }
 
-  function renderQueue() {
-    if (!el.uploadQueue) return;
-    if (!state.uploadFiles.length) {
-      el.uploadQueue.innerHTML = '<div class="nas-upload-empty">선택된 파일이 없습니다.</div>';
-      return;
-    }
-    el.uploadQueue.innerHTML = state.uploadFiles.map((entry, index) => {
+  function buildUploadQueueItems() {
+    const directoryItems = normalizeUploadDirectoryPaths(state.uploadDirectories).map((relativePath) => {
+      const normalizedPath = normalizeUploadRelativePath(relativePath);
+      const name = normalizedPath.split("/").filter(Boolean).pop() || normalizedPath;
+      const hasNestedFiles = state.uploadFiles.some((entry) => {
+        const filePath = normalizeUploadRelativePath(entry.relativePath || entry.name || "");
+        return Boolean(filePath) && filePath !== normalizedPath && hasUploadPathPrefix(filePath, normalizedPath);
+      });
+      return {
+        kind: "directory",
+        key: `dir:${normalizedPath}`,
+        name,
+        relativePath: normalizedPath,
+        metaLabel: hasNestedFiles ? `${normalizedPath} · 폴더` : `${normalizedPath} · 빈 폴더`,
+      };
+    });
+    const fileItems = state.uploadFiles.map((entry) => {
       const relativePath = entry.relativePath || entry.name || "";
       const metaLabel = relativePath && relativePath !== entry.name
         ? `${relativePath} · ${formatBytes(entry.size)}`
         : formatBytes(entry.size);
+      return {
+        kind: "file",
+        key: entry.key || fileKey(entry),
+        name: entry.name,
+        relativePath,
+        metaLabel,
+      };
+    });
+    return [...directoryItems, ...fileItems];
+  }
+
+  function renderQueue() {
+    if (!el.uploadQueue) return;
+    const queueItems = buildUploadQueueItems();
+    if (!queueItems.length) {
+      el.uploadQueue.innerHTML = '<div class="nas-upload-empty">선택된 파일이나 폴더가 없습니다.</div>';
+      return;
+    }
+    el.uploadQueue.innerHTML = queueItems.map((entry) => {
+      const isDirectory = entry.kind === "directory";
       return `
-        <div class="nas-upload-chip">
+        <div class="nas-upload-chip ${isDirectory ? "nas-upload-chip--directory" : ""}">
+          <span class="nas-upload-chip__icon"><i class="bi ${isDirectory ? "bi-folder2-open" : "bi-file-earmark"}"></i></span>
           <div class="min-w-0">
-            <div class="fw-semibold text-truncate" title="${escapeHtml(relativePath)}">${escapeHtml(entry.name)}</div>
-            <div class="small text-secondary text-truncate">${escapeHtml(metaLabel)}</div>
+            <div class="fw-semibold text-truncate" title="${escapeHtml(entry.relativePath || entry.name || "")}">${escapeHtml(entry.name || "")}</div>
+            <div class="small text-secondary text-truncate">${escapeHtml(entry.metaLabel || "")}</div>
           </div>
-          <button class="btn btn-sm btn-outline-danger" type="button" data-action="remove-upload" data-index="${index}">
+          <button class="btn btn-sm btn-outline-danger" type="button" data-action="remove-upload" data-kind="${escapeHtml(entry.kind)}" data-key="${escapeHtml(entry.key)}">
             <i class="bi bi-x-lg"></i>
           </button>
         </div>
@@ -1044,6 +1245,198 @@
     }
     if (idx === 0) return `${Math.round(value)} ${units[idx]}`;
     return `${value.toFixed(2)} ${units[idx]}`;
+  }
+
+  function renderMarkColorOptions() {
+    if (!el.markColorOptions) return;
+    el.markColorOptions.innerHTML = Object.entries(MARK_COLOR_OPTIONS).map(([color, tone]) => {
+      return `
+        <button
+          class="nas-mark-swatch ${state.markEditorColor === color ? "is-active" : ""}"
+          type="button"
+          data-mark-color="${escapeHtml(color)}"
+          style="--nas-mark-accent:${tone.accent};--nas-mark-soft:${tone.soft};"
+          aria-pressed="${state.markEditorColor === color ? "true" : "false"}"
+        >
+          <span class="nas-mark-swatch__dot"></span>
+          <span class="nas-mark-swatch__meta">
+            <span class="nas-mark-swatch__title d-block">${escapeHtml(tone.label)}</span>
+            <span class="nas-mark-swatch__sub d-block">${escapeHtml(tone.sub)}</span>
+          </span>
+        </button>
+      `;
+    }).join("");
+  }
+
+  function resolveDuplicateConflictPending(result) {
+    const pending = duplicateConflictPending;
+    if (!pending) return;
+    duplicateConflictPending = null;
+    pending.resolve(result);
+    if (duplicateConflictModal) {
+      duplicateConflictModal.hide();
+    } else if (el.duplicateConflictModal) {
+      el.duplicateConflictModal.classList.remove("show");
+      el.duplicateConflictModal.style.display = "none";
+    }
+  }
+
+  function showEmptyFolderNotice(paths) {
+    const normalizedPaths = normalizeUploadDirectoryPaths(paths);
+    const folderCount = normalizedPaths.length;
+    const firstLabel = displayNameForPath(normalizedPaths[0] || "");
+    if (el.emptyFolderMessage) {
+      el.emptyFolderMessage.textContent = folderCount <= 1
+        ? `"${firstLabel}" 폴더는 빈 폴더입니다.`
+        : `선택한 ${folderCount}개 폴더는 모두 빈 폴더입니다.`;
+    }
+    if (el.emptyFolderMeta) {
+      el.emptyFolderMeta.textContent = folderCount <= 1
+        ? "빈 폴더는 업로드되지 않습니다."
+        : "빈 폴더들은 업로드되지 않습니다.";
+    }
+    if (emptyFolderModal) {
+      emptyFolderModal.show();
+      return;
+    }
+    window.alert(folderCount <= 1
+      ? `"${firstLabel}" 폴더는 빈 폴더입니다.`
+      : `선택한 ${folderCount}개 폴더는 모두 빈 폴더입니다.`);
+  }
+
+  async function promptDuplicateConflict(conflict, options) {
+    const opts = options || {};
+    const itemType = conflict && conflict.incoming_type === "directory" ? "폴더" : "파일";
+    const existingType = conflict && conflict.existing_type === "directory" ? "폴더" : "파일";
+    const canOverwrite = Boolean(conflict && conflict.can_overwrite);
+    const targetPath = String(conflict && conflict.target_path || "/");
+    const itemName = String(conflict && conflict.name || displayNameForPath(targetPath));
+    const title = itemType === "directory" ? "중복된 폴더가 있습니다" : "중복된 파일이 있습니다";
+    const message = `"${itemName}" ${itemType}가 이미 존재하는 ${existingType}와 이름이 겹칩니다.`;
+    const hint = canOverwrite
+      ? (itemType === "directory"
+        ? "덮어쓰기를 누르면 기존 폴더와 병합하고 하위 항목 업로드를 계속 진행합니다."
+        : "덮어쓰기를 누르면 기존 파일을 새 파일로 교체합니다.")
+      : "기존 항목 종류가 달라서 이 경우에는 덮어쓰기를 사용할 수 없습니다. 건너뛰기 또는 취소를 선택해주세요.";
+
+    if (!duplicateConflictModal || !el.duplicateConflictTitle || !el.duplicateConflictMessage) {
+      if (!canOverwrite) return { action: "skip", applyAll: false };
+      return { action: window.confirm(`${message}\n\n${targetPath}\n\n덮어쓸까요?`) ? "overwrite" : "skip", applyAll: false };
+    }
+
+    if (duplicateConflictPending) {
+      resolveDuplicateConflictPending({ action: "cancel", applyAll: false });
+    }
+
+    if (el.duplicateConflictTitle) el.duplicateConflictTitle.innerHTML = `<i class="bi bi-exclamation-triangle me-2"></i>${escapeHtml(title)}`;
+    if (el.duplicateConflictMessage) el.duplicateConflictMessage.textContent = message;
+    if (el.duplicateConflictPath) el.duplicateConflictPath.textContent = targetPath;
+    if (el.duplicateConflictMeta) {
+      el.duplicateConflictMeta.textContent = `${opts.index || 1} / ${opts.total || 1} 충돌`;
+    }
+    if (el.duplicateConflictHint) {
+      el.duplicateConflictHint.textContent = hint;
+      el.duplicateConflictHint.classList.toggle("d-none", !hint);
+    }
+    if (el.duplicateApplyAllWrap) {
+      el.duplicateApplyAllWrap.classList.toggle("d-none", (opts.total || 1) <= 1);
+    }
+    if (el.duplicateApplyAll) {
+      el.duplicateApplyAll.checked = false;
+    }
+    if (el.duplicateOverwriteBtn) {
+      el.duplicateOverwriteBtn.disabled = !canOverwrite;
+    }
+
+    return new Promise((resolve) => {
+      duplicateConflictPending = { resolve };
+      duplicateConflictModal.show();
+    });
+  }
+
+  async function inspectUploadConflicts(batch, directoryPaths) {
+    const payload = {
+      path: state.currentPath || "/",
+      directories: normalizeUploadDirectoryPaths(directoryPaths),
+      file_paths: normalizeUploadEntries(batch).map((entry) => entry.relativePath).filter(Boolean),
+    };
+    const res = await fetch("/api/nas/upload/conflicts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    const responsePayload = await res.json();
+    return Array.isArray(responsePayload.conflicts) ? responsePayload.conflicts : [];
+  }
+
+  function isUploadPathSkipped(relativePath, skippedFiles, skippedDirectories) {
+    const normalizedPath = normalizeUploadRelativePath(relativePath);
+    if (!normalizedPath) return false;
+    if (skippedFiles.has(normalizedPath)) return true;
+    return Array.from(skippedDirectories).some((directoryPath) => hasUploadPathPrefix(normalizedPath, directoryPath));
+  }
+
+  async function resolveUploadConflicts(batch, directoryPaths) {
+    const conflicts = await inspectUploadConflicts(batch, directoryPaths);
+    if (!conflicts.length) {
+      return {
+        entries: batch,
+        directories: directoryPaths,
+        overwritePaths: [],
+      };
+    }
+
+    const skippedFiles = new Set();
+    const skippedDirectories = new Set();
+    const overwritePaths = new Set();
+    let applyAllAction = "";
+
+    for (let index = 0; index < conflicts.length; index += 1) {
+      const conflict = conflicts[index];
+      const relativePath = normalizeUploadRelativePath(conflict && conflict.relative_path);
+      if (!relativePath || isUploadPathSkipped(relativePath, skippedFiles, skippedDirectories)) {
+        continue;
+      }
+
+      let action = "";
+      if (applyAllAction) {
+        if (applyAllAction === "overwrite" && !conflict.can_overwrite) {
+          action = "";
+        } else {
+          action = applyAllAction;
+        }
+      }
+
+      if (!action) {
+        const decision = await promptDuplicateConflict(conflict, { index: index + 1, total: conflicts.length });
+        if (!decision || decision.action === "cancel") {
+          return null;
+        }
+        action = decision.action;
+        if (decision.applyAll) {
+          applyAllAction = action;
+        }
+      }
+
+      if (action === "overwrite" && conflict.can_overwrite) {
+        overwritePaths.add(relativePath);
+        continue;
+      }
+      if (conflict.incoming_type === "directory") {
+        skippedDirectories.add(relativePath);
+      } else {
+        skippedFiles.add(relativePath);
+      }
+    }
+
+    return {
+      entries: batch.filter((entry) => !isUploadPathSkipped(entry.relativePath || entry.name || "", skippedFiles, skippedDirectories)),
+      directories: directoryPaths.filter((path) => !isUploadPathSkipped(path, skippedFiles, skippedDirectories)),
+      overwritePaths: Array.from(overwritePaths),
+    };
   }
 
   function renderPayload(payload) {
@@ -1122,10 +1515,104 @@
     renderQueue();
   }
 
-  async function uploadFileBatch(files, options) {
-    const batch = normalizeUploadEntries(files);
+  function mergeUploadDirectories(paths) {
+    const next = normalizeUploadDirectoryPaths(paths);
+    if (!next.length) return;
+    const known = new Set(normalizeUploadDirectoryPaths(state.uploadDirectories));
+    next.forEach((relativePath) => {
+      if (known.has(relativePath)) return;
+      known.add(relativePath);
+      state.uploadDirectories.push(relativePath);
+    });
+    renderQueue();
+  }
+
+  async function uploadDirectoryBatch(directories, options) {
     const opts = options || {};
-    const directoryPaths = normalizeUploadDirectoryPaths(opts.directories);
+    let directoryPaths = normalizeUploadDirectoryPaths(directories);
+    if (state.uploadInFlight) {
+      setAlert("warning", "이미 업로드가 진행 중입니다. 잠시만 기다려주세요.");
+      return false;
+    }
+    if (!directoryPaths.length) {
+      setAlert("warning", "먼저 업로드할 폴더를 선택해주세요.");
+      return false;
+    }
+
+    try {
+      const conflictPlan = await resolveUploadConflicts([], directoryPaths);
+      if (!conflictPlan) {
+        setAlert("info", "업로드를 취소했습니다.");
+        return false;
+      }
+      directoryPaths = normalizeUploadDirectoryPaths(conflictPlan.directories);
+      opts.overwritePaths = Array.from(new Set(
+        Array.from(conflictPlan.overwritePaths || [])
+          .map((value) => normalizeUploadRelativePath(value))
+          .filter(Boolean)
+      ));
+    } catch (err) {
+      setAlert("danger", err instanceof Error ? err.message : "업로드 충돌 확인에 실패했습니다.");
+      return false;
+    }
+
+    if (!directoryPaths.length) {
+      setAlert("warning", "모든 중복 폴더를 건너뛰어 업로드할 대상이 없습니다.");
+      return false;
+    }
+
+    const progressLabel = opts.label || "폴더를 업로드하는 중...";
+    state.uploadInFlight = true;
+    showUploadProgress([], progressLabel, { directories: directoryPaths });
+    try {
+      markUploadProgressFinalizing(0);
+      let payload = null;
+      try {
+        payload = await sendNasDirectoryUploadRequest({
+          path: state.currentPath || "/",
+          directories: directoryPaths,
+          overwrite_paths: Array.from(opts.overwritePaths || []),
+        });
+      } catch (_) {
+        const fallbackFormData = new FormData();
+        fallbackFormData.append("path", state.currentPath || "/");
+        directoryPaths.forEach((directoryPath) => fallbackFormData.append("directories", directoryPath));
+        Array.from(opts.overwritePaths || []).forEach((overwritePath) => fallbackFormData.append("overwrite_paths", overwritePath));
+        payload = await sendNasUploadRequest(fallbackFormData, {
+          onTransferComplete() {
+            markUploadProgressFinalizing(0);
+          },
+        });
+      }
+      markUploadProgressFinalizing(0, { label: "업로드 완료" });
+      setUploadProgressStage("complete");
+      hideUploadProgress();
+      const resultParts = [];
+      if (payload.created_directory_count) resultParts.push(`폴더 ${payload.created_directory_count}개 생성`);
+      if (!resultParts.length) resultParts.push("처리 완료");
+      const skippedText = payload.skipped_count ? `, ${payload.skipped_count}개 건너뜀` : "";
+      setAlert("success", `업로드 완료: ${resultParts.join(", ")}${skippedText}`);
+      const uploadedDirectories = new Set(directoryPaths);
+      state.uploadDirectories = state.uploadDirectories.filter((directoryPath) => !uploadedDirectories.has(normalizeUploadRelativePath(directoryPath)));
+      renderQueue();
+      await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
+      return true;
+    } catch (err) {
+      hideUploadProgress();
+      setAlert("danger", err instanceof Error ? err.message : "폴더 업로드에 실패했습니다.");
+      return false;
+    } finally {
+      state.uploadInFlight = false;
+      hideUploadProgress();
+    }
+  }
+
+  async function uploadFileBatch(files, options) {
+    let batch = normalizeUploadEntries(files);
+    const opts = options || {};
+    let directoryPaths = normalizeUploadDirectoryPaths(
+      Object.prototype.hasOwnProperty.call(opts, "directories") ? opts.directories : state.uploadDirectories
+    );
     if (state.uploadInFlight) {
       setAlert("warning", "이미 업로드가 진행 중입니다. 잠시만 기다려주세요.");
       return false;
@@ -1134,19 +1621,46 @@
       setAlert("warning", "먼저 업로드할 파일이나 폴더를 선택해주세요.");
       return false;
     }
+    if (!batch.length) {
+      return uploadDirectoryBatch(directoryPaths, opts);
+    }
 
-    const formData = new FormData();
-    formData.append("path", state.currentPath || "/");
-    directoryPaths.forEach((directoryPath) => formData.append("directories", directoryPath));
-    batch.forEach((entry) => {
-      formData.append("file_paths", entry.relativePath);
-      formData.append("files", entry.file, entry.name);
-    });
+    try {
+      const conflictPlan = await resolveUploadConflicts(batch, directoryPaths);
+      if (!conflictPlan) {
+        setAlert("info", "업로드를 취소했습니다.");
+        return false;
+      }
+      batch = normalizeUploadEntries(conflictPlan.entries);
+      directoryPaths = normalizeUploadDirectoryPaths(conflictPlan.directories);
+      opts.overwritePaths = Array.from(new Set(
+        Array.from(conflictPlan.overwritePaths || [])
+          .map((value) => normalizeUploadRelativePath(value))
+          .filter(Boolean)
+      ));
+    } catch (err) {
+      setAlert("danger", err instanceof Error ? err.message : "업로드 충돌 확인에 실패했습니다.");
+      return false;
+    }
+
+    if (!batch.length && !directoryPaths.length) {
+      setAlert("warning", "모든 중복 항목을 건너뛰어 업로드할 대상이 없습니다.");
+      return false;
+    }
+
     const totalFileBytes = batch.reduce((sum, entry) => sum + Number(entry.size || 0), 0);
     const progressLabel = opts.label || (directoryPaths.length ? "폴더를 업로드하는 중..." : "파일을 업로드하는 중...");
     state.uploadInFlight = true;
     showUploadProgress(batch, progressLabel, { directories: directoryPaths });
     try {
+      const formData = new FormData();
+      formData.append("path", state.currentPath || "/");
+      directoryPaths.forEach((directoryPath) => formData.append("directories", directoryPath));
+      Array.from(opts.overwritePaths || []).forEach((overwritePath) => formData.append("overwrite_paths", overwritePath));
+      batch.forEach((entry) => {
+        formData.append("file_paths", entry.relativePath);
+        formData.append("files", entry.file, entry.name);
+      });
       const payload = await sendNasUploadRequest(formData, {
         onProgress(event) {
           if (!event) return;
@@ -1161,11 +1675,7 @@
           markUploadProgressFinalizing(totalFileBytes);
         },
       });
-      if (totalFileBytes > 0) {
-        updateUploadProgress(totalFileBytes, totalFileBytes);
-      } else {
-        markUploadProgressFinalizing(0, { label: "업로드 완료" });
-      }
+      updateUploadProgress(totalFileBytes, totalFileBytes);
       setUploadProgressStage("complete");
       hideUploadProgress();
       const resultParts = [];
@@ -1176,7 +1686,9 @@
       const skippedText = payload.skipped_count ? `, ${payload.skipped_count}개 건너뜀` : "";
       setAlert("success", successText + skippedText);
       const uploadedKeys = new Set(batch.map((entry) => entry.key || fileKey(entry)));
+      const uploadedDirectories = new Set(directoryPaths);
       state.uploadFiles = state.uploadFiles.filter((entry) => !uploadedKeys.has(entry.key || fileKey(entry)));
+      state.uploadDirectories = state.uploadDirectories.filter((directoryPath) => !uploadedDirectories.has(normalizeUploadRelativePath(directoryPath)));
       renderQueue();
       if (!opts.preserveInput && el.uploadInput) el.uploadInput.value = "";
       await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
@@ -1192,7 +1704,7 @@
   }
 
   async function uploadFiles() {
-    return uploadFileBatch(state.uploadFiles);
+    return uploadFileBatch(state.uploadFiles, { directories: state.uploadDirectories });
   }
 
   async function readDirectoryEntries(reader) {
@@ -1278,9 +1790,14 @@
 
     const normalizedStructuredEntries = normalizeUploadEntries(collected);
     const normalizedFallbackEntries = normalizeUploadEntries(fallbackFiles);
-    const normalizedEntries = normalizedStructuredEntries.length
+    const structuredDirectoryPaths = new Set(normalizeUploadDirectoryPaths(Array.from(directories)));
+    const filteredFallbackEntries = normalizedFallbackEntries.filter((entry) => {
+      const relativePath = normalizeUploadRelativePath(entry && (entry.relativePath || entry.name || ""));
+      return relativePath && !structuredDirectoryPaths.has(relativePath);
+    });
+    const normalizedEntries = usedStructuredItems
       ? normalizedStructuredEntries
-      : normalizedFallbackEntries;
+      : filteredFallbackEntries;
     return {
       directories: Array.from(directories),
       entries: normalizedEntries,
@@ -1308,12 +1825,13 @@
       return false;
     }
     if (!entries.length && directories.length) {
-      setAlert("warning", "폴더는 감지됐지만 안쪽 파일을 읽지 못했습니다. 다시 드래그앤드롭 해주세요.");
+      showEmptyFolderNotice(directories);
       return false;
     }
 
-    mergeUploadFiles(entries);
     if (opts.autoUpload === false) {
+      mergeUploadDirectories(directories);
+      mergeUploadFiles(entries);
       return true;
     }
 
@@ -1421,6 +1939,129 @@
       }
     } catch (err) {
       setAlert("danger", err instanceof Error ? err.message : (pinned ? "상단 고정에 실패했습니다." : "상단 고정 해제에 실패했습니다."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function resetMarkEditor() {
+    state.markEditorPaths = [];
+    state.markEditorColor = "yellow";
+    if (el.markTargetLabel) {
+      el.markTargetLabel.textContent = "선택한 항목";
+    }
+    renderMarkColorOptions();
+  }
+
+  function openMarkModal(target) {
+    const { paths, items } = resolveTrashTargets(target);
+    if (!paths.length || !items.length) {
+      setAlert("warning", "마킹할 대상을 찾지 못했습니다.");
+      return;
+    }
+
+    const selectedColors = Array.from(new Set(items.map((item) => String(item.mark_color || "").trim()).filter(Boolean)));
+    state.markEditorPaths = paths.slice();
+    state.markEditorColor = selectedColors.length === 1 ? selectedColors[0] : "yellow";
+    if (el.markTargetLabel) {
+      el.markTargetLabel.textContent = items.length === 1
+        ? `${items[0].name} 항목`
+        : `선택한 ${items.length}개 항목`;
+    }
+    renderMarkColorOptions();
+    if (markModal) {
+      markModal.show();
+    }
+  }
+
+  async function setMarkState(target, color) {
+    const { paths, items } = resolveTrashTargets(target);
+    const selectedColor = String(color || "").trim().toLowerCase();
+    const isClear = !selectedColor;
+    if (!paths.length || !items.length) {
+      setAlert("warning", isClear ? "마킹을 해제할 대상을 찾지 못했습니다." : "마킹할 대상을 찾지 못했습니다.");
+      return;
+    }
+
+    setLoading(true, isClear ? "마킹을 해제하는 중..." : "마킹을 적용하는 중...");
+    try {
+      const body = paths.length === 1
+        ? (isClear ? { path: paths[0], clear: true } : { path: paths[0], color: selectedColor })
+        : (isClear ? { paths, clear: true } : { paths, color: selectedColor });
+      const res = await fetch("/api/nas/mark", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const payload = await res.json();
+      hideContextMenu();
+      await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
+      setSelectedPaths(paths, {
+        primaryPath: paths[0] || "",
+        primaryType: items[0]?.type || "",
+      });
+      if (items.length === 1) {
+        setAlert("success", isClear
+          ? `${items[0].name} 항목의 마킹을 해제했습니다.`
+          : `${items[0].name} 항목에 ${getMarkTone(payload.color)?.label || "마킹"} 색상을 적용했습니다.`);
+      } else {
+        setAlert("success", isClear
+          ? `${payload.count || items.length}개 항목의 마킹을 해제했습니다.`
+          : `${payload.count || items.length}개 항목에 마킹을 적용했습니다.`);
+      }
+    } catch (err) {
+      setAlert("danger", err instanceof Error ? err.message : (isClear ? "마킹 해제에 실패했습니다." : "마킹 적용에 실패했습니다."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function canMovePathsToDestination(paths, destinationPath) {
+    const normalizedDestination = String(destinationPath || "").trim();
+    if (!normalizedDestination) return false;
+    return collapsePathSelection(paths).every((path) => {
+      const normalizedPath = String(path || "").trim();
+      return normalizedPath && normalizedPath !== normalizedDestination && !hasNasPathPrefix(normalizedDestination, normalizedPath);
+    });
+  }
+
+  async function moveItemsToDirectory(paths, destinationPath) {
+    const normalizedPaths = collapsePathSelection(Array.isArray(paths) ? paths : [paths]);
+    const destination = String(destinationPath || "").trim();
+    if (!normalizedPaths.length || !destination) {
+      setAlert("warning", "이동할 항목이나 대상 폴더를 찾지 못했습니다.");
+      return false;
+    }
+    if (!canMovePathsToDestination(normalizedPaths, destination)) {
+      setAlert("warning", "폴더를 자기 자신 또는 하위 폴더 안으로 이동할 수 없습니다.");
+      return false;
+    }
+
+    setLoading(true, "항목을 이동하는 중...");
+    try {
+      const res = await fetch("/api/nas/move", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(normalizedPaths.length === 1
+          ? { path: normalizedPaths[0], destination }
+          : { paths: normalizedPaths, destination }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const payload = await res.json();
+      setSelectedPaths([]);
+      await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
+      setAlert("success", normalizedPaths.length === 1
+        ? `${payload.name || displayNameForPath(normalizedPaths[0])} 항목을 이동했습니다.`
+        : `${payload.moved_count || normalizedPaths.length}개 항목을 이동했습니다.`);
+      return true;
+    } catch (err) {
+      setAlert("danger", err instanceof Error ? err.message : "항목 이동에 실패했습니다.");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -1707,6 +2348,73 @@
     el.explorerDropTarget.style.setProperty("--nas-drop-overlay-offset", "0px");
   }
 
+  function paintDragSourceRows() {
+    if (!el.tableBody) return;
+    const dragPaths = new Set(state.dragMovePaths);
+    el.tableBody.querySelectorAll("tr[data-row-path]").forEach((row) => {
+      const rowPath = row.getAttribute("data-row-path") || "";
+      row.classList.toggle("is-drag-source", dragPaths.has(rowPath));
+    });
+  }
+
+  function clearMoveDropTarget() {
+    if (!el.tableBody) {
+      state.dragMoveTargetPath = "";
+      return;
+    }
+    if (state.dragMoveTargetPath) {
+      const activeRow = el.tableBody.querySelector(`tr[data-row-path="${escapeSelectorValue(state.dragMoveTargetPath)}"]`);
+      if (activeRow) activeRow.classList.remove("is-move-target");
+    }
+    state.dragMoveTargetPath = "";
+  }
+
+  function clearCrumbDropTarget() {
+    const activeButton = state.dragMoveCrumbButton;
+    if (activeButton && typeof activeButton.classList?.remove === "function") {
+      activeButton.classList.remove("is-move-target");
+    }
+    state.dragMoveCrumbButton = null;
+    state.dragMoveCrumbPath = "";
+  }
+
+  function setCrumbDropTarget(button) {
+    if (!(button instanceof Element)) {
+      clearCrumbDropTarget();
+      return;
+    }
+    if (state.dragMoveCrumbButton === button) return;
+    clearCrumbDropTarget();
+    button.classList.add("is-move-target");
+    state.dragMoveCrumbButton = button;
+    state.dragMoveCrumbPath = button.getAttribute("data-path") || "";
+  }
+
+  function setMoveDropTarget(path) {
+    const targetPath = String(path || "").trim();
+    if (!el.tableBody) return;
+    if (state.dragMoveTargetPath === targetPath) return;
+    clearMoveDropTarget();
+    if (!targetPath) return;
+    const nextRow = el.tableBody.querySelector(`tr[data-row-path="${escapeSelectorValue(targetPath)}"]`);
+    if (!nextRow) return;
+    nextRow.classList.add("is-move-target");
+    state.dragMoveTargetPath = targetPath;
+  }
+
+  function clearInternalDragState() {
+    state.dragMovePaths = [];
+    clearMoveDropTarget();
+    clearCrumbDropTarget();
+    paintDragSourceRows();
+  }
+
+  function isInternalNasDrag(dataTransfer) {
+    if (state.dragMovePaths.length) return true;
+    const types = Array.from(dataTransfer && dataTransfer.types || []);
+    return types.includes(INTERNAL_NAS_DRAG_TYPE);
+  }
+
   function clampNumber(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
@@ -1895,6 +2603,7 @@
   function startDragSelection(event) {
     if (event.button !== 0 || !el.explorerDropTarget) return;
     if (event.target.closest(".btn, button, input, textarea, label, a")) return;
+    if (event.target.closest("tr[data-row-path]")) return;
     if (!event.target.closest("#nasExplorerDropTarget")) return;
 
     focusExplorerSelectionScope();
@@ -1983,17 +2692,20 @@
     ["dragenter", "dragover"].forEach((type) => {
       el.dropzone.addEventListener(type, (event) => {
         event.preventDefault();
+        if (isInternalNasDrag(event.dataTransfer)) return;
         onDropzoneDrag(true);
       });
     });
     ["dragleave", "drop"].forEach((type) => {
       el.dropzone.addEventListener(type, (event) => {
         event.preventDefault();
+        if (isInternalNasDrag(event.dataTransfer)) return;
         onDropzoneDrag(false);
       });
     });
     el.dropzone.addEventListener("drop", async (event) => {
-      await handleDroppedUpload(event.dataTransfer, { autoUpload: false });
+      if (isInternalNasDrag(event.dataTransfer)) return;
+      await handleDroppedUpload(event.dataTransfer, { autoUpload: true });
     });
   }
 
@@ -2006,11 +2718,19 @@
     el.explorerDropTarget.addEventListener("mousedown", startDragSelection);
     el.explorerDropTarget.addEventListener("dragenter", (event) => {
       event.preventDefault();
+      if (isInternalNasDrag(event.dataTransfer)) {
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        return;
+      }
       state.dropTargetDepth += 1;
       onExplorerDropDrag(true);
     });
     el.explorerDropTarget.addEventListener("dragover", (event) => {
       event.preventDefault();
+      if (isInternalNasDrag(event.dataTransfer)) {
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        return;
+      }
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
       syncExplorerDropOverlayPosition();
       onExplorerDropDrag(true);
@@ -2022,6 +2742,9 @@
     }, { passive: true });
     el.explorerDropTarget.addEventListener("dragleave", (event) => {
       event.preventDefault();
+      if (isInternalNasDrag(event.dataTransfer)) {
+        return;
+      }
       state.dropTargetDepth = Math.max(0, state.dropTargetDepth - 1);
       if (!state.dropTargetDepth || !el.explorerDropTarget.contains(event.relatedTarget)) {
         state.dropTargetDepth = 0;
@@ -2030,6 +2753,10 @@
     });
     el.explorerDropTarget.addEventListener("drop", async (event) => {
       event.preventDefault();
+      if (isInternalNasDrag(event.dataTransfer)) {
+        clearMoveDropTarget();
+        return;
+      }
       state.dropTargetDepth = 0;
       onExplorerDropDrag(false);
       await handleDroppedUpload(event.dataTransfer, { autoUpload: true });
@@ -2067,6 +2794,67 @@
     });
     el.newFolderModal.addEventListener("hidden.bs.modal", () => {
       resetNewFolderForm();
+    });
+  }
+
+  if (el.markColorOptions) {
+    el.markColorOptions.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-mark-color]");
+      if (!button) return;
+      const color = button.getAttribute("data-mark-color") || "yellow";
+      state.markEditorColor = color;
+      renderMarkColorOptions();
+    });
+  }
+
+  if (el.markConfirmBtn) {
+    el.markConfirmBtn.addEventListener("click", async () => {
+      const targetPaths = state.markEditorPaths.slice();
+      const color = state.markEditorColor;
+      if (markModal) {
+        markModal.hide();
+      }
+      await setMarkState(targetPaths, color);
+    });
+  }
+
+  if (el.markModal) {
+    el.markModal.addEventListener("hidden.bs.modal", () => {
+      resetMarkEditor();
+    });
+  }
+
+  if (el.duplicateSkipBtn) {
+    el.duplicateSkipBtn.addEventListener("click", () => {
+      resolveDuplicateConflictPending({
+        action: "skip",
+        applyAll: Boolean(el.duplicateApplyAll && el.duplicateApplyAll.checked),
+      });
+    });
+  }
+
+  if (el.duplicateOverwriteBtn) {
+    el.duplicateOverwriteBtn.addEventListener("click", () => {
+      resolveDuplicateConflictPending({
+        action: "overwrite",
+        applyAll: Boolean(el.duplicateApplyAll && el.duplicateApplyAll.checked),
+      });
+    });
+  }
+
+  if (el.duplicateCancelBtn) {
+    el.duplicateCancelBtn.addEventListener("click", () => {
+      resolveDuplicateConflictPending({ action: "cancel", applyAll: false });
+    });
+  }
+
+  if (el.duplicateConflictModal) {
+    el.duplicateConflictModal.addEventListener("hidden.bs.modal", () => {
+      if (duplicateConflictPending) {
+        const pending = duplicateConflictPending;
+        duplicateConflictPending = null;
+        pending.resolve({ action: "cancel", applyAll: false });
+      }
     });
   }
 
@@ -2120,9 +2908,120 @@
       if (!button) return;
       loadFolder(button.getAttribute("data-path") || "/");
     });
+    el.paneLocation.addEventListener("dragover", (event) => {
+      if (!isInternalNasDrag(event.dataTransfer)) return;
+      const button = event.target.closest("[data-action='crumb'][data-path]");
+      if (!button) {
+        clearCrumbDropTarget();
+        return;
+      }
+      const targetPath = button.getAttribute("data-path") || "";
+      if (!canMovePathsToDestination(state.dragMovePaths, targetPath)) {
+        clearCrumbDropTarget();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      setCrumbDropTarget(button);
+    });
+    el.paneLocation.addEventListener("dragleave", (event) => {
+      if (!isInternalNasDrag(event.dataTransfer)) return;
+      const button = event.target.closest("[data-action='crumb'][data-path]");
+      if (!button) return;
+      if (button.contains(event.relatedTarget)) return;
+      if (state.dragMoveCrumbButton === button) {
+        clearCrumbDropTarget();
+      }
+    });
+    el.paneLocation.addEventListener("drop", async (event) => {
+      if (!isInternalNasDrag(event.dataTransfer)) return;
+      const button = event.target.closest("[data-action='crumb'][data-path]");
+      clearCrumbDropTarget();
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const targetPath = button.getAttribute("data-path") || "";
+      const dragPaths = collapsePathSelection(state.dragMovePaths);
+      await moveItemsToDirectory(dragPaths, targetPath);
+      clearInternalDragState();
+    });
   }
 
   if (el.tableBody) {
+    el.tableBody.addEventListener("dragstart", (event) => {
+      const row = event.target.closest("tr[data-row-path]");
+      if (!row || !event.dataTransfer) return;
+      const path = row.getAttribute("data-row-path") || "";
+      const type = row.getAttribute("data-row-type") || "";
+      if (!path) {
+        event.preventDefault();
+        return;
+      }
+      focusExplorerSelectionScope();
+      hideContextMenu();
+      if (!isPathSelected(path)) {
+        setSelectedItem(path, type);
+      }
+      const dragPaths = collapsePathSelection(isPathSelected(path) ? state.selectedPaths.slice() : [path]);
+      if (!dragPaths.length) {
+        event.preventDefault();
+        return;
+      }
+      state.dragMovePaths = dragPaths.slice();
+      clearMoveDropTarget();
+      paintDragSourceRows();
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData(INTERNAL_NAS_DRAG_TYPE, JSON.stringify(dragPaths));
+      event.dataTransfer.setData("text/plain", dragPaths.join("\n"));
+    });
+
+    el.tableBody.addEventListener("dragend", () => {
+      clearInternalDragState();
+    });
+
+    el.tableBody.addEventListener("dragover", (event) => {
+      const row = event.target.closest("tr[data-row-path]");
+      if (!row || !isInternalNasDrag(event.dataTransfer)) return;
+      const targetPath = row.getAttribute("data-row-path") || "";
+      const targetType = row.getAttribute("data-row-type") || "";
+      if (targetType !== "directory" || !canMovePathsToDestination(state.dragMovePaths, targetPath)) {
+        clearMoveDropTarget();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      setMoveDropTarget(targetPath);
+    });
+
+    el.tableBody.addEventListener("dragleave", (event) => {
+      const row = event.target.closest("tr[data-row-path]");
+      if (!row || !isInternalNasDrag(event.dataTransfer)) return;
+      if (row.contains(event.relatedTarget)) return;
+      const rowPath = row.getAttribute("data-row-path") || "";
+      if (state.dragMoveTargetPath === rowPath) {
+        clearMoveDropTarget();
+      }
+    });
+
+    el.tableBody.addEventListener("drop", async (event) => {
+      const row = event.target.closest("tr[data-row-path]");
+      if (!row || !isInternalNasDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const targetPath = row.getAttribute("data-row-path") || "";
+      const targetType = row.getAttribute("data-row-type") || "";
+      clearMoveDropTarget();
+      if (targetType !== "directory") {
+        clearInternalDragState();
+        return;
+      }
+      const dragPaths = collapsePathSelection(state.dragMovePaths);
+      await moveItemsToDirectory(dragPaths, targetPath);
+      clearInternalDragState();
+    });
+
     el.tableBody.addEventListener("click", (event) => {
       if (state.suppressRowClick) {
         state.suppressRowClick = false;
@@ -2179,9 +3078,15 @@
     el.uploadQueue.addEventListener("click", (event) => {
       const button = event.target.closest("[data-action='remove-upload']");
       if (!button) return;
-      const index = Number(button.getAttribute("data-index"));
-      if (!Number.isFinite(index)) return;
-      state.uploadFiles.splice(index, 1);
+      const kind = button.getAttribute("data-kind") || "file";
+      const key = button.getAttribute("data-key") || "";
+      if (!key) return;
+      if (kind === "directory") {
+        const directoryPath = key.replace(/^dir:/, "");
+        state.uploadDirectories = state.uploadDirectories.filter((value) => normalizeUploadRelativePath(value) !== directoryPath);
+      } else {
+        state.uploadFiles = state.uploadFiles.filter((entry) => (entry.key || fileKey(entry)) !== key);
+      }
       renderQueue();
     });
   }
@@ -2235,6 +3140,10 @@
         setPinnedState(targetPaths, true);
       } else if (action === "unpin-top" && targetPaths.length) {
         setPinnedState(targetPaths, false);
+      } else if (action === "mark" && targetPaths.length) {
+        openMarkModal(targetPaths);
+      } else if (action === "unmark" && targetPaths.length) {
+        setMarkState(targetPaths, "");
       } else if (action === "new-folder") {
         openNewFolderModal();
       } else if (action === "open-trash") {
@@ -2303,6 +3212,7 @@
   }
 
   ensureContextMenuLayer();
+  renderMarkColorOptions();
   renderQueue();
   queueBrowserShellHeightSync();
   refreshDriveStatus().finally(() => loadFolder("/"));

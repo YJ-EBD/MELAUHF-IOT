@@ -354,6 +354,23 @@
     max-width: 320px;
   }
 
+  .nas-upload-chip--directory {
+    background: #fff7ed;
+    border-color: rgba(217, 119, 6, 0.18);
+  }
+
+  .nas-upload-chip__icon {
+    width: 30px;
+    height: 30px;
+    border-radius: .7rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(31, 122, 97, 0.1);
+    color: var(--nas-accent);
+    flex-shrink: 0;
+  }
+
   .nas-browser-toolbar {
     display: flex;
     align-items: center;
@@ -395,6 +412,13 @@
     min-height: 28px;
     padding: .2rem .62rem;
     font-size: .82rem;
+  }
+
+  .nas-breadcrumbs .btn.is-move-target,
+  .nas-pane-location .btn.is-move-target {
+    background: rgba(22, 119, 255, 0.14);
+    border-color: rgba(22, 119, 255, 0.34);
+    box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.18);
   }
 
   .nas-upload-strip {
@@ -699,6 +723,32 @@
     box-shadow: inset 0 0 0 9999px rgba(15, 23, 42, 0.055);
   }
 
+  .nas-file-row.is-marked td {
+    background: var(--nas-mark-bg, rgba(250, 204, 21, 0.16));
+    box-shadow: inset 0 0 0 1px var(--nas-mark-border, rgba(250, 204, 21, 0.28));
+  }
+
+  .nas-file-row.is-marked:hover td {
+    background: var(--nas-mark-hover, rgba(250, 204, 21, 0.22));
+    box-shadow: inset 0 0 0 1px var(--nas-mark-border, rgba(250, 204, 21, 0.32));
+  }
+
+  .nas-file-row.is-marked.is-selected td,
+  .nas-file-row.is-marked.is-selected:hover td {
+    background: var(--nas-mark-selected, rgba(250, 204, 21, 0.28));
+    box-shadow: inset 0 0 0 1px var(--nas-mark-border, rgba(250, 204, 21, 0.36));
+  }
+
+  .nas-file-row.is-move-target td,
+  .nas-file-row.is-move-target:hover td {
+    background: rgba(22, 119, 255, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.3);
+  }
+
+  .nas-file-row.is-drag-source td {
+    opacity: .7;
+  }
+
   .nas-file-primary {
     display: flex;
     align-items: center;
@@ -732,6 +782,15 @@
     align-items: center;
     margin-left: .42rem;
     color: #d97706;
+    font-size: .78rem;
+    vertical-align: middle;
+  }
+
+  .nas-file-mark {
+    display: inline-flex;
+    align-items: center;
+    margin-left: .42rem;
+    color: var(--nas-mark-accent, #ca8a04);
     font-size: .78rem;
     vertical-align: middle;
   }
@@ -839,6 +898,59 @@
     background: rgba(148, 163, 184, 0.24);
   }
 
+  .nas-mark-picker {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .7rem;
+  }
+
+  .nas-mark-swatch {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .8rem .9rem;
+    border-radius: .95rem;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
+    color: #0f172a;
+    transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+  }
+
+  .nas-mark-swatch:hover,
+  .nas-mark-swatch:focus-visible {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+    border-color: var(--nas-mark-accent, rgba(148, 163, 184, 0.28));
+  }
+
+  .nas-mark-swatch.is-active {
+    border-color: var(--nas-mark-accent, rgba(148, 163, 184, 0.28));
+    box-shadow: inset 0 0 0 1px var(--nas-mark-accent, rgba(148, 163, 184, 0.28)), 0 12px 24px rgba(15, 23, 42, 0.12);
+  }
+
+  .nas-mark-swatch__dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--nas-mark-accent, #ca8a04);
+    box-shadow: 0 0 0 5px var(--nas-mark-soft, rgba(250, 204, 21, 0.18));
+    flex-shrink: 0;
+  }
+
+  .nas-mark-swatch__meta {
+    min-width: 0;
+  }
+
+  .nas-mark-swatch__title {
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  .nas-mark-swatch__sub {
+    font-size: .8rem;
+    color: #64748b;
+  }
+
   .nas-trash-empty {
     padding: 2.5rem 1rem;
     text-align: center;
@@ -887,6 +999,11 @@
     border-color: rgba(129, 148, 185, 0.22);
     color: #dce7ff;
     box-shadow: none;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-upload-chip--directory {
+    background: rgba(120, 53, 15, 0.28);
+    border-color: rgba(245, 158, 11, 0.26);
   }
 
   html[data-bs-theme="dark"] #nasPageRoot {
@@ -1032,6 +1149,20 @@
     background: rgba(129, 148, 185, 0.2);
   }
 
+  html[data-bs-theme="dark"] #nasPageRoot .nas-mark-swatch {
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(17, 24, 39, 0.96));
+    border-color: rgba(71, 85, 105, 0.42);
+    color: #e5eef8;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-mark-swatch__title {
+    color: #f8fafc;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-mark-swatch__sub {
+    color: #94a3b8;
+  }
+
   html[data-bs-theme="dark"] #nasPageRoot .nas-file-row:hover td {
     background: rgba(79, 124, 255, 0.08);
   }
@@ -1069,6 +1200,13 @@
   html[data-bs-theme="dark"] #nasPageRoot .nas-breadcrumbs .btn:hover,
   html[data-bs-theme="dark"] #nasPageRoot .nas-pane-location .btn:hover {
     background: rgba(79, 124, 255, 0.16);
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-breadcrumbs .btn.is-move-target,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-location .btn.is-move-target {
+    background: rgba(79, 124, 255, 0.2);
+    border-color: rgba(129, 148, 185, 0.42);
+    box-shadow: inset 0 0 0 1px rgba(129, 148, 185, 0.22);
   }
 
   @media (max-width: 991.98px) {
@@ -1215,7 +1353,7 @@
             <div class="nas-upload-strip__sub">업로드 대상 폴더: <span id="nasUploadTarget">/</span></div>
           </div>
           <div class="nas-upload-queue" id="nasUploadQueue">
-            <div class="nas-upload-empty">선택된 파일이 없습니다.</div>
+            <div class="nas-upload-empty">선택된 파일이나 폴더가 없습니다.</div>
           </div>
           <div class="nas-upload-strip__actions">
             <button class="btn btn-sm btn-primary" id="nasUploadBtn" type="button">업로드 실행</button>
@@ -1302,6 +1440,12 @@
   <button class="nas-context-menu__item" type="button" data-menu-action="unpin-top">
     <i class="bi bi-pin-angle-fill"></i><span>상단 고정 해제</span>
   </button>
+  <button class="nas-context-menu__item" type="button" data-menu-action="mark">
+    <i class="bi bi-bookmark"></i><span>마킹</span>
+  </button>
+  <button class="nas-context-menu__item" type="button" data-menu-action="unmark">
+    <i class="bi bi-bookmark-fill"></i><span>마킹 해제</span>
+  </button>
   <div class="nas-context-menu__divider"></div>
   <button class="nas-context-menu__item" type="button" data-menu-action="open">
     <i class="bi bi-folder2-open"></i><span>열기</span>
@@ -1346,6 +1490,73 @@
         <button class="btn btn-primary" type="button" id="nasCreateFolderConfirmBtn">
           <i class="bi bi-check2-circle me-1" id="nasNameEditorConfirmIcon"></i><span id="nasNameEditorConfirmText">폴더 생성</span>
         </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="nasMarkModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5"><i class="bi bi-bookmark-star me-2"></i>중요 항목 마킹</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+      </div>
+      <div class="modal-body">
+        <div class="small text-secondary mb-2">적용 대상</div>
+        <div class="fw-semibold mb-3" id="nasMarkTargetLabel">선택한 항목</div>
+        <label class="form-label d-block mb-2">마킹 색상</label>
+        <div class="nas-mark-picker" id="nasMarkColorOptions"></div>
+        <div class="form-text mt-3">선택한 색상으로 항목 배경이 강조되어 중요한 폴더나 파일을 바로 구분할 수 있습니다.</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">취소</button>
+        <button class="btn btn-primary" type="button" id="nasMarkConfirmBtn">
+          <i class="bi bi-check2-circle me-1"></i>적용
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="nasDuplicateConflictModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="nasDuplicateConflictTitle"><i class="bi bi-exclamation-triangle me-2"></i>중복된 항목이 있습니다</h2>
+        <button type="button" class="btn-close" aria-label="닫기" id="nasDuplicateCancelBtn"></button>
+      </div>
+      <div class="modal-body">
+        <div class="fw-semibold mb-2" id="nasDuplicateConflictMessage">같은 이름의 항목이 이미 존재합니다.</div>
+        <div class="small text-secondary mb-2" id="nasDuplicateConflictPath">/</div>
+        <div class="small text-secondary mb-3" id="nasDuplicateConflictMeta">1 / 1 충돌</div>
+        <div class="alert alert-warning py-2 px-3 d-none" id="nasDuplicateConflictHint"></div>
+        <div class="form-check" id="nasDuplicateApplyAllWrap">
+          <input class="form-check-input" type="checkbox" value="" id="nasDuplicateApplyAll">
+          <label class="form-check-label" for="nasDuplicateApplyAll">모든 파일에 대하여 적용</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-secondary" type="button" id="nasDuplicateSkipBtn">건너뛰기</button>
+        <button class="btn btn-primary" type="button" id="nasDuplicateOverwriteBtn">덮어쓰기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="nasEmptyFolderModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5"><i class="bi bi-folder2-open me-2"></i>빈 폴더 안내</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+      </div>
+      <div class="modal-body">
+        <div class="fw-semibold mb-2" id="nasEmptyFolderMessage">선택한 폴더는 빈 폴더입니다.</div>
+        <div class="small text-secondary" id="nasEmptyFolderMeta">빈 폴더는 업로드되지 않습니다.</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" type="button" data-bs-dismiss="modal">확인</button>
       </div>
     </div>
   </div>
@@ -1449,5 +1660,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-pin-v11"></script>
+<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-nas-v17"></script>
 {% endblock %}
