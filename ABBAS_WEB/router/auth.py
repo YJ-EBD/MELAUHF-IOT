@@ -8,6 +8,7 @@ from services.user_store import authenticate
 from services.user_store import create_user, user_exists
 from services.smtp_utils import send_naver_verification_email
 from redis.session import (
+    ActiveSessionExistsError,
     SESSION_COOKIE_NAME,
     clear_session_cookie,
     create_session,
@@ -239,6 +240,19 @@ def login_action(
     auto = str(auto_login).lower() in ("1", "true", "on", "yes")
     try:
         sid = create_session(user_id=user_id, auto_login=auto)
+    except ActiveSessionExistsError:
+        msg = "이미 이 계정이 다른 기기에서 로그인 중입니다. 기존 기기에서 로그아웃한 뒤 다시 시도해주세요."
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "next": next,
+                "error": msg,
+                "swal_error_title": "중복 로그인 차단",
+                "swal_error_text": msg,
+            },
+            status_code=409,
+        )
     except (RedisError, Exception):
         return templates.TemplateResponse(
             "login.html",

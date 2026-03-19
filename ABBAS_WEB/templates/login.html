@@ -77,6 +77,7 @@
     </section>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
   <script>
     window.addEventListener('pageshow', function (e) {
       try {
@@ -85,6 +86,20 @@
         }
       } catch (_) {}
     });
+
+    (function () {
+      const swalTitle = {{ (swal_error_title or '') | tojson }};
+      const swalText = {{ (swal_error_text or '') | tojson }};
+
+      if (swalText && window.Swal) {
+        Swal.fire({
+          icon: 'warning',
+          title: swalTitle || '로그인 안내',
+          text: swalText,
+          confirmButtonText: '확인'
+        });
+      }
+    })();
 
     (function () {
       const KEY = 'for_rnd_web:remember_id';

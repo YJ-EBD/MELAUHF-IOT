@@ -101,6 +101,18 @@ class RedisClient:
     def scan_iter(self, match: str) -> Iterable[str]:
         return self._client.scan_iter(match=match)
 
+    def ttl(self, key: str) -> int:
+        try:
+            return int(self._client.execute("TTL", key))
+        except Exception:
+            return -2
+
+
+class ActiveSessionExistsError(Exception):
+    def __init__(self, user_id: str):
+        self.user_id = (user_id or "").strip()
+        super().__init__(f"active session exists for user '{self.user_id}'")
+
 
 # singleton
 _REDIS: Optional[RedisClient] = None
@@ -185,6 +197,7 @@ def get_boot_id() -> str:
 # ==========================================================
 
 SESSION_COOKIE_NAME = "sid"
+USER_SESSION_PREFIX = "for_rnd_web:user_sess"
 
 # Default TTLs (override via settings.env or OS env)
 DEFAULT_SESSION_TTL_SEC = int(_env("SESSION_TTL_SEC", "43200"))  # 12 hours
@@ -195,15 +208,69 @@ def _sess_key(sid: str) -> str:
     return f"for_rnd_web:sess:{sid}"
 
 
+def _user_sess_key(user_id: str) -> str:
+    return f"{USER_SESSION_PREFIX}:{(user_id or '').strip()}"
+
+
+def _find_existing_session_id(r: RedisClient, user_id: str) -> Optional[str]:
+    user = (user_id or "").strip()
+    if not user:
+        return None
+
+    for sess_key in r.scan_iter(match="for_rnd_web:sess:*"):
+        try:
+            if r.get(sess_key) != user:
+                continue
+        except Exception:
+            continue
+
+        sid = sess_key.rsplit(":", 1)[-1]
+        ttl = r.ttl(sess_key)
+        if ttl > 0:
+            try:
+                r.setex(_user_sess_key(user), ttl, sid)
+            except Exception:
+                pass
+        return sid
+    return None
+
+
+def _get_active_session_id(r: RedisClient, user_id: str) -> Optional[str]:
+    user = (user_id or "").strip()
+    if not user:
+        return None
+
+    sid = r.get(_user_sess_key(user))
+    if not sid:
+        return _find_existing_session_id(r, user)
+
+    if r.get(_sess_key(sid)) == user:
+        return sid
+
+    try:
+        r.delete(_user_sess_key(user))
+    except Exception:
+        pass
+    return _find_existing_session_id(r, user)
+
+
 def new_session_id() -> str:
     return secrets.token_urlsafe(32)
 
 
 def create_session(*, user_id: str, auto_login: bool) -> str:
+    user = (user_id or "").strip()
     sid = new_session_id()
     ttl = AUTO_LOGIN_TTL_SEC if auto_login else DEFAULT_SESSION_TTL_SEC
+    r = get_redis()
+    active_sid = _get_active_session_id(r, user)
+    if active_sid:
+        raise ActiveSessionExistsError(user)
+
     # If Redis is down, login must fail clearly (do not silently create a dead session).
-    get_redis().setex(_sess_key(sid), ttl, (user_id or "").strip())
+    r.setex(_sess_key(sid), ttl, user)
+    if user:
+        r.setex(_user_sess_key(user), ttl, sid)
     return sid
 
 
@@ -212,7 +279,20 @@ def read_session_user(sid: str) -> Optional[str]:
     if not sid:
         return None
     try:
-        return get_redis().get(_sess_key(sid))
+        r = get_redis()
+        user = r.get(_sess_key(sid))
+        if not user:
+            return None
+
+        active_sid = r.get(_user_sess_key(user))
+        # Backward-compatible: older sessions may not have a user->sid index yet.
+        if active_sid and active_sid != sid:
+            try:
+                r.delete(_sess_key(sid))
+            except Exception:
+                pass
+            return None
+        return user
     except Exception:
         return None
 
@@ -224,7 +304,25 @@ def refresh_session(sid: str, *, auto_login: bool = False) -> None:
         return
     ttl = AUTO_LOGIN_TTL_SEC if auto_login else DEFAULT_SESSION_TTL_SEC
     try:
-        get_redis().expire(_sess_key(sid), ttl)
+        r = get_redis()
+        user = r.get(_sess_key(sid))
+        if not user:
+            return
+
+        active_sid = r.get(_user_sess_key(user))
+        if active_sid and active_sid != sid:
+            try:
+                r.delete(_sess_key(sid))
+            except Exception:
+                pass
+            return
+
+        r.expire(_sess_key(sid), ttl)
+        if active_sid == sid:
+            r.expire(_user_sess_key(user), ttl)
+        elif not active_sid:
+            # One-time backfill for sessions created before user->sid indexing existed.
+            r.setex(_user_sess_key(user), ttl, sid)
     except Exception:
         return
 
@@ -234,7 +332,14 @@ def delete_session(sid: str) -> None:
     if not sid:
         return
     try:
-        get_redis().delete(_sess_key(sid))
+        r = get_redis()
+        user = r.get(_sess_key(sid))
+        r.delete(_sess_key(sid))
+
+        if user:
+            active_sid = r.get(_user_sess_key(user))
+            if active_sid == sid:
+                r.delete(_user_sess_key(user))
     except Exception:
         return
 
