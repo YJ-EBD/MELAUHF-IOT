@@ -808,6 +808,24 @@
     color: #64748b;
   }
 
+  .nas-uploader-cell {
+    min-width: 0;
+  }
+
+  .nas-uploader-name {
+    font-weight: 600;
+    color: var(--nas-ink);
+    line-height: 1.15;
+  }
+
+  .nas-uploader-id {
+    margin-top: .16rem;
+    font-size: .78rem;
+    color: #64748b;
+    line-height: 1.15;
+    word-break: break-all;
+  }
+
   #nasPageRoot #nasTrashBtn.btn.btn-outline-secondary {
     color: #d94356 !important;
     border-color: rgba(217, 67, 86, 0.32) !important;
@@ -1048,6 +1066,7 @@
   html[data-bs-theme="dark"] #nasPageRoot .nas-upload-strip__title,
   html[data-bs-theme="dark"] #nasPageRoot .nas-list-caption__title,
   html[data-bs-theme="dark"] #nasPageRoot .nas-file-name,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-uploader-name,
   html[data-bs-theme="dark"] #nasPageRoot .nas-meta-value,
   html[data-bs-theme="dark"] #nasPageRoot .nas-navtool-btn {
     color: #eef4ff;
@@ -1077,6 +1096,7 @@
   html[data-bs-theme="dark"] #nasPageRoot .nas-upload-strip__sub,
   html[data-bs-theme="dark"] #nasPageRoot .nas-list-caption__sub,
   html[data-bs-theme="dark"] #nasPageRoot .nas-file-sub,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-uploader-id,
   html[data-bs-theme="dark"] #nasPageRoot .nas-meta-label,
   html[data-bs-theme="dark"] #nasPageRoot .nas-upload-empty,
   html[data-bs-theme="dark"] #nasPageRoot .nas-empty,
@@ -1402,6 +1422,7 @@
                   <thead class="table-light">
                     <tr>
                       <th class="ps-3">이름</th>
+                      <th>업로드 계정</th>
                       <th>수정한 날짜</th>
                       <th>유형</th>
                       <th>크기</th>
@@ -1660,5 +1681,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-nas-v17"></script>
+<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-nas-v18"></script>
 {% endblock %}

@@ -1122,6 +1122,11 @@
       if (item.pinned) subParts.push("상단 고정");
       if (item.marked && markTone) subParts.push(`${markTone.label} 마킹`);
       const subLabel = subParts.join(" · ");
+      const uploaderName = String(item.uploader_name || item.uploader_nickname || item.uploader_id || "-").trim() || "-";
+      const uploaderId = String(item.uploader_id || "").trim();
+      const uploaderIdLabel = uploaderId && uploaderId !== uploaderName
+        ? `<div class="nas-uploader-id">ID: ${escapeHtml(uploaderId)}</div>`
+        : "";
 
       return `
         <tr class="nas-file-row ${isSelected ? "is-selected" : ""} ${item.marked ? "is-marked" : ""}" data-row-path="${escapeHtml(item.path)}" data-row-type="${escapeHtml(item.type)}" data-row-name="${escapeHtml(item.name)}" draggable="true" ${rowStyle ? `style="${escapeHtml(rowStyle)}"` : ""}>
@@ -1132,6 +1137,12 @@
                 <div class="nas-file-name">${escapeHtml(item.name)}${markBadge}${pinnedBadge}</div>
                 <div class="nas-file-sub">${escapeHtml(subLabel)}</div>
               </div>
+            </div>
+          </td>
+          <td>
+            <div class="nas-uploader-cell">
+              <div class="nas-uploader-name">${escapeHtml(uploaderName)}</div>
+              ${uploaderIdLabel}
             </div>
           </td>
           <td>${escapeHtml(item.modified_at || "-")}</td>

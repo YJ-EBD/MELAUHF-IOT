@@ -24,6 +24,7 @@ from DB import data_repo
 from DB import device_repo
 from DB import device_ops_repo
 from DB import firmware_repo
+from DB import nas_repo
 from DB.runtime import get_mysql
 from services.log_store import read_logs as db_read_logs
 from services.user_store import read_user
@@ -57,6 +58,7 @@ _NAS_INFO_CACHE: dict[str, Any] = {}
 _NAS_INFO_CACHE_TS = 0.0
 _NAS_STATUS_CACHE: dict[str, Any] = {}
 _NAS_STATUS_CACHE_TS = 0.0
+_NAS_USER_PROFILE_CACHE: dict[str, dict[str, str]] = {}
 
 
 def _fmt(dt: datetime) -> str:
@@ -931,6 +933,13 @@ def _list_nas_directory(rel_path: str) -> dict[str, Any]:
         except Exception:
             continue
 
+    uploader_rows = nas_repo.get_uploader_rows([item.get("path") for item in entries])
+    for item in entries:
+        uploader_entry = _normalize_nas_uploader_entry(uploader_rows.get(item.get("path")))
+        item["uploader_name"] = str(uploader_entry.get("display_name") or "-")
+        item["uploader_nickname"] = str(uploader_entry.get("nickname") or "")
+        item["uploader_id"] = str(uploader_entry.get("user_id") or "")
+
     entries.sort(
         key=lambda item: (
             0 if item.get("pinned") else 1,
@@ -1142,6 +1151,126 @@ def _nas_pin_meta_path(root: str) -> str:
 
 def _nas_mark_meta_path(root: str) -> str:
     return os.path.join(root, NAS_MARK_META_FILENAME)
+
+
+def _lookup_nas_user_profile(user_id: Any) -> dict[str, str]:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return {}
+
+    cached = _NAS_USER_PROFILE_CACHE.get(normalized_user_id)
+    if cached is not None:
+        return dict(cached)
+
+    try:
+        row = read_user(normalized_user_id) or {}
+    except Exception:
+        row = {}
+
+    profile = {
+        "user_id": normalized_user_id,
+        "nickname": str(row.get("NICKNAME") or "").strip(),
+        "name": str(row.get("NAME") or "").strip(),
+    }
+    profile["display_name"] = profile["nickname"] or profile["name"] or normalized_user_id
+    _NAS_USER_PROFILE_CACHE[normalized_user_id] = dict(profile)
+    return dict(profile)
+
+
+def _normalize_nas_uploader_entry(value: Any) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    user_id = str(payload.get("user_id") or "").strip()
+    nickname = str(payload.get("nickname") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if user_id and (not nickname or not name):
+        profile = _lookup_nas_user_profile(user_id)
+        if not nickname:
+            nickname = profile.get("nickname") or ""
+        if not name:
+            name = profile.get("name") or ""
+    display_name = nickname or name or user_id
+    if not display_name:
+        return {}
+
+    try:
+        updated_at = float(payload.get("updated_at") or 0.0)
+    except Exception:
+        updated_at = 0.0
+
+    return {
+        "user_id": user_id,
+        "nickname": nickname,
+        "name": name,
+        "display_name": display_name,
+        "updated_at": updated_at,
+    }
+
+
+def _current_nas_uploader_entry(request: Request) -> dict[str, Any]:
+    user_id = getattr(request.state, "user_id", "") or _request_user_id(request)
+    row = _request_user_row(request) if user_id else {}
+    return _normalize_nas_uploader_entry(
+        {
+            "user_id": user_id,
+            "nickname": str(row.get("NICKNAME") or "").strip(),
+            "name": str(row.get("NAME") or "").strip(),
+            "updated_at": time.time(),
+        }
+    )
+
+
+def _set_nas_uploader_state(root: str, rel_paths: list[str], uploader: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    normalized_uploader = _normalize_nas_uploader_entry(uploader)
+    if not normalized_uploader:
+        return {}, []
+
+    changed_paths: list[str] = []
+    upsert_rows: list[dict[str, Any]] = []
+    for raw_path in rel_paths:
+        rel_path = _normalize_nas_rel_path(raw_path)
+        if rel_path == "/" or _is_nas_recycle_rel_path(rel_path):
+            continue
+        upsert_rows.append(
+            {
+                "rel_path": rel_path,
+                "user_id": normalized_uploader.get("user_id") or "",
+                "nickname": normalized_uploader.get("nickname") or "",
+                "name": normalized_uploader.get("name") or "",
+            }
+        )
+        changed_paths.append(rel_path)
+
+    if upsert_rows:
+        nas_repo.upsert_uploader_rows(upsert_rows)
+
+    return (
+        {
+            row["rel_path"]: {
+                "user_id": row.get("user_id") or "",
+                "nickname": row.get("nickname") or "",
+                "name": row.get("name") or "",
+                "display_name": normalized_uploader.get("display_name") or "",
+                "updated_at": time.time(),
+            }
+            for row in upsert_rows
+        },
+        changed_paths,
+    )
+
+
+def _remove_nas_uploader_state(root: str, rel_path: str) -> None:
+    normalized_path = _normalize_nas_rel_path(rel_path)
+    if normalized_path == "/":
+        return
+    nas_repo.delete_uploader_prefix(normalized_path)
+
+
+def _rename_nas_uploader_state(root: str, old_rel_path: str, new_rel_path: str) -> None:
+    source_path = _normalize_nas_rel_path(old_rel_path)
+    target_path = _normalize_nas_rel_path(new_rel_path)
+    if source_path == "/" or source_path == target_path:
+        return
+    nas_repo.remap_uploader_prefix(source_path, target_path)
 
 
 def _read_nas_pin_meta(root: str) -> dict[str, float]:
@@ -1372,6 +1501,7 @@ def _move_nas_item_to_recycle(rel_path: str) -> dict[str, Any]:
 
     _remove_nas_pin_state(root, normalized_path)
     _remove_nas_mark_state(root, normalized_path)
+    _rename_nas_uploader_state(root, normalized_path, _relative_nas_path(root, recycle_path))
     return {
         **meta,
         "size_label": _nas_size_label(recycle_path),
@@ -1520,6 +1650,7 @@ def _execute_nas_prepared_move(move_item: dict[str, Any]) -> dict[str, Any]:
     next_rel_path = _relative_nas_path(root, target_path)
     _rename_nas_pin_state(root, normalized_source, next_rel_path)
     _rename_nas_mark_state(root, normalized_source, next_rel_path)
+    _rename_nas_uploader_state(root, normalized_source, next_rel_path)
     return {
         "ok": True,
         "name": source_name,
@@ -1541,6 +1672,7 @@ def _rollback_nas_prepared_move(move_item: dict[str, Any]) -> None:
     original_rel_path = _relative_nas_path(root, original_source)
     _rename_nas_pin_state(root, moved_rel_path, original_rel_path)
     _rename_nas_mark_state(root, moved_rel_path, original_rel_path)
+    _rename_nas_uploader_state(root, moved_rel_path, original_rel_path)
 
 
 def _move_nas_item(rel_path: str, destination_path: str) -> dict[str, Any]:
@@ -2994,9 +3126,11 @@ def api_nas_upload_directories(request: Request, payload: dict[str, Any] = Body(
     created_directories: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
     root = os.path.realpath(str(info.get("root") or full_path))
+    current_uploader = _current_nas_uploader_entry(request)
     seen_directories: set[str] = set()
     skipped_directory_paths: set[str] = set()
     overwrite_set: set[str] = set()
+    created_directory_paths: list[str] = []
 
     for raw_overwrite_path in payload.get("overwrite_paths") or []:
         safe_overwrite_path = _safe_upload_rel_path(raw_overwrite_path)
@@ -3044,15 +3178,20 @@ def api_nas_upload_directories(request: Request, payload: dict[str, Any] = Body(
             os.makedirs(destination_dir, exist_ok=True)
             seen_directories.add(safe_directory)
             if not existed_before:
+                created_path = rel_path.rstrip("/") + "/" + safe_directory if rel_path != "/" else "/" + safe_directory
                 created_directories.append(
                     {
                         "name": os.path.basename(safe_directory),
-                        "path": rel_path.rstrip("/") + "/" + safe_directory if rel_path != "/" else "/" + safe_directory,
+                        "path": created_path,
                     }
                 )
+                created_directory_paths.append(created_path)
         except Exception as exc:
             skipped.append({"name": safe_directory, "reason": f"폴더 생성 실패: {exc}"})
             skipped_directory_paths.add(safe_directory)
+
+    if created_directory_paths:
+        _set_nas_uploader_state(root, created_directory_paths, current_uploader)
 
     return JSONResponse(
         {
@@ -3086,9 +3225,12 @@ async def api_nas_upload(
     created_directories: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
     root = os.path.realpath(str(info.get("root") or full_path))
+    current_uploader = _current_nas_uploader_entry(request)
     seen_directories: set[str] = set()
     skipped_directory_paths: set[str] = set()
     overwrite_set: set[str] = set()
+    created_directory_paths: list[str] = []
+    saved_paths: list[str] = []
     for raw_overwrite_path in overwrite_paths or []:
         safe_overwrite_path = _safe_upload_rel_path(raw_overwrite_path)
         if safe_overwrite_path:
@@ -3135,12 +3277,14 @@ async def api_nas_upload(
             os.makedirs(destination_dir, exist_ok=True)
             seen_directories.add(safe_directory)
             if not existed_before:
+                created_path = rel_path.rstrip("/") + "/" + safe_directory if rel_path != "/" else "/" + safe_directory
                 created_directories.append(
                     {
                         "name": os.path.basename(safe_directory),
-                        "path": rel_path.rstrip("/") + "/" + safe_directory if rel_path != "/" else "/" + safe_directory,
+                        "path": created_path,
                     }
                 )
+                created_directory_paths.append(created_path)
         except Exception as exc:
             skipped.append({"name": safe_directory, "reason": f"폴더 생성 실패: {exc}"})
             skipped_directory_paths.add(safe_directory)
@@ -3221,6 +3365,7 @@ async def api_nas_upload(
                     "size_label": _format_bytes(size_bytes),
                 }
             )
+            saved_paths.append(saved[-1]["path"])
         except Exception as exc:
             try:
                 if os.path.exists(destination):
@@ -3233,6 +3378,11 @@ async def api_nas_upload(
                 await upload.close()
             except Exception:
                 pass
+
+    if created_directory_paths:
+        _set_nas_uploader_state(root, created_directory_paths, current_uploader)
+    if saved_paths:
+        _set_nas_uploader_state(root, saved_paths, current_uploader)
 
     return JSONResponse(
         {
@@ -3275,6 +3425,7 @@ def api_nas_mkdir(
         raise HTTPException(status_code=500, detail=f"폴더 생성에 실패했습니다: {exc}")
 
     created_path = rel_path.rstrip("/") + "/" + name if rel_path != "/" else "/" + name
+    _set_nas_uploader_state(root, [created_path], _current_nas_uploader_entry(request))
     return JSONResponse(
         {
             "ok": True,
@@ -3558,6 +3709,7 @@ def api_nas_rename(
     next_rel_path = _relative_nas_path(root, target_path)
     _rename_nas_pin_state(root, rel_path, next_rel_path)
     _rename_nas_mark_state(root, rel_path, next_rel_path)
+    _rename_nas_uploader_state(root, rel_path, next_rel_path)
     return JSONResponse(
         {
             "ok": True,
@@ -3595,6 +3747,7 @@ def api_nas_trash_restore(
     parent_dir = os.path.dirname(target_path)
     os.makedirs(parent_dir, exist_ok=True)
     final_target = _unique_restore_target(target_path)
+    recycle_rel_path = _relative_nas_path(root, recycle_path)
 
     try:
         shutil.move(recycle_path, final_target)
@@ -3604,6 +3757,7 @@ def api_nas_trash_restore(
         raise HTTPException(status_code=500, detail=f"휴지통 복원에 실패했습니다: {exc}")
 
     restored_rel_path = _relative_nas_path(root, final_target)
+    _rename_nas_uploader_state(root, recycle_rel_path, restored_rel_path)
     return JSONResponse({"ok": True, "path": restored_rel_path})
 
 
@@ -3613,7 +3767,9 @@ def api_nas_trash_purge(
     payload: dict[str, Any] = Body(default={}),
 ):
     _require_admin(request)
-    _info, _recycle_dir, recycle_path, meta_path, _meta = _resolve_nas_recycle_item(payload.get("item_id"))
+    info, _recycle_dir, recycle_path, meta_path, _meta = _resolve_nas_recycle_item(payload.get("item_id"))
+    root = os.path.realpath(str(info.get("root") or ""))
+    recycle_rel_path = _relative_nas_path(root, recycle_path)
 
     try:
         if os.path.isdir(recycle_path):
@@ -3622,6 +3778,7 @@ def api_nas_trash_purge(
             os.remove(recycle_path)
         if os.path.exists(meta_path):
             os.remove(meta_path)
+        _remove_nas_uploader_state(root, recycle_rel_path)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"휴지통 항목 삭제에 실패했습니다: {exc}")
 
@@ -3635,13 +3792,16 @@ def api_nas_trash_empty(request: Request):
     recycle_items = _list_nas_recycle_items().get("items") or []
     for item in recycle_items:
         try:
-            _info, _recycle_dir, recycle_path, meta_path, _meta = _resolve_nas_recycle_item(item.get("item_id"))
+            info, _recycle_dir, recycle_path, meta_path, _meta = _resolve_nas_recycle_item(item.get("item_id"))
+            root = os.path.realpath(str(info.get("root") or ""))
+            recycle_rel_path = _relative_nas_path(root, recycle_path)
             if os.path.isdir(recycle_path):
                 shutil.rmtree(recycle_path)
             else:
                 os.remove(recycle_path)
             if os.path.exists(meta_path):
                 os.remove(meta_path)
+            _remove_nas_uploader_state(root, recycle_rel_path)
             removed_count += 1
         except Exception:
             continue

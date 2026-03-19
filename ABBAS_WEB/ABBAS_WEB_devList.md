@@ -320,3 +320,22 @@
 - 간단한 설명
   - NAS Center에서 여러 파일을 동시에 다운로드할 때 ZIP 내부에 원래 디렉토리 경로까지 함께 들어가던 문제를 수정했다.
   - 이제 다중 선택 다운로드는 선택한 파일/폴더 이름만 ZIP 루트 기준으로 담고, 같은 이름이 겹치는 경우에는 ` (2)` 접미사를 붙여 충돌 없이 내려받도록 정리했다.
+
+## 36. NAS Center 업로드 계정 표시 및 업로더 저장소 DB 전환
+- 수정코드
+  - `DB/nas_repo.py`
+  - `main.py`
+  - `router/pages.py`
+  - `templates/nas.html`
+  - `static/js/nas_page.js`
+  - `ABBAS_WEB_devList.md`
+- 간단한 설명
+  - NAS Center 파일 목록에 `업로드 계정` 컬럼을 추가해 업로드한 사용자의 닉네임과 ID가 함께 보이도록 정리했다. 새 업로드/새 폴더 생성뿐 아니라 이름 변경, 내부 이동, 휴지통 이동/복원 이후에도 업로더 정보가 유지되도록 서버 로직을 보강했다.
+  - 업로더 메타는 NAS 숨김 JSON이 아니라 MySQL `nas_item_uploaders` 테이블에 저장하도록 구조를 바꿨고, 기존 NAS에 있던 전체 398개 항목은 이번 채팅 기준 관리자 계정 `sp2passb56(Lion)`으로 DB에 일괄 백필했다.
+
+## 37. 이번 채팅 기준 ABBAS_WEB 소스컨트롤 정리 메모
+- 수정코드
+  - 코드 수정 없음
+- 간단한 설명
+  - 이번 채팅의 실변경 파일은 `ABBAS_WEB` 디렉토리 내부(`DB/nas_repo.py`, `main.py`, `router/pages.py`, `templates/nas.html`, `static/js/nas_page.js`, `ABBAS_WEB_devList.md`)로 한정해 정리했다.
+  - Arduino/MELAUHF 등 다른 디렉토리에는 영향이 가지 않도록 커밋 범위를 분리하고, NAS 업로더 임시 숨김 JSON은 DB 이관 완료 후 제거하는 기준으로 소스컨트롤 상태를 정리했다.

@@ -27,7 +27,7 @@ from router.pages import router as pages_router
 from router.desktop_api import router as desktop_api_router
 from router.data_api import router as data_api_router
 from DB.runtime import get_mysql
-from DB import device_repo, device_ops_repo, firmware_repo, user_repo
+from DB import device_repo, device_ops_repo, firmware_repo, nas_repo, user_repo
 
 app = FastAPI(title="for_rnd 관리자 콘솔")
 
@@ -71,6 +71,7 @@ async def on_startup() -> None:
         device_repo.ensure_runtime_schema()
         device_ops_repo.ensure_schema()
         firmware_repo.ensure_schema()
+        nas_repo.ensure_schema()
         print("[DB] MySQL/MariaDB 연결 OK")
     except Exception as e:
         # 운영 중 CSV로 저장/조회하는 fallback은 허용되지 않습니다.
