@@ -7,6 +7,9 @@
     items: [],
     drive: null,
     uploadFiles: [],
+    uploadInFlight: false,
+    pendingTrashPaths: [],
+    pendingTrashItems: [],
     parentPath: null,
     truncated: false,
     selectedPaths: [],
@@ -79,6 +82,12 @@
     uploadTarget: document.getElementById("nasUploadTarget"),
     uploadQueue: document.getElementById("nasUploadQueue"),
     uploadBtn: document.getElementById("nasUploadBtn"),
+    uploadProgressModal: document.getElementById("nasUploadProgressModal"),
+    uploadProgressTitle: document.getElementById("nasUploadProgressTitle"),
+    uploadProgressMeta: document.getElementById("nasUploadProgressMeta"),
+    uploadProgressPercent: document.getElementById("nasUploadProgressPercent"),
+    uploadProgressBar: document.getElementById("nasUploadProgressBar"),
+    uploadProgressBytes: document.getElementById("nasUploadProgressBytes"),
     newFolderModal: document.getElementById("nasNewFolderModal"),
     nameEditorTitle: document.getElementById("nasNameEditorTitle"),
     nameEditorPathLabel: document.getElementById("nasNameEditorPathLabel"),
@@ -89,6 +98,10 @@
     createFolderConfirmBtn: document.getElementById("nasCreateFolderConfirmBtn"),
     nameEditorConfirmIcon: document.getElementById("nasNameEditorConfirmIcon"),
     nameEditorConfirmText: document.getElementById("nasNameEditorConfirmText"),
+    trashConfirmModal: document.getElementById("nasTrashConfirmModal"),
+    trashConfirmMessage: document.getElementById("nasTrashConfirmMessage"),
+    trashConfirmMeta: document.getElementById("nasTrashConfirmMeta"),
+    trashConfirmConfirmBtn: document.getElementById("nasTrashConfirmConfirmBtn"),
     trashModal: document.getElementById("nasTrashModal"),
     trashTbody: document.getElementById("nasTrashTbody"),
     trashEmptyState: document.getElementById("nasTrashEmptyState"),
@@ -101,8 +114,14 @@
   const newFolderModal = (el.newFolderModal && window.bootstrap)
     ? bootstrap.Modal.getOrCreateInstance(el.newFolderModal)
     : null;
+  const trashConfirmModal = (el.trashConfirmModal && window.bootstrap)
+    ? bootstrap.Modal.getOrCreateInstance(el.trashConfirmModal)
+    : null;
   const trashModal = (el.trashModal && window.bootstrap)
     ? bootstrap.Modal.getOrCreateInstance(el.trashModal)
+    : null;
+  const uploadProgressModal = (el.uploadProgressModal && window.bootstrap)
+    ? bootstrap.Modal.getOrCreateInstance(el.uploadProgressModal, { backdrop: "static", keyboard: false })
     : null;
   const desktopHeightQuery = window.matchMedia
     ? window.matchMedia("(min-width: 1200px)")
@@ -344,6 +363,101 @@
     if (!active && typeof window.AppUI.hideLoading === "function") {
       window.AppUI.hideLoading();
     }
+  }
+
+  function parseJsonText(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readXhrError(xhr) {
+    const payload = parseJsonText(xhr && xhr.responseText);
+    if (payload && typeof payload === "object") {
+      return payload.detail || payload.message || `HTTP ${xhr.status}`;
+    }
+    return `HTTP ${xhr && xhr.status ? xhr.status : 0}`;
+  }
+
+  function setUploadProgressVisible(active) {
+    if (uploadProgressModal) {
+      if (active) uploadProgressModal.show();
+      else uploadProgressModal.hide();
+      return;
+    }
+    if (!el.uploadProgressModal) return;
+    el.uploadProgressModal.classList.toggle("show", Boolean(active));
+    el.uploadProgressModal.style.display = active ? "block" : "none";
+    el.uploadProgressModal.setAttribute("aria-hidden", active ? "false" : "true");
+  }
+
+  function updateUploadProgress(loadedBytes, totalBytes) {
+    const safeTotal = Math.max(Number(totalBytes || 0), 0);
+    const safeLoaded = safeTotal > 0
+      ? Math.min(Math.max(Number(loadedBytes || 0), 0), safeTotal)
+      : Math.max(Number(loadedBytes || 0), 0);
+    const percent = safeTotal > 0
+      ? Math.max(0, Math.min(100, Math.round((safeLoaded / safeTotal) * 100)))
+      : (safeLoaded > 0 ? 100 : 0);
+    if (el.uploadProgressPercent) el.uploadProgressPercent.textContent = `${percent}%`;
+    if (el.uploadProgressBytes) {
+      el.uploadProgressBytes.textContent = `${formatBytes(safeLoaded)} / ${formatBytes(safeTotal)}`;
+    }
+    if (el.uploadProgressBar) {
+      el.uploadProgressBar.style.width = `${percent}%`;
+      el.uploadProgressBar.textContent = `${percent}%`;
+      el.uploadProgressBar.setAttribute("aria-valuenow", String(percent));
+    }
+  }
+
+  function showUploadProgress(files, label) {
+    const batch = Array.from(files || []);
+    const targetPath = state.currentPath || "/";
+    const totalBytes = batch.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    if (el.uploadProgressTitle) {
+      el.uploadProgressTitle.textContent = label || "파일을 업로드하는 중...";
+    }
+    if (el.uploadProgressMeta) {
+      el.uploadProgressMeta.textContent = `파일 ${batch.length}개 · 대상 ${targetPath}`;
+    }
+    updateUploadProgress(0, totalBytes);
+    setUploadProgressVisible(true);
+  }
+
+  function hideUploadProgress() {
+    setUploadProgressVisible(false);
+  }
+
+  function sendNasUploadRequest(formData, options) {
+    const opts = options || {};
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/nas/upload");
+      xhr.responseType = "text";
+      xhr.upload.addEventListener("progress", (event) => {
+        if (typeof opts.onProgress === "function") {
+          opts.onProgress(event);
+        }
+      });
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(parseJsonText(xhr.responseText) || {});
+          return;
+        }
+        reject(new Error(readXhrError(xhr)));
+      });
+      xhr.addEventListener("error", () => {
+        reject(new Error("업로드 요청 전송에 실패했습니다."));
+      });
+      xhr.addEventListener("abort", () => {
+        reject(new Error("업로드가 중단되었습니다."));
+      });
+      xhr.send(formData);
+    });
   }
 
   function fallbackDrive(extra) {
@@ -803,6 +917,10 @@
   async function uploadFileBatch(files, options) {
     const batch = Array.from(files || []);
     const opts = options || {};
+    if (state.uploadInFlight) {
+      setAlert("warning", "이미 업로드가 진행 중입니다. 잠시만 기다려주세요.");
+      return false;
+    }
     if (!batch.length) {
       setAlert("warning", "먼저 업로드할 파일을 선택해주세요.");
       return false;
@@ -811,12 +929,22 @@
     const formData = new FormData();
     formData.append("path", state.currentPath || "/");
     batch.forEach((file) => formData.append("files", file, file.name));
-
-    setLoading(true, "파일을 업로드하는 중...");
+    const totalFileBytes = batch.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    state.uploadInFlight = true;
+    showUploadProgress(batch, "파일을 업로드하는 중...");
     try {
-      const res = await fetch("/api/nas/upload", { method: "POST", body: formData });
-      if (!res.ok) throw new Error(await readError(res));
-      const payload = await res.json();
+      const payload = await sendNasUploadRequest(formData, {
+        onProgress(event) {
+          if (!event) return;
+          if (event.lengthComputable && event.total > 0 && totalFileBytes > 0) {
+            const ratio = Math.max(0, Math.min(1, event.loaded / event.total));
+            updateUploadProgress(Math.round(totalFileBytes * ratio), totalFileBytes);
+            return;
+          }
+          updateUploadProgress(Math.min(Number(event.loaded || 0), totalFileBytes), totalFileBytes);
+        },
+      });
+      updateUploadProgress(totalFileBytes, totalFileBytes);
       const successText = `업로드 완료: ${payload.saved_count || 0}개 저장`;
       const skippedText = payload.skipped_count ? `, ${payload.skipped_count}개 건너뜀` : "";
       setAlert("success", successText + skippedText);
@@ -830,7 +958,8 @@
       setAlert("danger", err instanceof Error ? err.message : "업로드에 실패했습니다.");
       return false;
     } finally {
-      setLoading(false);
+      state.uploadInFlight = false;
+      hideUploadProgress();
     }
   }
 
@@ -892,6 +1021,25 @@
     loadTrash();
   }
 
+  function resolveTrashTargets(target) {
+    const paths = Array.isArray(target)
+      ? Array.from(new Set(target.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [String(target || "").trim()].filter(Boolean);
+    const items = paths.map((path) => findItem(path)).filter(Boolean);
+    return { paths, items };
+  }
+
+  function resetTrashConfirmState() {
+    state.pendingTrashPaths = [];
+    state.pendingTrashItems = [];
+    if (el.trashConfirmMessage) {
+      el.trashConfirmMessage.textContent = "삭제할까요?";
+    }
+    if (el.trashConfirmMeta) {
+      el.trashConfirmMeta.textContent = "예를 누르면 휴지통으로 이동합니다.";
+    }
+  }
+
   function renameItem(path, type) {
     const item = findItem(path);
     if (!item) {
@@ -908,24 +1056,64 @@
     if (newFolderModal) newFolderModal.show();
   }
 
-  async function moveToTrash(target) {
-    const paths = Array.isArray(target)
-      ? Array.from(new Set(target.map((value) => String(value || "").trim()).filter(Boolean)))
-      : [String(target || "").trim()].filter(Boolean);
-    const items = paths.map((path) => findItem(path)).filter(Boolean);
-
+  function moveToTrash(target) {
+    if (el.trashConfirmModal && el.trashConfirmModal.classList.contains("show")) return;
+    const { paths, items } = resolveTrashTargets(target);
     if (!paths.length || !items.length) {
       setAlert("warning", "휴지통으로 이동할 대상을 찾지 못했습니다.");
       return;
     }
 
     const confirmText = items.length === 1
-      ? `${items[0].type === "directory" ? "폴더" : "파일"} "${items[0].name}" 을(를) 휴지통으로 이동할까요?`
-      : `선택한 항목 ${items.length}개를 휴지통으로 이동할까요?`;
-    if (!window.confirm(confirmText)) {
+      ? `${items[0].type === "directory" ? "폴더" : "파일"} "${items[0].name}" 을(를) 삭제할까요?`
+      : `선택한 항목 ${items.length}개를 삭제할까요?`;
+    const confirmMeta = items.length === 1
+      ? `예를 누르면 ${items[0].type === "directory" ? "폴더" : "파일"} "${items[0].name}" 이(가) 휴지통으로 이동합니다.`
+      : `예를 누르면 선택한 ${items.length}개 항목이 휴지통으로 이동합니다.`;
+
+    state.pendingTrashPaths = paths.slice();
+    state.pendingTrashItems = items.map((item) => ({
+      path: item.path,
+      name: item.name,
+      type: item.type,
+    }));
+    if (el.trashConfirmMessage) {
+      el.trashConfirmMessage.textContent = confirmText;
+    }
+    if (el.trashConfirmMeta) {
+      el.trashConfirmMeta.textContent = confirmMeta;
+    }
+    hideContextMenu();
+
+    if (trashConfirmModal) {
+      trashConfirmModal.show();
       return;
     }
 
+    if (!window.confirm(confirmText)) {
+      resetTrashConfirmState();
+      return;
+    }
+    void submitTrashConfirm();
+  }
+
+  async function submitTrashConfirm() {
+    const paths = state.pendingTrashPaths.slice();
+    const items = state.pendingTrashItems.slice();
+    if (!paths.length || !items.length) {
+      if (trashConfirmModal) trashConfirmModal.hide();
+      resetTrashConfirmState();
+      return;
+    }
+
+    if (trashConfirmModal) {
+      trashConfirmModal.hide();
+    }
+    resetTrashConfirmState();
+    await moveToTrashConfirmed(paths, items);
+  }
+
+  async function moveToTrashConfirmed(paths, items) {
     setLoading(true, "휴지통으로 이동하는 중...");
     try {
       const res = await fetch("/api/nas/delete", {
@@ -1446,6 +1634,12 @@
     el.createFolderConfirmBtn.addEventListener("click", submitNameEditor);
   }
 
+  if (el.trashConfirmConfirmBtn) {
+    el.trashConfirmConfirmBtn.addEventListener("click", () => {
+      submitTrashConfirm();
+    });
+  }
+
   if (el.trashRefreshBtn) {
     el.trashRefreshBtn.addEventListener("click", () => loadTrash());
   }
@@ -1463,6 +1657,17 @@
     });
     el.newFolderModal.addEventListener("hidden.bs.modal", () => {
       resetNewFolderForm();
+    });
+  }
+
+  if (el.trashConfirmModal) {
+    el.trashConfirmModal.addEventListener("shown.bs.modal", () => {
+      if (el.trashConfirmConfirmBtn) {
+        el.trashConfirmConfirmBtn.focus();
+      }
+    });
+    el.trashConfirmModal.addEventListener("hidden.bs.modal", () => {
+      resetTrashConfirmState();
     });
   }
 
@@ -1637,9 +1842,20 @@
   });
 
   document.addEventListener("keydown", (event) => {
+    if (event.target instanceof Element && event.target.closest(".modal.show")) {
+      return;
+    }
+
     if (isSelectAllShortcut(event) && shouldHandleExplorerShortcut(event)) {
       event.preventDefault();
       selectAllVisibleItems();
+      return;
+    }
+
+    if (event.key === "Delete" && shouldHandleExplorerShortcut(event)) {
+      if (!state.selectedPaths.length || state.dragSelectActive) return;
+      event.preventDefault();
+      moveToTrash(state.selectedPaths);
       return;
     }
 

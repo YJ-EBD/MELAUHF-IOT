@@ -424,6 +424,64 @@
     color: #64748b;
   }
 
+  .nas-progress-modal {
+    border-radius: 1.2rem;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98));
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+  }
+
+  .nas-progress-modal .modal-header,
+  .nas-progress-modal .modal-body {
+    padding-left: 1.35rem;
+    padding-right: 1.35rem;
+  }
+
+  .nas-progress-modal__meta {
+    margin-top: .2rem;
+    color: #64748b;
+    font-size: .84rem;
+  }
+
+  .nas-progress-modal__status {
+    color: #475569;
+    font-size: .88rem;
+    font-weight: 600;
+  }
+
+  .nas-progress-modal__percent,
+  .nas-progress-modal__bytes {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .nas-progress-modal__percent {
+    color: #0f172a;
+    font-size: 1.25rem;
+    font-weight: 800;
+    letter-spacing: -.02em;
+  }
+
+  .nas-progress-modal__track {
+    height: 1rem;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.18);
+    overflow: hidden;
+  }
+
+  .nas-progress-modal__track .progress-bar {
+    min-width: 2.8rem;
+    font-size: .76rem;
+    font-weight: 700;
+    background: linear-gradient(90deg, #1677ff 0%, #1f7a61 100%);
+  }
+
+  .nas-progress-modal__bytes {
+    margin-top: .8rem;
+    color: #475569;
+    font-size: .9rem;
+    font-weight: 600;
+  }
+
   .nas-explorer-main {
     display: grid;
     grid-template-columns: 220px minmax(0, 1fr);
@@ -555,6 +613,12 @@
     overflow: auto;
     overscroll-behavior: contain;
     transition: background .16s ease, box-shadow .16s ease;
+  }
+
+  #nasPageRoot #nasExplorerDropTarget:focus,
+  #nasPageRoot #nasExplorerDropTarget:focus-visible {
+    outline: none;
+    box-shadow: none;
   }
 
   .nas-selection-band {
@@ -890,6 +954,27 @@
   html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu__item span,
   html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu__item i {
     color: #b1c0da;
+  }
+
+  html[data-bs-theme="dark"] .nas-progress-modal {
+    border-color: rgba(71, 85, 105, 0.7);
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(17, 24, 39, 0.98));
+    box-shadow: 0 24px 60px rgba(2, 6, 23, 0.45);
+    color: #e2e8f0;
+  }
+
+  html[data-bs-theme="dark"] .nas-progress-modal__meta,
+  html[data-bs-theme="dark"] .nas-progress-modal__status,
+  html[data-bs-theme="dark"] .nas-progress-modal__bytes {
+    color: rgba(226, 232, 240, 0.78);
+  }
+
+  html[data-bs-theme="dark"] .nas-progress-modal__percent {
+    color: #f8fafc;
+  }
+
+  html[data-bs-theme="dark"] .nas-progress-modal__track {
+    background: rgba(51, 65, 85, 0.72);
   }
 
   html[data-bs-theme="dark"] #nasPageRoot .nas-context-menu {
@@ -1244,6 +1329,27 @@
   </div>
 </div>
 
+<div class="modal fade" id="nasTrashConfirmModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5"><i class="bi bi-trash me-2"></i>삭제 확인</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+      </div>
+      <div class="modal-body">
+        <div class="fw-semibold mb-2" id="nasTrashConfirmMessage">삭제할까요?</div>
+        <div class="small text-secondary" id="nasTrashConfirmMeta">예를 누르면 휴지통으로 이동합니다.</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">아니오</button>
+        <button class="btn btn-danger" type="button" id="nasTrashConfirmConfirmBtn">
+          <i class="bi bi-trash me-1"></i>예
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="nasTrashModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content">
@@ -1287,8 +1393,39 @@
     </div>
   </div>
 </div>
+
+<div class="modal fade" id="nasUploadProgressModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content nas-progress-modal">
+      <div class="modal-header border-0 pb-0">
+        <div>
+          <h2 class="modal-title fs-5" id="nasUploadProgressTitle">파일을 업로드하는 중...</h2>
+          <div class="nas-progress-modal__meta" id="nasUploadProgressMeta">파일 0개 · 대상 /</div>
+        </div>
+      </div>
+      <div class="modal-body pt-3">
+        <div class="d-flex align-items-center justify-content-between gap-3 mb-2">
+          <div class="nas-progress-modal__status">전송 진행률</div>
+          <div class="nas-progress-modal__percent" id="nasUploadProgressPercent">0%</div>
+        </div>
+        <div class="progress nas-progress-modal__track" aria-label="업로드 진행률">
+          <div
+            class="progress-bar progress-bar-striped progress-bar-animated"
+            id="nasUploadProgressBar"
+            role="progressbar"
+            style="width: 0%;"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >0%</div>
+        </div>
+        <div class="nas-progress-modal__bytes" id="nasUploadProgressBytes">0 B / 0 B</div>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-rename-v5"></script>
+<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-delete-v7"></script>
 {% endblock %}
