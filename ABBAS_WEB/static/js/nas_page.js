@@ -23,10 +23,13 @@
     dragSelectCurrentClientY: 0,
     dragAutoScroll: 0,
     dragAutoScrollRaf: 0,
+    dragSelectBasePaths: [],
+    dragSelectToggleMode: false,
     suppressRowClick: false,
     nameEditorMode: "create",
     nameEditorTargetPath: "",
     nameEditorTargetType: "",
+    explorerKeyboardActive: false,
   };
 
   const el = {
@@ -157,6 +160,106 @@
     return parts.length ? parts[parts.length - 1] : "현재 폴더";
   }
 
+  function normalizePathList(paths) {
+    const next = [];
+    const seen = new Set();
+    Array.from(paths || []).forEach((value) => {
+      const path = String(value || "").trim();
+      if (!path || seen.has(path)) return;
+      seen.add(path);
+      next.push(path);
+    });
+    return next;
+  }
+
+  function downloadFilenameFromDisposition(value) {
+    const disposition = String(value || "");
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match && utf8Match[1]) {
+      try {
+        return decodeURIComponent(utf8Match[1]);
+      } catch (_) {
+        return utf8Match[1];
+      }
+    }
+    const basicMatch = disposition.match(/filename="?([^";]+)"?/i);
+    return basicMatch && basicMatch[1] ? basicMatch[1] : "";
+  }
+
+  function triggerBlobDownload(blob, filename) {
+    const objectUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename || "nas_download.zip";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 60000);
+  }
+
+  function isToggleModifier(event) {
+    return Boolean(event && (event.ctrlKey || event.metaKey));
+  }
+
+  function isSelectAllShortcut(event) {
+    return Boolean(event && !event.altKey && isToggleModifier(event) && String(event.key || "").toLowerCase() === "a");
+  }
+
+  function isTextEditingTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return Boolean(target.closest("input, textarea, select, [contenteditable]"));
+  }
+
+  function focusExplorerSelectionScope() {
+    if (!el.explorerDropTarget) return;
+    state.explorerKeyboardActive = true;
+    if (!el.explorerDropTarget.hasAttribute("tabindex")) {
+      el.explorerDropTarget.setAttribute("tabindex", "0");
+    }
+    try {
+      el.explorerDropTarget.focus({ preventScroll: true });
+    } catch (_) {
+      el.explorerDropTarget.focus();
+    }
+  }
+
+  function clearExplorerSelectionScope() {
+    state.explorerKeyboardActive = false;
+  }
+
+  function buildToggledPathList(basePaths, togglePaths) {
+    const baseSet = new Set(Array.from(basePaths || []).map((value) => String(value || "").trim()).filter(Boolean));
+    const toggleSet = new Set(Array.from(togglePaths || []).map((value) => String(value || "").trim()).filter(Boolean));
+    return filteredItems()
+      .map((item) => item.path)
+      .filter((path) => baseSet.has(path) !== toggleSet.has(path));
+  }
+
+  function toggleSelectedItem(path, type) {
+    const itemPath = String(path || "").trim();
+    if (!itemPath) return;
+    const nextPaths = buildToggledPathList(state.selectedPaths, [itemPath]);
+    const keepPrimary = nextPaths.includes(itemPath);
+    setSelectedPaths(nextPaths, {
+      primaryPath: keepPrimary ? itemPath : "",
+      primaryType: keepPrimary ? (type || findItem(itemPath)?.type || "") : "",
+    });
+  }
+
+  function selectAllVisibleItems() {
+    const nextPaths = filteredItems().map((item) => item.path);
+    setSelectedPaths(nextPaths, {
+      primaryPath: nextPaths[nextPaths.length - 1] || "",
+      primaryType: nextPaths.length ? (findItem(nextPaths[nextPaths.length - 1])?.type || "") : "",
+    });
+  }
+
+  function shouldHandleExplorerShortcut(event) {
+    if (!state.explorerKeyboardActive || !el.explorerDropTarget) return false;
+    if (isTextEditingTarget(event.target) || isTextEditingTarget(document.activeElement)) return false;
+    return true;
+  }
+
   function setAlert(kind, message) {
     if (!el.alert) return;
     if (!message) {
@@ -180,6 +283,55 @@
       return payload.detail || payload.message || `HTTP ${res.status}`;
     } catch (_) {
       return `HTTP ${res.status}`;
+    }
+  }
+
+  async function downloadItems(target) {
+    const paths = normalizePathList(Array.isArray(target) ? target : [target]);
+    if (!paths.length) {
+      setAlert("warning", "다운로드할 항목을 선택해주세요.");
+      return;
+    }
+
+    if (paths.length === 1) {
+      const singleItem = findItem(paths[0]);
+      if (singleItem && singleItem.type === "file") {
+        window.location.href = `/api/nas/download?path=${encodeURIComponent(paths[0])}`;
+        return;
+      }
+    }
+
+    const selectedItems = paths.map((path) => findItem(path)).filter(Boolean);
+    const loadingLabel = paths.length === 1
+      ? "폴더 다운로드를 준비하는 중..."
+      : "선택한 항목을 압축하는 중...";
+
+    setLoading(true, loadingLabel);
+    try {
+      const res = await fetch("/api/nas/download-batch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ paths }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const blob = await res.blob();
+      const filename = downloadFilenameFromDisposition(res.headers.get("content-disposition"))
+        || (paths.length === 1
+          ? `${displayNameForPath(paths[0]) || "nas_item"}.zip`
+          : "nas_selection.zip");
+      triggerBlobDownload(blob, filename);
+
+      if (paths.length > 1) {
+        setAlert("success", `선택한 ${paths.length}개 항목 다운로드를 시작했습니다.`);
+      } else if (selectedItems[0] && selectedItems[0].type === "directory") {
+        setAlert("success", `${selectedItems[0].name} 다운로드를 시작했습니다.`);
+      }
+    } catch (err) {
+      setAlert("danger", err instanceof Error ? err.message : "다운로드에 실패했습니다.");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -345,7 +497,7 @@
     ensureContextMenuLayer();
     const opts = options || {};
     const selectionPaths = Array.isArray(opts.selectionPaths)
-      ? Array.from(new Set(opts.selectionPaths.map((value) => String(value || "").trim()).filter(Boolean)))
+      ? normalizePathList(opts.selectionPaths)
       : [];
 
     state.contextPaths = selectionPaths.length
@@ -356,11 +508,11 @@
       ? (opts.type || findItem(state.contextPath)?.type || "")
       : "";
 
+    const hasSelection = state.contextPaths.length > 0;
     const isDir = state.contextPaths.length === 1 && state.contextType === "directory";
-    const isFile = state.contextPaths.length === 1 && state.contextType === "file";
 
     setContextItemVisible("open", isDir);
-    setContextItemVisible("download", isFile);
+    setContextItemVisible("download", hasSelection);
     setContextItemVisible("rename", Boolean(state.contextPath));
     setContextItemVisible("move-to-trash", Boolean(state.contextPaths.length));
     setContextItemVisible("new-folder", true);
@@ -1018,8 +1170,15 @@
     const top = Math.min(state.dragSelectStartLocalY, currentLocalY);
     const bottom = Math.max(state.dragSelectStartLocalY, currentLocalY);
     showSelectionBand(top, bottom);
-    const selectedPaths = selectionPathsFromRange(state.dragSelectStartLocalY, currentLocalY);
-    setSelectedPaths(selectedPaths, { primaryPath: selectedPaths[selectedPaths.length - 1] || "" });
+    const rangePaths = selectionPathsFromRange(state.dragSelectStartLocalY, currentLocalY);
+    const nextPaths = state.dragSelectToggleMode
+      ? buildToggledPathList(state.dragSelectBasePaths, rangePaths)
+      : rangePaths;
+    const primaryPath = rangePaths[rangePaths.length - 1] || "";
+    setSelectedPaths(nextPaths, {
+      primaryPath: nextPaths.includes(primaryPath) ? primaryPath : "",
+      primaryType: nextPaths.includes(primaryPath) ? (findItem(primaryPath)?.type || "") : "",
+    });
   }
 
   function stopDragAutoScroll() {
@@ -1102,6 +1261,8 @@
 
     state.dragSelectActive = false;
     state.dragSelectStarted = false;
+    state.dragSelectBasePaths = [];
+    state.dragSelectToggleMode = false;
     hideSelectionBand();
     stopDragAutoScroll();
     root.classList.remove("is-range-selecting");
@@ -1140,11 +1301,14 @@
     if (event.target.closest(".btn, button, input, textarea, label, a")) return;
     if (!event.target.closest("#nasExplorerDropTarget")) return;
 
+    focusExplorerSelectionScope();
     hideContextMenu();
     state.dragSelectActive = true;
     state.dragSelectStarted = false;
     state.dragSelectStartLocalY = clientYToExplorerLocalY(event.clientY);
     state.dragSelectCurrentClientY = event.clientY;
+    state.dragSelectBasePaths = state.selectedPaths.slice();
+    state.dragSelectToggleMode = isToggleModifier(event);
     document.addEventListener("mousemove", onDragSelectionMove, true);
     document.addEventListener("mouseup", finishDragSelection, true);
     event.preventDefault();
@@ -1239,6 +1403,11 @@
   }
 
   if (el.explorerDropTarget) {
+    el.explorerDropTarget.setAttribute("tabindex", "0");
+    el.explorerDropTarget.addEventListener("mousedown", (event) => {
+      if (event.target.closest(".btn, button, input, textarea, label, a")) return;
+      focusExplorerSelectionScope();
+    });
     el.explorerDropTarget.addEventListener("mousedown", startDragSelection);
     el.explorerDropTarget.addEventListener("dragenter", (event) => {
       event.preventDefault();
@@ -1336,16 +1505,28 @@
       }
       const row = event.target.closest("tr[data-row-path]");
       if (row) {
-        setSelectedItem(row.getAttribute("data-row-path") || "", row.getAttribute("data-row-type") || "");
+        const rowPath = row.getAttribute("data-row-path") || "";
+        const rowType = row.getAttribute("data-row-type") || "";
+        focusExplorerSelectionScope();
+        if (isToggleModifier(event)) {
+          toggleSelectedItem(rowPath, rowType);
+          return;
+        }
+        setSelectedItem(rowPath, rowType);
       }
+    });
 
+    el.tableBody.addEventListener("dblclick", (event) => {
+      if (state.suppressRowClick) return;
+      if (isToggleModifier(event)) return;
+      const row = event.target.closest("tr[data-row-path]");
       if (!row) return;
       const rowPath = row.getAttribute("data-row-path") || "/";
       const rowType = row.getAttribute("data-row-type") || "";
+      focusExplorerSelectionScope();
+      setSelectedItem(rowPath, rowType);
       if (rowType === "directory") {
         loadFolder(rowPath);
-      } else if (rowType === "file") {
-        window.location.href = `/api/nas/download?path=${encodeURIComponent(rowPath)}`;
       }
     });
 
@@ -1355,6 +1536,7 @@
       event.preventDefault();
       const path = row.getAttribute("data-row-path") || "";
       const type = row.getAttribute("data-row-type") || "";
+      focusExplorerSelectionScope();
       const selectionPaths = isPathSelected(path) ? state.selectedPaths.slice() : [path];
       if (!isPathSelected(path)) {
         setSelectedItem(path, type);
@@ -1419,8 +1601,8 @@
 
       if (action === "open" && targetPath && targetType === "directory") {
         loadFolder(targetPath);
-      } else if (action === "download" && targetPath && targetType === "file") {
-        window.location.href = `/api/nas/download?path=${encodeURIComponent(targetPath)}`;
+      } else if (action === "download" && targetPaths.length) {
+        downloadItems(targetPaths);
       } else if (action === "rename" && targetPath && targetType) {
         renameItem(targetPath, targetType);
       } else if (action === "new-folder") {
@@ -1434,6 +1616,12 @@
       }
     });
   }
+
+  document.addEventListener("mousedown", (event) => {
+    if (event.target.closest("#nasExplorerDropTarget")) return;
+    if (event.target.closest("#nasContextMenu")) return;
+    clearExplorerSelectionScope();
+  });
 
   document.addEventListener("click", (event) => {
     const insideContextMenu = Boolean(event.target.closest("#nasContextMenu"));
@@ -1449,6 +1637,12 @@
   });
 
   document.addEventListener("keydown", (event) => {
+    if (isSelectAllShortcut(event) && shouldHandleExplorerShortcut(event)) {
+      event.preventDefault();
+      selectAllVisibleItems();
+      return;
+    }
+
     if (event.key === "Escape") {
       hideContextMenu();
     }
