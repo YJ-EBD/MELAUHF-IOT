@@ -15,31 +15,18 @@
     --nas-danger-dark: #ffb4a0;
     --nas-danger-dark-soft: rgba(255, 129, 82, 0.16);
     --nas-danger-dark-border: rgba(255, 129, 82, 0.28);
-  }
-
-  .nas-hero {
-    position: relative;
-    overflow: hidden;
-    border: 0;
-    background:
-      radial-gradient(circle at top right, rgba(255, 255, 255, 0.18), transparent 32%),
-      linear-gradient(135deg, #0f3d31 0%, #155a47 45%, #1f7a61 100%);
-    color: #f8fffd;
-  }
-
-  .nas-hero::after {
-    content: "";
-    position: absolute;
-    inset: auto -10% -40% auto;
-    width: 240px;
-    height: 240px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.08);
-    filter: blur(4px);
-  }
-
-  .nas-hero .badge {
-    backdrop-filter: blur(10px);
+    --nas-mini-model-bg:
+      radial-gradient(circle at top right, rgba(31, 94, 255, 0.06), transparent 58%),
+      linear-gradient(180deg, #fcfdff 0%, #f2f6ff 100%);
+    --nas-mini-model-border: #d7e2f4;
+    --nas-mini-model-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 8px 18px rgba(31, 57, 112, 0.05);
+    --nas-mini-count-bg:
+      radial-gradient(circle at top right, rgba(31, 94, 255, 0.12), transparent 58%),
+      linear-gradient(180deg, #f7faff 0%, #eaf1ff 100%);
+    --nas-mini-count-border: #c9d8f4;
+    --nas-mini-count-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.94), 0 10px 22px rgba(31, 94, 255, 0.07);
+    --nas-mini-label: var(--cp-text-soft, #60708d);
+    --nas-mini-value: var(--cp-text, #182544);
   }
 
   .nas-mini-stat {
@@ -50,9 +37,42 @@
     min-height: 100%;
   }
 
+  .nas-drive-feature-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: .75rem;
+    margin-bottom: .75rem;
+  }
+
+  body.page-nas #nasPageRoot .nas-mini-stat--model {
+    background: var(--nas-mini-model-bg) !important;
+    border: 1px solid var(--nas-mini-model-border) !important;
+    box-shadow: var(--nas-mini-model-shadow);
+  }
+
+  body.page-nas #nasPageRoot .nas-mini-stat--count {
+    background: var(--nas-mini-count-bg) !important;
+    border: 1px solid var(--nas-mini-count-border) !important;
+    box-shadow: var(--nas-mini-count-shadow);
+  }
+
+  body.page-nas #nasPageRoot .nas-mini-stat--model .small,
+  body.page-nas #nasPageRoot .nas-mini-stat--count .small {
+    color: var(--nas-mini-label) !important;
+  }
+
+  body.page-nas #nasPageRoot .nas-mini-stat--model .nas-meta-value,
+  body.page-nas #nasPageRoot .nas-mini-stat--count .nas-meta-value {
+    color: var(--nas-mini-value) !important;
+  }
+
   .nas-browser-shell,
   .nas-side-card {
     border: 1px solid rgba(148, 163, 184, 0.18);
+  }
+
+  .nas-side-card {
+    height: auto;
   }
 
   .nas-browser-shell {
@@ -60,11 +80,41 @@
     --explorer-accent: #1677ff;
     --explorer-accent-soft: rgba(22, 119, 255, 0.12);
     --explorer-header: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.96));
-    height: 100%;
+    height: auto;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98));
+  }
+
+  @media (min-width: 1200px) {
+    body.page-nas #nasPageRoot > .row {
+      align-items: stretch;
+    }
+
+    body.page-nas #nasPageRoot .nas-browser-col {
+      min-height: 0;
+    }
+
+    body.page-nas #nasPageRoot .nas-browser-shell {
+      height: 100%;
+      min-height: 0;
+    }
+
+    body.page-nas #nasPageRoot #nasExplorerDropTarget {
+      max-height: 100%;
+      overflow: auto;
+    }
+  }
+
+  @media (max-width: 1199.98px) {
+    body.page-nas #nasPageRoot .nas-browser-shell {
+      height: auto;
+    }
+
+    .nas-explorer-list .table-responsive {
+      overflow: visible;
+    }
   }
 
   .nas-browser-shell .card-body {
@@ -432,18 +482,6 @@
     background: transparent;
   }
 
-  .nas-pane-drive {
-    display: flex;
-    align-items: center;
-    gap: .65rem;
-    padding: .55rem .7rem;
-    border-radius: .9rem;
-    background: rgba(15, 23, 42, 0.04);
-    color: #0f172a;
-    font-weight: 600;
-    margin-bottom: .55rem;
-  }
-
   .nas-pane-location {
     display: grid;
     gap: .35rem;
@@ -514,7 +552,25 @@
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
     transition: background .16s ease, box-shadow .16s ease;
+  }
+
+  .nas-selection-band {
+    position: absolute;
+    left: 0;
+    border-radius: .8rem;
+    border: 1px solid rgba(22, 119, 255, 0.34);
+    background: rgba(22, 119, 255, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  #nasPageRoot.is-range-selecting,
+  #nasPageRoot.is-range-selecting * {
+    user-select: none;
   }
 
   .nas-explorer-list .table-responsive.is-dragover {
@@ -566,13 +622,11 @@
     transition: background .14s ease;
   }
 
-  .nas-file-row:hover td {
-    background: rgba(15, 23, 42, 0.035);
-  }
-
-  .nas-file-row.is-selected td {
-    background: rgba(22, 119, 255, 0.12);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 -1px 0 rgba(22, 119, 255, 0.04);
+  .nas-file-row:hover td,
+  .nas-file-row.is-selected td,
+  .nas-file-row.is-selected:hover td {
+    background: rgba(15, 23, 42, 0.055);
+    box-shadow: inset 0 0 0 9999px rgba(15, 23, 42, 0.055);
   }
 
   .nas-file-primary {
@@ -747,7 +801,6 @@
   html[data-bs-theme="dark"] #nasPageRoot .nas-searchbar,
   html[data-bs-theme="dark"] #nasPageRoot .nas-command-meta,
   html[data-bs-theme="dark"] #nasPageRoot .nas-list-caption__chip,
-  html[data-bs-theme="dark"] #nasPageRoot .nas-pane-drive,
   html[data-bs-theme="dark"] #nasPageRoot .nas-meta-item,
   html[data-bs-theme="dark"] #nasPageRoot .nas-upload-chip,
   html[data-bs-theme="dark"] #nasPageRoot .nas-status-chip {
@@ -755,6 +808,21 @@
     border-color: rgba(129, 148, 185, 0.22);
     color: #dce7ff;
     box-shadow: none;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot {
+    --nas-mini-model-bg:
+      radial-gradient(circle at top right, rgba(111, 162, 255, 0.12), transparent 56%),
+      linear-gradient(180deg, #1a2639 0%, #172133 100%);
+    --nas-mini-model-border: rgba(129, 148, 185, 0.24);
+    --nas-mini-model-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 14px 28px rgba(0, 0, 0, 0.18);
+    --nas-mini-count-bg:
+      radial-gradient(circle at top right, rgba(111, 162, 255, 0.18), transparent 54%),
+      linear-gradient(180deg, #1c2d48 0%, #182539 100%);
+    --nas-mini-count-border: rgba(111, 162, 255, 0.24);
+    --nas-mini-count-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 16px 30px rgba(0, 0, 0, 0.22);
+    --nas-mini-label: var(--cp-text-soft, #b1c0da);
+    --nas-mini-value: var(--cp-text, #eef4ff);
   }
 
   html[data-bs-theme="dark"] #nasPageRoot .nas-browser-shell,
@@ -868,9 +936,10 @@
     background: rgba(79, 124, 255, 0.08);
   }
 
-  html[data-bs-theme="dark"] #nasPageRoot .nas-file-row.is-selected td {
-    background: rgba(79, 124, 255, 0.16);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), inset 0 -1px 0 rgba(79, 124, 255, 0.06);
+  html[data-bs-theme="dark"] #nasPageRoot .nas-file-row.is-selected td,
+  html[data-bs-theme="dark"] #nasPageRoot .nas-file-row.is-selected:hover td {
+    background: rgba(79, 124, 255, 0.08);
+    box-shadow: none;
   }
 
   html[data-bs-theme="dark"] #nasPageRoot .nas-explorer-list thead th {
@@ -921,106 +990,72 @@
 {% endblock %}
 
 {% block content %}
+{% set nas_connected = nas_drive.connected if nas_drive else False %}
 <div id="nasPageRoot" data-model-hint="{{ nas_model_hint }}">
-  <div class="card nas-hero shadow-sm mb-3">
-    <div class="card-body p-4 p-lg-5 position-relative">
-      <div class="row g-4 align-items-center">
-        <div class="col-12 col-xl-7">
-          <span class="badge rounded-pill border border-light-subtle text-bg-light text-dark mb-3">Admin Only</span>
-          <h2 class="display-6 fw-semibold mb-2">Foriver Backup+ Desk NAS Center</h2>
-          <p class="mb-4 text-white-50">
-            외장하드 내부 파일을 한 화면에서 열람하고, 현재 폴더 기준으로 바로 업로드 및 다운로드할 수 있도록 구성한 관리자 전용 작업 공간입니다.
-          </p>
-          <div class="d-flex flex-wrap gap-2">
-            <button class="btn btn-light text-dark fw-semibold" id="nasRefreshBtn" type="button">
-              <i class="bi bi-arrow-repeat me-1"></i>새로고침
-            </button>
-            <button class="btn btn-outline-light" id="nasQuickUploadBtn" type="button">
-              <i class="bi bi-cloud-arrow-up me-1"></i>파일 올리기
-            </button>
-          </div>
-        </div>
-        <div class="col-12 col-xl-5">
-          <div class="row g-3">
-            <div class="col-12 col-sm-4">
-              <div class="nas-mini-stat">
-                <div class="small text-white-50 mb-1">모델</div>
-                <div class="fw-semibold" id="nasHeroLabel">{{ nas_drive.label if nas_drive else nas_model_hint }}</div>
-              </div>
-            </div>
-            <div class="col-12 col-sm-4">
-              <div class="nas-mini-stat">
-                <div class="small text-white-50 mb-1">총 용량</div>
-                <div class="fw-semibold" id="nasHeroCapacity">{{ nas_drive.total_label if nas_drive else "-" }}</div>
-              </div>
-            </div>
-            <div class="col-12 col-sm-4">
-              <div class="nas-mini-stat">
-                <div class="small text-white-50 mb-1">현재 항목</div>
-                <div class="fw-semibold" id="nasHeroItemCount">-</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <div class="alert d-none" id="nasAlert" role="alert"></div>
 
   <div class="row g-3">
     <div class="col-12 col-xl-3 col-xxl-2">
-      <div class="card shadow-sm nas-side-card">
-        <div class="card-header bg-white fw-semibold d-flex align-items-center justify-content-between">
-          <span><i class="bi bi-hdd-stack me-2"></i>드라이브 상태</span>
-          <span class="badge rounded-pill text-bg-light border" id="nasDriveStatus">확인 중</span>
-        </div>
-        <div class="card-body">
-          <div class="nas-drive-meta mb-3">
-            <div class="nas-meta-item">
-              <div class="nas-meta-label">마운트 경로</div>
-              <div class="nas-meta-value" id="nasMountPath">{{ nas_drive.mount_path if nas_drive else "-" }}</div>
-            </div>
-            <div class="nas-meta-item">
-              <div class="nas-meta-label">디바이스</div>
-              <div class="nas-meta-value" id="nasDiskDevice">{{ nas_drive.mount_device if nas_drive else "-" }}</div>
-            </div>
-            <div class="nas-meta-item">
-              <div class="nas-meta-label">연결 방식</div>
-              <div class="nas-meta-value" id="nasTransport">{{ nas_drive.transport|upper if nas_drive and nas_drive.transport else "-" }}</div>
-            </div>
-            <div class="nas-meta-item">
-              <div class="nas-meta-label">시리얼</div>
-              <div class="nas-meta-value" id="nasSerial">{{ nas_drive.serial if nas_drive else "-" }}</div>
-            </div>
+        <div class="card shadow-sm nas-side-card">
+          <div class="card-header bg-white fw-semibold d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-hdd-stack me-2"></i>드라이브 상태</span>
+            <span class="badge rounded-pill {% if nas_connected %}text-bg-success-subtle border border-success-subtle text-success-emphasis{% else %}text-bg-danger-subtle border border-danger-subtle text-danger-emphasis{% endif %}" id="nasDriveStatus">{{ "연결됨" if nas_connected else "연결안됨" }}</span>
           </div>
+          <div class="card-body">
+            <div class="nas-drive-feature-grid">
+              <div class="nas-mini-stat nas-mini-stat--model">
+                <div class="small mb-1">모델</div>
+                <div class="nas-meta-value" id="nasHeroLabel">{{ nas_drive.label if nas_drive and nas_drive.label else nas_model_hint }}</div>
+              </div>
+              <div class="nas-mini-stat nas-mini-stat--count">
+                <div class="small mb-1">현재 항목</div>
+                <div class="nas-meta-value" id="nasHeroItemCount">-</div>
+              </div>
+            </div>
+            <div class="nas-drive-meta mb-3">
+              <div class="nas-meta-item">
+                <div class="nas-meta-label">마운트 경로</div>
+                <div class="nas-meta-value" id="nasMountPath">{{ nas_drive.mount_path if nas_drive and nas_drive.mounted and nas_drive.mount_path else "-" }}</div>
+              </div>
+              <div class="nas-meta-item">
+                <div class="nas-meta-label">디바이스</div>
+                <div class="nas-meta-value" id="nasDiskDevice">{{ nas_drive.mount_device if nas_drive and nas_drive.mount_device else (nas_drive.disk_device if nas_drive and nas_drive.disk_device else "-") }}</div>
+              </div>
+              <div class="nas-meta-item">
+                <div class="nas-meta-label">연결 방식</div>
+                <div class="nas-meta-value" id="nasTransport">{{ nas_drive.transport|upper if nas_drive and nas_drive.transport else "-" }}</div>
+              </div>
+              <div class="nas-meta-item">
+                <div class="nas-meta-label">시리얼</div>
+                <div class="nas-meta-value" id="nasSerial">{{ nas_drive.serial if nas_drive and nas_drive.serial else "-" }}</div>
+              </div>
+            </div>
 
-          <div class="mb-2 d-flex align-items-center justify-content-between">
-            <div class="fw-semibold" id="nasDriveLabel">{{ nas_drive.label if nas_drive else nas_model_hint }}</div>
-            <div class="small text-secondary" id="nasUsageText">{{ nas_drive.usage_percent ~ '%' if nas_drive else '-' }}</div>
+          <div class="mb-2 d-flex align-items-center">
+            <div class="small text-secondary" id="nasUsageText">{{ nas_drive.usage_percent ~ '%' if nas_drive and nas_drive.mounted else '-' }}</div>
           </div>
           <div class="nas-usage-bar mb-3">
-            <span id="nasUsageBar" style="width: {{ nas_drive.usage_percent if nas_drive else 0 }}%;"></span>
+            <span id="nasUsageBar" style="width: {{ nas_drive.usage_percent if nas_drive and nas_drive.mounted else 0 }}%;"></span>
           </div>
           <div class="d-grid gap-2 small">
             <div>
               <div class="text-secondary">사용</div>
-              <div class="fw-semibold" id="nasUsedText">{{ nas_drive.used_label if nas_drive else "-" }}</div>
+              <div class="fw-semibold" id="nasUsedText">{{ nas_drive.used_label if nas_drive and nas_drive.mounted and nas_drive.used_label else "-" }}</div>
             </div>
             <div>
               <div class="text-secondary">여유</div>
-              <div class="fw-semibold" id="nasFreeText">{{ nas_drive.free_label if nas_drive else "-" }}</div>
+              <div class="fw-semibold" id="nasFreeText">{{ nas_drive.free_label if nas_drive and nas_drive.mounted and nas_drive.free_label else "-" }}</div>
             </div>
             <div>
               <div class="text-secondary">전체</div>
-              <div class="fw-semibold" id="nasTotalText">{{ nas_drive.total_label if nas_drive else "-" }}</div>
+              <div class="fw-semibold" id="nasTotalText">{{ nas_drive.total_label if nas_drive and nas_drive.mounted and nas_drive.total_label else "-" }}</div>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="col-12 col-xl-9 col-xxl-10 d-flex">
+    <div class="col-12 col-xl-9 col-xxl-10 d-flex nas-browser-col">
       <div class="card shadow-sm nas-browser-shell flex-fill">
         <input id="nasUploadInput" type="file" class="d-none" multiple>
         <div class="nas-explorer-header">
@@ -1056,7 +1091,7 @@
 
           <div class="nas-browser-toolbar">
             <div class="nas-command-group">
-              <button class="btn btn-primary btn-sm" id="nasNewFolderBtn" type="button" data-bs-toggle="modal" data-bs-target="#nasNewFolderModal">
+              <button class="btn btn-primary btn-sm" id="nasNewFolderBtn" type="button">
                 <i class="bi bi-folder-plus me-1"></i>새 폴더
               </button>
               <button class="btn btn-outline-secondary btn-sm" id="nasExplorerQuickUploadBtn" type="button">
@@ -1107,7 +1142,6 @@
 
             <div class="nas-pane-section">
               <div class="nas-pane-section__title">이 위치</div>
-              <div class="nas-pane-drive"><i class="bi bi-hdd-stack"></i><span id="nasPaneDriveLabel">{{ nas_drive.label if nas_drive else nas_model_hint }}</span></div>
               <div class="nas-pane-location" id="nasPaneLocation"></div>
             </div>
           </aside>
@@ -1153,7 +1187,7 @@
             <span class="nas-status-chip"><i class="bi bi-cursor"></i><span id="nasSelectionText">선택된 항목 없음</span></span>
           </div>
           <div class="nas-statusbar__right">
-            <span class="nas-status-chip"><i class="bi bi-hdd"></i><span id="nasPaneStatusMirror">{{ nas_drive.label if nas_drive else nas_model_hint }}</span></span>
+            <span class="nas-status-chip"><i class="bi bi-hdd"></i><span id="nasPaneStatusMirror">{{ nas_drive.label if nas_drive and nas_drive.label else nas_model_hint }}</span></span>
           </div>
         </div>
       </div>
@@ -1167,6 +1201,9 @@
   </button>
   <button class="nas-context-menu__item" type="button" data-menu-action="download">
     <i class="bi bi-download"></i><span>다운로드</span>
+  </button>
+  <button class="nas-context-menu__item" type="button" data-menu-action="rename">
+    <i class="bi bi-pencil-square"></i><span>이름 변경</span>
   </button>
   <button class="nas-context-menu__item" type="button" data-menu-action="new-folder">
     <i class="bi bi-folder-plus"></i><span>새 폴더 만들기</span>
@@ -1187,20 +1224,20 @@
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
-        <h2 class="modal-title fs-5"><i class="bi bi-folder-plus me-2"></i>새 폴더 만들기</h2>
+        <h2 class="modal-title fs-5" id="nasNameEditorTitle"><i class="bi bi-folder-plus me-2"></i>새 폴더 만들기</h2>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
       </div>
       <div class="modal-body">
-        <div class="small text-secondary mb-2">생성 위치</div>
+        <div class="small text-secondary mb-2" id="nasNameEditorPathLabel">생성 위치</div>
         <div class="fw-semibold mb-3" id="nasFolderCreatePath">/</div>
-        <label class="form-label" for="nasNewFolderInput">폴더 이름</label>
+        <label class="form-label" for="nasNewFolderInput" id="nasNameEditorInputLabel">폴더 이름</label>
         <input class="form-control" id="nasNewFolderInput" type="text" maxlength="120" placeholder="예: 신규 프로젝트">
-        <div class="form-text">슬래시(`/`, `\\`) 없이 이름만 입력하면 됩니다.</div>
+        <div class="form-text" id="nasNameEditorHint">슬래시(`/`, `\\`) 없이 이름만 입력하면 됩니다.</div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">취소</button>
         <button class="btn btn-primary" type="button" id="nasCreateFolderConfirmBtn">
-          <i class="bi bi-check2-circle me-1"></i>폴더 생성
+          <i class="bi bi-check2-circle me-1" id="nasNameEditorConfirmIcon"></i><span id="nasNameEditorConfirmText">폴더 생성</span>
         </button>
       </div>
     </div>
@@ -1253,5 +1290,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{{ url_for('static', path='js/nas_page.js') }}"></script>
+<script src="{{ url_for('static', path='js/nas_page.js') }}?v=20260319-rename-v5"></script>
 {% endblock %}

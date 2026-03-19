@@ -268,6 +268,11 @@ a {
   flex: 0 0 252px;
   display: flex;
   flex-direction: column;
+  align-self: flex-start;
+  position: sticky;
+  top: 86px;
+  height: calc(100vh - 86px);
+  overflow: hidden;
   background: linear-gradient(180deg, var(--cp-sidebar) 0%, var(--cp-sidebar-2) 100%);
   color: var(--cp-sidebar-text);
 }
@@ -291,6 +296,9 @@ a {
 
 .section-nav {
   padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
@@ -1621,11 +1629,17 @@ html[data-bs-theme="dark"] body.page-nas .nas-summary-sub {
   .section-sidebar {
     width: auto;
     flex: 0 0 auto;
+    align-self: auto;
+    position: static;
+    top: auto;
+    height: auto;
+    overflow: visible;
   }
 
   .section-nav {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    overflow: visible;
   }
 
   .workspace-main {

@@ -9,16 +9,29 @@
     uploadFiles: [],
     parentPath: null,
     truncated: false,
+    selectedPaths: [],
     selectedPath: "",
     selectedType: "",
+    contextPaths: [],
     contextPath: "",
     contextType: "",
     trashItems: [],
     dropTargetDepth: 0,
+    dragSelectActive: false,
+    dragSelectStarted: false,
+    dragSelectStartLocalY: 0,
+    dragSelectCurrentClientY: 0,
+    dragAutoScroll: 0,
+    dragAutoScrollRaf: 0,
+    suppressRowClick: false,
+    nameEditorMode: "create",
+    nameEditorTargetPath: "",
+    nameEditorTargetType: "",
   };
 
   const el = {
     browserShell: root.querySelector(".nas-browser-shell"),
+    sideCard: root.querySelector(".nas-side-card"),
     alert: document.getElementById("nasAlert"),
     contextMenu: document.getElementById("nasContextMenu"),
     refreshBtn: document.getElementById("nasRefreshBtn"),
@@ -37,7 +50,6 @@
     paneCurrentLabel: document.getElementById("nasPaneCurrentLabel"),
     paneUpBtn: document.getElementById("nasPaneUpBtn"),
     paneTrashShortcutBtn: document.getElementById("nasPaneTrashShortcutBtn"),
-    paneDriveLabel: document.getElementById("nasPaneDriveLabel"),
     paneStatusMirror: document.getElementById("nasPaneStatusMirror"),
     currentPath: document.getElementById("nasCurrentPath"),
     countsText: document.getElementById("nasCountsText"),
@@ -65,9 +77,15 @@
     uploadQueue: document.getElementById("nasUploadQueue"),
     uploadBtn: document.getElementById("nasUploadBtn"),
     newFolderModal: document.getElementById("nasNewFolderModal"),
+    nameEditorTitle: document.getElementById("nasNameEditorTitle"),
+    nameEditorPathLabel: document.getElementById("nasNameEditorPathLabel"),
     newFolderPath: document.getElementById("nasFolderCreatePath"),
+    nameEditorInputLabel: document.getElementById("nasNameEditorInputLabel"),
     newFolderInput: document.getElementById("nasNewFolderInput"),
+    nameEditorHint: document.getElementById("nasNameEditorHint"),
     createFolderConfirmBtn: document.getElementById("nasCreateFolderConfirmBtn"),
+    nameEditorConfirmIcon: document.getElementById("nasNameEditorConfirmIcon"),
+    nameEditorConfirmText: document.getElementById("nasNameEditorConfirmText"),
     trashModal: document.getElementById("nasTrashModal"),
     trashTbody: document.getElementById("nasTrashTbody"),
     trashEmptyState: document.getElementById("nasTrashEmptyState"),
@@ -83,6 +101,38 @@
   const trashModal = (el.trashModal && window.bootstrap)
     ? bootstrap.Modal.getOrCreateInstance(el.trashModal)
     : null;
+  const desktopHeightQuery = window.matchMedia
+    ? window.matchMedia("(min-width: 1200px)")
+    : null;
+  let shellSyncFrame = 0;
+
+  function syncBrowserShellHeight() {
+    if (!el.browserShell) return;
+    if (desktopHeightQuery && !desktopHeightQuery.matches) {
+      el.browserShell.style.removeProperty("height");
+      return;
+    }
+    if (!el.sideCard) {
+      el.browserShell.style.removeProperty("height");
+      return;
+    }
+    const nextHeight = Math.ceil(el.sideCard.getBoundingClientRect().height || 0);
+    if (!nextHeight) {
+      el.browserShell.style.removeProperty("height");
+      return;
+    }
+    el.browserShell.style.height = `${nextHeight}px`;
+  }
+
+  function queueBrowserShellHeightSync() {
+    if (shellSyncFrame) {
+      window.cancelAnimationFrame(shellSyncFrame);
+    }
+    shellSyncFrame = window.requestAnimationFrame(() => {
+      shellSyncFrame = 0;
+      syncBrowserShellHeight();
+    });
+  }
 
   function ensureContextMenuLayer() {
     if (!el.contextMenu || !document.body) return;
@@ -144,6 +194,23 @@
     }
   }
 
+  function fallbackDrive(extra) {
+    return Object.assign({
+      label: root.dataset.modelHint || "Seagate Backup+ Desk",
+      connected: false,
+      mounted: false,
+      mount_path: "",
+      mount_device: "",
+      disk_device: "",
+      transport: "",
+      serial: "",
+      usage_percent: 0,
+      used_label: "-",
+      free_label: "-",
+      total_label: "-",
+    }, extra || {});
+  }
+
   function fileIcon(item) {
     const kind = item.kind || item.type || "file";
     if (kind === "folder" || item.type === "directory") return "bi bi-folder2-open";
@@ -165,28 +232,99 @@
     return state.items.find((item) => item.path === path) || null;
   }
 
-  function setSelectedItem(path, type) {
-    state.selectedPath = path || "";
-    state.selectedType = type || "";
-    renderItems();
+  function getSelectedItems() {
+    if (!state.selectedPaths.length) return [];
+    const selected = new Set(state.selectedPaths);
+    return state.items.filter((item) => selected.has(item.path));
+  }
+
+  function isPathSelected(path) {
+    return Boolean(path) && state.selectedPaths.includes(path);
+  }
+
+  function syncPrimarySelection(preferredPath, preferredType) {
+    if (preferredPath && state.selectedPaths.includes(preferredPath)) {
+      state.selectedPath = preferredPath;
+      state.selectedType = preferredType || findItem(preferredPath)?.type || "";
+      return;
+    }
+
+    const first = getSelectedItems()[0] || null;
+    state.selectedPath = first?.path || "";
+    state.selectedType = first?.type || "";
+  }
+
+  function samePathList(a, b) {
+    if (a.length !== b.length) return false;
+    return a.every((value, index) => value === b[index]);
+  }
+
+  function paintSelectionRows() {
+    if (!el.tableBody) return;
+    const selected = new Set(state.selectedPaths);
+    el.tableBody.querySelectorAll("tr[data-row-path]").forEach((row) => {
+      const rowPath = row.getAttribute("data-row-path") || "";
+      row.classList.toggle("is-selected", selected.has(rowPath));
+    });
+  }
+
+  function setSelectedPaths(paths, options) {
+    const opts = options || {};
+    const visible = new Set(state.items.map((item) => item.path));
+    const next = [];
+    const seen = new Set();
+
+    Array.from(paths || []).forEach((value) => {
+      const path = String(value || "").trim();
+      if ((!path) || seen.has(path) || (!visible.has(path))) return;
+      seen.add(path);
+      next.push(path);
+    });
+
+    const primaryPath = String(opts.primaryPath || "").trim();
+    const primaryType = String(opts.primaryType || "").trim();
+    const changed = !samePathList(state.selectedPaths, next);
+
+    state.selectedPaths = next;
+    syncPrimarySelection(primaryPath, primaryType);
+
+    if (changed) {
+      paintSelectionRows();
+    }
     renderSelectionSummary();
+  }
+
+  function setSelectedItem(path, type) {
+    setSelectedPaths(path ? [path] : [], { primaryPath: path, primaryType: type });
   }
 
   function renderSelectionSummary() {
     if (!el.selectionText) return;
-    const selected = findItem(state.selectedPath);
-    if (!selected) {
+    const selectedItems = getSelectedItems();
+    if (!selectedItems.length) {
       el.selectionText.textContent = "선택된 항목 없음";
       return;
     }
 
-    const label = selected.type === "directory"
-      ? `폴더 선택: ${selected.name}`
-      : `파일 선택: ${selected.name} · ${selected.size_label || "-"}`;
-    el.selectionText.textContent = label;
+    if (selectedItems.length === 1) {
+      const selected = selectedItems[0];
+      const label = selected.type === "directory"
+        ? `폴더 선택: ${selected.name}`
+        : `파일 선택: ${selected.name} · ${selected.size_label || "-"}`;
+      el.selectionText.textContent = label;
+      return;
+    }
+
+    const dirCount = selectedItems.filter((item) => item.type === "directory").length;
+    const fileCount = selectedItems.length - dirCount;
+    const parts = [];
+    if (dirCount) parts.push(`폴더 ${dirCount}개`);
+    if (fileCount) parts.push(`파일 ${fileCount}개`);
+    el.selectionText.textContent = `${parts.join(" · ")} 선택`;
   }
 
   function hideContextMenu() {
+    state.contextPaths = [];
     state.contextPath = "";
     state.contextType = "";
     if (!el.contextMenu) return;
@@ -206,15 +344,25 @@
     if (!el.contextMenu) return;
     ensureContextMenuLayer();
     const opts = options || {};
-    state.contextPath = opts.path || "";
-    state.contextType = opts.type || "";
+    const selectionPaths = Array.isArray(opts.selectionPaths)
+      ? Array.from(new Set(opts.selectionPaths.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [];
 
-    const isDir = state.contextType === "directory";
-    const isFile = state.contextType === "file";
+    state.contextPaths = selectionPaths.length
+      ? selectionPaths
+      : (opts.path ? [String(opts.path)] : []);
+    state.contextPath = state.contextPaths.length === 1 ? state.contextPaths[0] : "";
+    state.contextType = state.contextPath
+      ? (opts.type || findItem(state.contextPath)?.type || "")
+      : "";
+
+    const isDir = state.contextPaths.length === 1 && state.contextType === "directory";
+    const isFile = state.contextPaths.length === 1 && state.contextType === "file";
 
     setContextItemVisible("open", isDir);
     setContextItemVisible("download", isFile);
-    setContextItemVisible("move-to-trash", Boolean(state.contextPath));
+    setContextItemVisible("rename", Boolean(state.contextPath));
+    setContextItemVisible("move-to-trash", Boolean(state.contextPaths.length));
     setContextItemVisible("new-folder", true);
     setContextItemVisible("open-trash", true);
     setContextItemVisible("refresh", true);
@@ -245,30 +393,46 @@
   }
 
   function renderDrive(drive) {
-    state.drive = drive || null;
-    const statusLabel = drive ? "연결됨" : "미연결";
+    const current = (drive && typeof drive === "object") ? fallbackDrive(drive) : fallbackDrive();
+    state.drive = current;
+    const isConnected = Boolean(current.connected);
+    const isMounted = Boolean(current.mounted);
+    const statusLabel = isConnected ? "연결됨" : "연결안됨";
     if (el.driveStatus) {
-      el.driveStatus.className = drive
+      el.driveStatus.className = isConnected
         ? "badge rounded-pill text-bg-success-subtle border border-success-subtle text-success-emphasis"
         : "badge rounded-pill text-bg-danger-subtle border border-danger-subtle text-danger-emphasis";
       el.driveStatus.textContent = statusLabel;
     }
 
-    const label = (drive && drive.label) || root.dataset.modelHint || "NAS";
+    const label = current.label || root.dataset.modelHint || "Seagate Backup+ Desk";
     if (el.driveLabel) el.driveLabel.textContent = label;
     if (el.heroLabel) el.heroLabel.textContent = label;
-    if (el.paneDriveLabel) el.paneDriveLabel.textContent = label;
     if (el.paneStatusMirror) el.paneStatusMirror.textContent = label;
-    if (el.mountPath) el.mountPath.textContent = (drive && drive.mount_path) || "-";
-    if (el.diskDevice) el.diskDevice.textContent = (drive && (drive.mount_device || drive.disk_device)) || "-";
-    if (el.transport) el.transport.textContent = ((drive && drive.transport) || "-").toUpperCase();
-    if (el.serial) el.serial.textContent = (drive && drive.serial) || "-";
-    if (el.usageText) el.usageText.textContent = drive ? `${drive.usage_percent}% 사용 중` : "-";
-    if (el.usageBar) el.usageBar.style.width = drive ? `${drive.usage_percent || 0}%` : "0%";
-    if (el.usedText) el.usedText.textContent = (drive && drive.used_label) || "-";
-    if (el.freeText) el.freeText.textContent = (drive && drive.free_label) || "-";
-    if (el.totalText) el.totalText.textContent = (drive && drive.total_label) || "-";
-    if (el.heroCapacity) el.heroCapacity.textContent = (drive && drive.total_label) || "-";
+    if (el.mountPath) el.mountPath.textContent = (isMounted && current.mount_path) ? current.mount_path : "-";
+    if (el.diskDevice) el.diskDevice.textContent = current.mount_device || current.disk_device || "-";
+    if (el.transport) el.transport.textContent = (current.transport || "-").toUpperCase();
+    if (el.serial) el.serial.textContent = current.serial || "-";
+    if (el.usageText) el.usageText.textContent = isMounted ? `${current.usage_percent}% 사용 중` : "-";
+    if (el.usageBar) el.usageBar.style.width = isMounted ? `${current.usage_percent || 0}%` : "0%";
+    if (el.usedText) el.usedText.textContent = isMounted ? (current.used_label || "-") : "-";
+    if (el.freeText) el.freeText.textContent = isMounted ? (current.free_label || "-") : "-";
+    if (el.totalText) el.totalText.textContent = isMounted ? (current.total_label || "-") : "-";
+    if (el.heroCapacity) el.heroCapacity.textContent = isMounted ? (current.total_label || "-") : "-";
+    queueBrowserShellHeightSync();
+  }
+
+  async function refreshDriveStatus() {
+    try {
+      const res = await fetch("/api/nas/status", { cache: "no-store" });
+      if (!res.ok) throw new Error(await readError(res));
+      const payload = await res.json();
+      renderDrive(payload.drive || null);
+      return payload.drive || null;
+    } catch (_) {
+      renderDrive(null);
+      return null;
+    }
   }
 
   function renderBreadcrumbs(breadcrumbs) {
@@ -293,10 +457,11 @@
   function renderItems() {
     if (!el.tableBody || !el.emptyState) return;
     const items = filteredItems();
-    const selectedVisible = items.some((item) => item.path === state.selectedPath);
-    if (!selectedVisible) {
-      state.selectedPath = "";
-      state.selectedType = "";
+    const visible = new Set(items.map((item) => item.path));
+    const nextSelectedPaths = state.selectedPaths.filter((path) => visible.has(path));
+    if (!samePathList(state.selectedPaths, nextSelectedPaths)) {
+      state.selectedPaths = nextSelectedPaths;
+      syncPrimarySelection();
     }
     const countsText = `항목 ${items.length}개`;
     if (el.countsText) {
@@ -308,13 +473,15 @@
     if (!items.length) {
       el.tableBody.innerHTML = "";
       el.emptyState.classList.remove("d-none");
+      renderSelectionSummary();
+      queueBrowserShellHeightSync();
       return;
     }
 
     el.emptyState.classList.add("d-none");
     el.tableBody.innerHTML = items.map((item) => {
       const isDir = item.type === "directory";
-      const isSelected = state.selectedPath === item.path;
+      const isSelected = isPathSelected(item.path);
 
       return `
         <tr class="nas-file-row ${isSelected ? "is-selected" : ""}" data-row-path="${escapeHtml(item.path)}" data-row-type="${escapeHtml(item.type)}" data-row-name="${escapeHtml(item.name)}">
@@ -334,7 +501,9 @@
       `;
     }).join("");
 
+    paintSelectionRows();
     renderSelectionSummary();
+    queueBrowserShellHeightSync();
   }
 
   function renderTrashItems() {
@@ -408,10 +577,12 @@
     state.parentPath = payload.parent_path || null;
     state.items = Array.isArray(payload.items) ? payload.items : [];
     state.truncated = Boolean(payload.truncated);
-    if (!state.items.some((item) => item.path === state.selectedPath)) {
-      state.selectedPath = "";
-      state.selectedType = "";
+    const visible = new Set(state.items.map((item) => item.path));
+    const nextSelectedPaths = state.selectedPaths.filter((path) => visible.has(path));
+    if (!samePathList(state.selectedPaths, nextSelectedPaths)) {
+      state.selectedPaths = nextSelectedPaths;
     }
+    syncPrimarySelection();
     renderDrive(payload.drive || null);
     renderBreadcrumbs(payload.breadcrumbs || []);
     if (el.currentPath) el.currentPath.textContent = state.currentPath;
@@ -436,7 +607,7 @@
       renderPayload(payload);
       if (!opts.keepAlert) setAlert("", "");
     } catch (err) {
-      renderDrive(null);
+      await refreshDriveStatus();
       state.items = [];
       renderItems();
       setAlert("danger", err instanceof Error ? err.message : "NAS 정보를 불러오지 못했습니다.");
@@ -515,8 +686,52 @@
     return uploadFileBatch(state.uploadFiles);
   }
 
+  function configureNameEditor(mode, options) {
+    const opts = options || {};
+    const editorMode = mode === "rename" ? "rename" : "create";
+    const isRename = editorMode === "rename";
+    const currentPath = String(opts.currentPath || state.currentPath || "/").trim() || "/";
+    const itemType = String(opts.type || "").trim();
+    const itemLabel = itemType === "directory" ? "폴더" : "파일";
+    const currentName = String(opts.currentName || "").trim();
+
+    state.nameEditorMode = editorMode;
+    state.nameEditorTargetPath = isRename ? String(opts.path || "").trim() : "";
+    state.nameEditorTargetType = isRename ? itemType : "";
+
+    if (el.nameEditorTitle) {
+      el.nameEditorTitle.innerHTML = isRename
+        ? `<i class="bi bi-pencil-square me-2"></i>${itemLabel} 이름 변경`
+        : '<i class="bi bi-folder-plus me-2"></i>새 폴더 만들기';
+    }
+    if (el.nameEditorPathLabel) {
+      el.nameEditorPathLabel.textContent = isRename ? "변경 위치" : "생성 위치";
+    }
+    if (el.newFolderPath) {
+      el.newFolderPath.textContent = currentPath;
+    }
+    if (el.nameEditorInputLabel) {
+      el.nameEditorInputLabel.textContent = isRename ? "새 이름" : "폴더 이름";
+    }
+    if (el.newFolderInput) {
+      el.newFolderInput.value = isRename ? currentName : "";
+      el.newFolderInput.placeholder = "예: 신규 프로젝트";
+    }
+    if (el.nameEditorHint) {
+      el.nameEditorHint.textContent = "슬래시(/, \\\\) 없이 이름만 입력하면 됩니다.";
+    }
+    if (el.nameEditorConfirmIcon) {
+      el.nameEditorConfirmIcon.className = isRename
+        ? "bi bi-pencil-square me-1"
+        : "bi bi-check2-circle me-1";
+    }
+    if (el.nameEditorConfirmText) {
+      el.nameEditorConfirmText.textContent = isRename ? "이름 변경" : "폴더 생성";
+    }
+  }
+
   function openNewFolderModal() {
-    resetNewFolderForm();
+    configureNameEditor("create");
     if (newFolderModal) newFolderModal.show();
   }
 
@@ -525,14 +740,37 @@
     loadTrash();
   }
 
-  async function moveToTrash(path) {
+  function renameItem(path, type) {
     const item = findItem(path);
     if (!item) {
+      setAlert("warning", "이름을 변경할 대상을 찾지 못했습니다.");
+      return;
+    }
+
+    configureNameEditor("rename", {
+      path,
+      type: type || item.type || "",
+      currentName: item.name || "",
+      currentPath: state.currentPath || "/",
+    });
+    if (newFolderModal) newFolderModal.show();
+  }
+
+  async function moveToTrash(target) {
+    const paths = Array.isArray(target)
+      ? Array.from(new Set(target.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [String(target || "").trim()].filter(Boolean);
+    const items = paths.map((path) => findItem(path)).filter(Boolean);
+
+    if (!paths.length || !items.length) {
       setAlert("warning", "휴지통으로 이동할 대상을 찾지 못했습니다.");
       return;
     }
-    const label = item.type === "directory" ? "폴더" : "파일";
-    if (!window.confirm(`${label} "${item.name}" 을(를) 휴지통으로 이동할까요?`)) {
+
+    const confirmText = items.length === 1
+      ? `${items[0].type === "directory" ? "폴더" : "파일"} "${items[0].name}" 을(를) 휴지통으로 이동할까요?`
+      : `선택한 항목 ${items.length}개를 휴지통으로 이동할까요?`;
+    if (!window.confirm(confirmText)) {
       return;
     }
 
@@ -543,16 +781,17 @@
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ path }),
+        body: JSON.stringify(paths.length === 1 ? { path: paths[0] } : { paths }),
       });
       if (!res.ok) throw new Error(await readError(res));
       const payload = await res.json();
-      if (state.selectedPath === path) {
-        state.selectedPath = "";
-        state.selectedType = "";
-      }
+      setSelectedPaths([]);
       hideContextMenu();
-      setAlert("success", `${payload.original_name || item.name} 항목을 휴지통으로 이동했습니다.`);
+      if (items.length === 1) {
+        setAlert("success", `${payload.original_name || items[0].name} 항목을 휴지통으로 이동했습니다.`);
+      } else {
+        setAlert("success", `${payload.moved_count || items.length}개 항목을 휴지통으로 이동했습니다.`);
+      }
       await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
       if (el.trashModal && el.trashModal.classList.contains("show")) {
         await loadTrash({ silent: true });
@@ -630,15 +869,57 @@
   }
 
   function resetNewFolderForm() {
-    if (el.newFolderInput) el.newFolderInput.value = "";
-    if (el.newFolderPath) el.newFolderPath.textContent = state.currentPath || "/";
+    state.nameEditorMode = "create";
+    state.nameEditorTargetPath = "";
+    state.nameEditorTargetType = "";
+    configureNameEditor("create");
   }
 
-  async function createFolder() {
+  async function submitNameEditor() {
     const name = String(el.newFolderInput && el.newFolderInput.value || "").trim();
     if (!name) {
-      setAlert("warning", "새 폴더 이름을 입력해주세요.");
+      setAlert("warning", state.nameEditorMode === "rename" ? "새 이름을 입력해주세요." : "새 폴더 이름을 입력해주세요.");
       if (el.newFolderInput) el.newFolderInput.focus();
+      return;
+    }
+
+    if (state.nameEditorMode === "rename") {
+      const targetPath = state.nameEditorTargetPath || "";
+      const targetType = state.nameEditorTargetType || "";
+      const item = findItem(targetPath);
+      if (!item || !targetPath) {
+        setAlert("warning", "이름을 변경할 대상을 찾지 못했습니다.");
+        return;
+      }
+
+      const currentName = String(item.name || "").trim();
+      if (name === currentName) {
+        if (newFolderModal) newFolderModal.hide();
+        return;
+      }
+
+      setLoading(true, "이름을 변경하는 중...");
+      try {
+        const res = await fetch("/api/nas/rename", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ path: targetPath, name }),
+        });
+        if (!res.ok) throw new Error(await readError(res));
+        const payload = await res.json();
+        if (newFolderModal) newFolderModal.hide();
+        resetNewFolderForm();
+        setAlert("success", `이름 변경 완료: ${payload.old_name || currentName} -> ${payload.name || name}`);
+        await loadFolder(state.currentPath || "/", { silent: true, keepAlert: true });
+        setSelectedPaths([payload.path], { primaryPath: payload.path, primaryType: payload.type || targetType || item.type || "" });
+      } catch (err) {
+        setAlert("danger", err instanceof Error ? err.message : "이름 변경에 실패했습니다.");
+        if (el.newFolderInput) el.newFolderInput.focus();
+      } finally {
+        setLoading(false);
+      }
       return;
     }
 
@@ -676,6 +957,197 @@
   function onExplorerDropDrag(active) {
     if (!el.explorerDropTarget) return;
     el.explorerDropTarget.classList.toggle("is-dragover", active);
+  }
+
+  function clampNumber(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function ensureSelectionBand() {
+    if (!el.explorerDropTarget) return null;
+    if (el.selectionBand && el.selectionBand.isConnected) return el.selectionBand;
+    const band = document.createElement("div");
+    band.className = "nas-selection-band d-none";
+    el.explorerDropTarget.appendChild(band);
+    el.selectionBand = band;
+    return band;
+  }
+
+  function showSelectionBand(top, bottom) {
+    const band = ensureSelectionBand();
+    if (!band || !el.explorerDropTarget) return;
+    const height = Math.max(1, bottom - top);
+    band.classList.remove("d-none");
+    band.style.top = `${top}px`;
+    band.style.left = "0px";
+    band.style.width = `${Math.max(el.explorerDropTarget.scrollWidth, el.explorerDropTarget.clientWidth)}px`;
+    band.style.height = `${height}px`;
+  }
+
+  function hideSelectionBand() {
+    if (!el.selectionBand) return;
+    el.selectionBand.classList.add("d-none");
+  }
+
+  function clientYToExplorerLocalY(clientY) {
+    if (!el.explorerDropTarget) return 0;
+    const rect = el.explorerDropTarget.getBoundingClientRect();
+    const max = Math.max(el.explorerDropTarget.scrollHeight, el.explorerDropTarget.clientHeight);
+    return clampNumber(clientY - rect.top + el.explorerDropTarget.scrollTop, 0, max);
+  }
+
+  function selectionPathsFromRange(startLocalY, endLocalY) {
+    if (!el.explorerDropTarget || !el.tableBody) return [];
+    const rect = el.explorerDropTarget.getBoundingClientRect();
+    const top = Math.min(startLocalY, endLocalY);
+    const bottom = Math.max(startLocalY, endLocalY);
+    return Array.from(el.tableBody.querySelectorAll("tr[data-row-path]"))
+      .filter((row) => {
+        const rowRect = row.getBoundingClientRect();
+        const rowTop = rowRect.top - rect.top + el.explorerDropTarget.scrollTop;
+        const rowCenter = rowTop + (rowRect.height / 2);
+        return rowCenter >= top && rowCenter <= bottom;
+      })
+      .map((row) => row.getAttribute("data-row-path") || "")
+      .filter(Boolean);
+  }
+
+  function updateDragSelection() {
+    if (!state.dragSelectActive) return;
+    const currentLocalY = clientYToExplorerLocalY(state.dragSelectCurrentClientY);
+    const top = Math.min(state.dragSelectStartLocalY, currentLocalY);
+    const bottom = Math.max(state.dragSelectStartLocalY, currentLocalY);
+    showSelectionBand(top, bottom);
+    const selectedPaths = selectionPathsFromRange(state.dragSelectStartLocalY, currentLocalY);
+    setSelectedPaths(selectedPaths, { primaryPath: selectedPaths[selectedPaths.length - 1] || "" });
+  }
+
+  function stopDragAutoScroll() {
+    state.dragAutoScroll = 0;
+    if (state.dragAutoScrollRaf) {
+      window.cancelAnimationFrame(state.dragAutoScrollRaf);
+      state.dragAutoScrollRaf = 0;
+    }
+  }
+
+  function stepDragAutoScroll() {
+    if (!state.dragSelectActive || !state.dragAutoScroll || !el.explorerDropTarget) {
+      state.dragAutoScrollRaf = 0;
+      return;
+    }
+    const container = el.explorerDropTarget;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const nextScrollTop = clampNumber(container.scrollTop + state.dragAutoScroll, 0, maxScrollTop);
+    if (nextScrollTop !== container.scrollTop) {
+      container.scrollTop = nextScrollTop;
+      updateDragSelection();
+    }
+    state.dragAutoScrollRaf = window.requestAnimationFrame(stepDragAutoScroll);
+  }
+
+  function updateDragAutoScroll(clientY) {
+    if (!el.explorerDropTarget) return;
+    const rect = el.explorerDropTarget.getBoundingClientRect();
+    const threshold = 56;
+    let nextSpeed = 0;
+
+    if (clientY > rect.bottom - threshold) {
+      nextSpeed = Math.ceil(((clientY - (rect.bottom - threshold)) / threshold) * 18);
+    } else if (clientY < rect.top + threshold) {
+      nextSpeed = -Math.ceil((((rect.top + threshold) - clientY) / threshold) * 18);
+    }
+
+    state.dragAutoScroll = nextSpeed;
+    if (!nextSpeed) {
+      stopDragAutoScroll();
+      return;
+    }
+    if (!state.dragAutoScrollRaf) {
+      state.dragAutoScrollRaf = window.requestAnimationFrame(stepDragAutoScroll);
+    }
+  }
+
+  function swallowNextDocumentClick() {
+    let cleared = false;
+    let timeoutId = 0;
+
+    const clear = () => {
+      if (cleared) return;
+      cleared = true;
+      document.removeEventListener("click", onClickCapture, true);
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+
+    const onClickCapture = (event) => {
+      clear();
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    document.addEventListener("click", onClickCapture, true);
+    timeoutId = window.setTimeout(clear, 250);
+  }
+
+  function finishDragSelection(event) {
+    const didRangeSelect = state.dragSelectActive && state.dragSelectStarted;
+    if (didRangeSelect && event && typeof event.clientY === "number") {
+      state.dragSelectCurrentClientY = event.clientY;
+      updateDragSelection();
+      paintSelectionRows();
+      renderSelectionSummary();
+      event.preventDefault();
+    }
+
+    state.dragSelectActive = false;
+    state.dragSelectStarted = false;
+    hideSelectionBand();
+    stopDragAutoScroll();
+    root.classList.remove("is-range-selecting");
+    document.removeEventListener("mousemove", onDragSelectionMove, true);
+    document.removeEventListener("mouseup", finishDragSelection, true);
+
+    if (didRangeSelect) {
+      swallowNextDocumentClick();
+      window.requestAnimationFrame(() => {
+        state.suppressRowClick = false;
+      });
+    }
+  }
+
+  function onDragSelectionMove(event) {
+    if (!state.dragSelectActive) return;
+    state.dragSelectCurrentClientY = event.clientY;
+    const delta = Math.abs(clientYToExplorerLocalY(event.clientY) - state.dragSelectStartLocalY);
+    if (!state.dragSelectStarted && delta < 4) {
+      return;
+    }
+
+    if (!state.dragSelectStarted) {
+      state.dragSelectStarted = true;
+      state.suppressRowClick = true;
+      root.classList.add("is-range-selecting");
+    }
+
+    updateDragSelection();
+    updateDragAutoScroll(event.clientY);
+    event.preventDefault();
+  }
+
+  function startDragSelection(event) {
+    if (event.button !== 0 || !el.explorerDropTarget) return;
+    if (event.target.closest(".btn, button, input, textarea, label, a")) return;
+    if (!event.target.closest("#nasExplorerDropTarget")) return;
+
+    hideContextMenu();
+    state.dragSelectActive = true;
+    state.dragSelectStarted = false;
+    state.dragSelectStartLocalY = clientYToExplorerLocalY(event.clientY);
+    state.dragSelectCurrentClientY = event.clientY;
+    document.addEventListener("mousemove", onDragSelectionMove, true);
+    document.addEventListener("mouseup", finishDragSelection, true);
+    event.preventDefault();
   }
 
   if (el.refreshBtn) {
@@ -720,7 +1192,7 @@
 
   if (el.newFolderBtn) {
     el.newFolderBtn.addEventListener("click", () => {
-      resetNewFolderForm();
+      openNewFolderModal();
     });
   }
 
@@ -767,6 +1239,7 @@
   }
 
   if (el.explorerDropTarget) {
+    el.explorerDropTarget.addEventListener("mousedown", startDragSelection);
     el.explorerDropTarget.addEventListener("dragenter", (event) => {
       event.preventDefault();
       state.dropTargetDepth += 1;
@@ -801,7 +1274,7 @@
   }
 
   if (el.createFolderConfirmBtn) {
-    el.createFolderConfirmBtn.addEventListener("click", createFolder);
+    el.createFolderConfirmBtn.addEventListener("click", submitNameEditor);
   }
 
   if (el.trashRefreshBtn) {
@@ -814,8 +1287,10 @@
 
   if (el.newFolderModal) {
     el.newFolderModal.addEventListener("shown.bs.modal", () => {
-      resetNewFolderForm();
-      if (el.newFolderInput) el.newFolderInput.focus();
+      if (el.newFolderInput) {
+        el.newFolderInput.focus();
+        el.newFolderInput.select();
+      }
     });
     el.newFolderModal.addEventListener("hidden.bs.modal", () => {
       resetNewFolderForm();
@@ -826,7 +1301,7 @@
     el.newFolderInput.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      createFolder();
+      submitNameEditor();
     });
   }
 
@@ -854,6 +1329,11 @@
 
   if (el.tableBody) {
     el.tableBody.addEventListener("click", (event) => {
+      if (state.suppressRowClick) {
+        state.suppressRowClick = false;
+        event.preventDefault();
+        return;
+      }
       const row = event.target.closest("tr[data-row-path]");
       if (row) {
         setSelectedItem(row.getAttribute("data-row-path") || "", row.getAttribute("data-row-type") || "");
@@ -875,8 +1355,15 @@
       event.preventDefault();
       const path = row.getAttribute("data-row-path") || "";
       const type = row.getAttribute("data-row-type") || "";
-      setSelectedItem(path, type);
-      showContextMenu(event.clientX, event.clientY, { path, type });
+      const selectionPaths = isPathSelected(path) ? state.selectedPaths.slice() : [path];
+      if (!isPathSelected(path)) {
+        setSelectedItem(path, type);
+      }
+      showContextMenu(event.clientX, event.clientY, {
+        path: selectionPaths.length === 1 ? path : "",
+        type: selectionPaths.length === 1 ? type : "",
+        selectionPaths,
+      });
     });
   }
 
@@ -910,7 +1397,11 @@
       if (event.target.closest("tr[data-row-path]")) return;
       if (event.target.closest(".modal")) return;
       event.preventDefault();
-      showContextMenu(event.clientX, event.clientY, { path: "", type: "" });
+      showContextMenu(event.clientX, event.clientY, {
+        path: "",
+        type: "",
+        selectionPaths: state.selectedPaths.slice(),
+      });
     });
   }
 
@@ -921,28 +1412,40 @@
       const action = button.getAttribute("data-menu-action");
       const targetPath = state.contextPath || state.selectedPath || "";
       const targetType = state.contextType || state.selectedType || "";
+      const targetPaths = state.contextPaths.length
+        ? state.contextPaths.slice()
+        : (targetPath ? [targetPath] : state.selectedPaths.slice());
       hideContextMenu();
 
       if (action === "open" && targetPath && targetType === "directory") {
         loadFolder(targetPath);
       } else if (action === "download" && targetPath && targetType === "file") {
         window.location.href = `/api/nas/download?path=${encodeURIComponent(targetPath)}`;
+      } else if (action === "rename" && targetPath && targetType) {
+        renameItem(targetPath, targetType);
       } else if (action === "new-folder") {
         openNewFolderModal();
       } else if (action === "open-trash") {
         openTrashModal();
       } else if (action === "refresh") {
         loadFolder(state.currentPath || "/");
-      } else if (action === "move-to-trash" && targetPath) {
-        moveToTrash(targetPath);
+      } else if (action === "move-to-trash" && targetPaths.length) {
+        moveToTrash(targetPaths);
       }
     });
   }
 
   document.addEventListener("click", (event) => {
-    if (!el.contextMenu || el.contextMenu.classList.contains("d-none")) return;
-    if (event.target.closest("#nasContextMenu")) return;
-    hideContextMenu();
+    const insideContextMenu = Boolean(event.target.closest("#nasContextMenu"));
+
+    if (el.contextMenu && !el.contextMenu.classList.contains("d-none") && !insideContextMenu) {
+      hideContextMenu();
+    }
+
+    if (!state.selectedPaths.length || state.dragSelectActive || state.suppressRowClick) return;
+    if (insideContextMenu) return;
+    if (event.target.closest("tr[data-row-path]")) return;
+    setSelectedPaths([]);
   });
 
   document.addEventListener("keydown", (event) => {
@@ -952,9 +1455,20 @@
   });
 
   window.addEventListener("scroll", hideContextMenu, true);
-  window.addEventListener("resize", hideContextMenu);
+  window.addEventListener("resize", () => {
+    hideContextMenu();
+    queueBrowserShellHeightSync();
+  });
+
+  if (el.sideCard && typeof ResizeObserver !== "undefined") {
+    const sideCardObserver = new ResizeObserver(() => {
+      queueBrowserShellHeightSync();
+    });
+    sideCardObserver.observe(el.sideCard);
+  }
 
   ensureContextMenuLayer();
   renderQueue();
-  loadFolder("/");
+  queueBrowserShellHeightSync();
+  refreshDriveStatus().finally(() => loadFolder("/"));
 })();
