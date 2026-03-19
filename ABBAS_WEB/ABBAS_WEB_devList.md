@@ -339,3 +339,55 @@
 - 간단한 설명
   - 이번 채팅의 실변경 파일은 `ABBAS_WEB` 디렉토리 내부(`DB/nas_repo.py`, `main.py`, `router/pages.py`, `templates/nas.html`, `static/js/nas_page.js`, `ABBAS_WEB_devList.md`)로 한정해 정리했다.
   - Arduino/MELAUHF 등 다른 디렉토리에는 영향이 가지 않도록 커밋 범위를 분리하고, NAS 업로더 임시 숨김 JSON은 DB 이관 완료 후 제거하는 기준으로 소스컨트롤 상태를 정리했다.
+
+## 38. 프로필 설정 페이지·상단 사용자 메뉴·권한 확장 추가
+- 수정코드
+  - `SQL/01_tables.sql`
+  - `DB/user_repo.py`
+  - `services/user_store.py`
+  - `router/pages.py`
+  - `templates/base.html`
+  - `templates/profile_settings.html`
+  - `static/css/cleanpay_theme.css`
+  - `static/js/common.js`
+  - `static/js/profile_settings.js`
+- 간단한 설명
+  - 상단 `topbar-user`를 드롭다운 메뉴 구조로 바꾸고, 기존 로그아웃 버튼을 메뉴 안으로 이동했다. `SuperUser` 계정에는 로그아웃 자리 대신 `통합관리` 버튼이 보이도록 정리했고, `admin/superuser` 권한 인식도 함께 확장했다.
+  - `/profile-settings` 페이지를 새로 추가해 프로필 이미지, 이름/닉네임, 이메일, 연락처, 부서, 위치, 소개, 비밀번호 변경을 한 화면에서 처리하도록 연결했다.
+  - 회원탈퇴는 SweetAlert2 확인 모달을 거쳐 진행되며, 계정/프로필 정보 삭제 후 세션도 함께 정리하도록 보강했다.
+
+## 39. 프로필 설정 UI/네비게이션 정리 및 다크모드 버튼 보강
+- 수정코드
+  - `templates/base.html`
+  - `templates/profile_settings.html`
+  - `static/css/cleanpay_theme.css`
+- 간단한 설명
+  - 프로필 설정 화면은 좌우 요약/수정 레이아웃으로 구성하고, 비밀번호 변경/재확인 정렬과 저장/확인/회원탈퇴 버튼 호버 효과를 라이트·다크모드 모두에서 자연스럽게 보이도록 정리했다.
+  - 상단 네비에서 `관리설정` 항목은 제거하고, 프로필 설정 메뉴는 좌측 사이드바에서 다른 메뉴와 같은 형식으로만 보이도록 구조를 다시 맞췄다.
+  - 프로필 섹션 타이틀은 최종적으로 `개인 기능설정`으로 반영했다.
+
+## 40. NAS 업로더 프로필 이미지 표시 및 탈퇴 익명화 처리
+- 수정코드
+  - `DB/nas_repo.py`
+  - `router/pages.py`
+  - `templates/nas.html`
+  - `static/js/nas_page.js`
+- 간단한 설명
+  - NAS Center의 `업로드 계정` 영역에 닉네임/ID 텍스트만 보이던 구조를 바꿔, 좌측에 사용자 프로필 이미지 또는 이니셜 아바타가 함께 표시되도록 수정했다.
+  - 회원탈퇴 시 NAS 업로더 메타는 실제 파일은 유지한 채 닉네임만 남기고, 사용자 ID는 `-`로 익명화되도록 정리했다.
+
+## 41. 대시보드 도넛 차트 테마 전환 즉시 반영 보강
+- 수정코드
+  - `static/js/common.js`
+  - `static/js/dashboard.js`
+- 간단한 설명
+  - 대시보드 도넛 그래프 내부 텍스트 색상이 테마 전환 직후 바로 바뀌지 않고 hover 때만 갱신되던 문제를 수정했다.
+  - 공통 테마 토글에서 `app:themechange` 이벤트를 발생시키고, 대시보드 차트가 이 이벤트와 `data-bs-theme` 속성 변화를 감지해 즉시 다시 그려지도록 보강했다.
+
+## 42. 프로필 업로드 런타임 파일 Source Control 제외 기준 추가
+- 수정코드
+  - 루트 `.gitignore`
+  - `ABBAS_WEB_devList.md`
+- 간단한 설명
+  - 프로필 설정 기능에서 생성되는 `ABBAS_WEB/static/uploads/profile-images/**` 파일은 사용자 업로드 산출물이므로 기본 커밋 범위에서 제외하도록 기준을 추가했다.
+  - 이 기준으로 기능 코드와 런타임 데이터가 분리되어, 다른 디렉토리나 배포 코드에 영향 없이 Source Control을 정리할 수 있게 맞췄다.

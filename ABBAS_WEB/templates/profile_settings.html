@@ -1,0 +1,654 @@
+{% extends "base.html" %}
+
+{% block extra_head %}
+<style>
+  .profile-settings-shell {
+    display: grid;
+    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+    gap: 24px;
+    align-items: start;
+  }
+
+  .profile-panel {
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid var(--cp-border);
+    border-radius: 24px;
+    box-shadow: var(--cp-card-shadow);
+    overflow: hidden;
+  }
+
+  .profile-panel--sticky {
+    position: sticky;
+    top: 110px;
+  }
+
+  .profile-summary__cover {
+    height: 108px;
+    background:
+      radial-gradient(circle at top right, rgba(255, 255, 255, 0.25), transparent 34%),
+      linear-gradient(135deg, #205fff 0%, #1c88ff 45%, #16c4b7 100%);
+  }
+
+  .profile-summary__body {
+    padding: 0 24px 24px;
+  }
+
+  .profile-avatar-editor {
+    width: 112px;
+    height: 112px;
+    margin-top: -56px;
+    border-radius: 30px;
+    border: 4px solid var(--cp-surface);
+    background: linear-gradient(135deg, #eff5ff 0%, #dfe8fb 100%);
+    box-shadow: 0 14px 28px rgba(28, 52, 107, 0.16);
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+  }
+
+  .profile-avatar-editor__image,
+  .profile-avatar-editor__fallback {
+    width: 100%;
+    height: 100%;
+  }
+
+  .profile-avatar-editor__image {
+    object-fit: cover;
+    display: block;
+  }
+
+  .profile-avatar-editor__fallback {
+    display: grid;
+    place-items: center;
+    font-size: 2.35rem;
+    font-weight: 800;
+    color: #1248d4;
+  }
+
+  .profile-summary__name {
+    margin-top: 18px;
+    font-size: 1.45rem;
+    font-weight: 800;
+    color: var(--cp-text);
+  }
+
+  .profile-summary__sub {
+    margin-top: 4px;
+    font-size: 0.96rem;
+    color: var(--cp-text-faint);
+  }
+
+  .profile-summary__role {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: var(--cp-primary-soft);
+    color: var(--cp-primary-strong);
+    font-size: 0.86rem;
+    font-weight: 700;
+  }
+
+  .profile-summary__bio {
+    margin-top: 18px;
+    padding: 14px 16px;
+    border-radius: 16px;
+    background: var(--cp-surface-2);
+    color: var(--cp-text-soft);
+    font-size: 0.95rem;
+    line-height: 1.6;
+  }
+
+  .profile-summary__meta {
+    margin: 20px 0 0;
+    display: grid;
+    gap: 12px;
+  }
+
+  .profile-summary__meta-item {
+    display: grid;
+    gap: 4px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--cp-border);
+  }
+
+  .profile-summary__meta-item:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .profile-summary__meta-label {
+    font-size: 0.77rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cp-text-faint);
+  }
+
+  .profile-summary__meta-value {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--cp-text);
+    word-break: break-word;
+  }
+
+  .profile-form {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .profile-form__section {
+    padding: 28px 30px;
+    border-bottom: 1px solid var(--cp-border);
+  }
+
+  .profile-form__section:last-of-type {
+    border-bottom: 0;
+  }
+
+  .profile-form__section-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .profile-form__eyebrow {
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cp-primary);
+  }
+
+  .profile-form__section-title {
+    margin-top: 4px;
+    margin-bottom: 0;
+    font-size: 1.28rem;
+    font-weight: 800;
+    color: var(--cp-text);
+  }
+
+  .profile-form__section-copy {
+    margin-top: 6px;
+    margin-bottom: 0;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: var(--cp-text-soft);
+  }
+
+  .profile-form__toolbar {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .profile-form__hint {
+    margin-top: 14px;
+    font-size: 0.85rem;
+    color: var(--cp-text-faint);
+  }
+
+  .profile-form__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px 20px;
+    align-items: start;
+  }
+
+  .profile-form__field {
+    display: grid;
+    gap: 8px;
+    align-content: start;
+  }
+
+  .profile-form__field--wide {
+    grid-column: 1 / -1;
+  }
+
+  .profile-form__field label {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--cp-text);
+  }
+
+  .profile-form__field input,
+  .profile-form__field textarea {
+    border-radius: 14px;
+    border: 1px solid var(--cp-border);
+    background: var(--cp-surface);
+    color: var(--cp-text);
+    padding: 13px 14px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .profile-form__field textarea {
+    min-height: 128px;
+    resize: vertical;
+    line-height: 1.6;
+  }
+
+  .profile-form__field input:focus,
+  .profile-form__field textarea:focus {
+    border-color: var(--cp-primary);
+    box-shadow: var(--cp-ring);
+    outline: none;
+  }
+
+  .profile-form__field input[readonly] {
+    background: var(--cp-surface-2);
+    color: var(--cp-text-soft);
+    cursor: not-allowed;
+  }
+
+  .profile-form__field-check {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .profile-form__field-check input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .profile-form__field-check .btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .profile-form__field-message {
+    min-height: 1.15rem;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    color: var(--cp-text-faint);
+  }
+
+  .profile-form__field-message.is-error {
+    color: var(--cp-danger);
+  }
+
+  .profile-form__field-message.is-success {
+    color: var(--cp-success);
+  }
+
+  .profile-form__action-btn {
+    transition:
+      transform 0.18s ease,
+      box-shadow 0.18s ease,
+      background 0.18s ease,
+      border-color 0.18s ease,
+      color 0.18s ease;
+  }
+
+  .profile-form__action-btn:hover,
+  .profile-form__action-btn:focus-visible {
+    transform: translateY(-1px);
+  }
+
+  .profile-form__check-btn:hover,
+  .profile-form__check-btn:focus-visible {
+    background: #ebf2ff !important;
+    border-color: rgba(31, 94, 255, 0.38) !important;
+    color: #1c4fd7 !important;
+    box-shadow: 0 10px 22px rgba(31, 94, 255, 0.14) !important;
+  }
+
+  .profile-form__withdraw-btn:hover,
+  .profile-form__withdraw-btn:focus-visible {
+    background: #ffecee !important;
+    border-color: rgba(217, 67, 86, 0.42) !important;
+    color: #c73047 !important;
+    box-shadow: 0 10px 22px rgba(217, 67, 86, 0.16) !important;
+  }
+
+  .profile-form__submit-btn:hover,
+  .profile-form__submit-btn:focus-visible {
+    background: linear-gradient(180deg, #245ff0 0%, #1348d9 100%) !important;
+    border-color: #1348d9 !important;
+    box-shadow: 0 14px 28px rgba(31, 94, 255, 0.24) !important;
+  }
+
+  .profile-form__footer {
+    padding: 22px 30px 30px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    background: linear-gradient(180deg, rgba(247, 249, 254, 0.3) 0%, rgba(247, 249, 254, 0.9) 100%);
+  }
+
+  .profile-form__footer-copy {
+    color: var(--cp-text-soft);
+    font-size: 0.92rem;
+  }
+
+  .profile-form__footer-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .profile-form__footer-withdraw {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.88rem;
+  }
+
+  .profile-form__upload-label {
+    margin: 0;
+  }
+
+  .profile-page-alert {
+    margin-bottom: 20px;
+  }
+
+  html[data-bs-theme="dark"] .profile-panel {
+    background: rgba(10, 16, 29, 0.88);
+    border-color: var(--cp-border);
+  }
+
+  html[data-bs-theme="dark"] .profile-summary__bio,
+  html[data-bs-theme="dark"] .profile-form__field input[readonly] {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  html[data-bs-theme="dark"] .profile-avatar-editor {
+    border-color: #10192d;
+    background: linear-gradient(135deg, rgba(43, 99, 255, 0.26) 0%, rgba(17, 196, 183, 0.18) 100%);
+  }
+
+  html[data-bs-theme="dark"] .profile-avatar-editor__fallback {
+    color: #cfe0ff;
+  }
+
+  html[data-bs-theme="dark"] .profile-form__footer {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.04) 100%);
+  }
+
+  html[data-bs-theme="dark"] .profile-form__check-btn:hover,
+  html[data-bs-theme="dark"] .profile-form__check-btn:focus-visible {
+    background: rgba(67, 112, 255, 0.28) !important;
+    border-color: rgba(124, 155, 255, 0.56) !important;
+    color: #f3f7ff !important;
+    box-shadow: 0 12px 26px rgba(41, 98, 255, 0.28) !important;
+  }
+
+  html[data-bs-theme="dark"] .profile-form__withdraw-btn:hover,
+  html[data-bs-theme="dark"] .profile-form__withdraw-btn:focus-visible {
+    background: rgba(239, 90, 103, 0.24) !important;
+    border-color: rgba(255, 136, 146, 0.56) !important;
+    color: #ffe7ea !important;
+    box-shadow: 0 12px 26px rgba(239, 90, 103, 0.24) !important;
+  }
+
+  html[data-bs-theme="dark"] .profile-form__submit-btn:hover,
+  html[data-bs-theme="dark"] .profile-form__submit-btn:focus-visible {
+    background: linear-gradient(180deg, #4a7cff 0%, #2b5cf0 100%) !important;
+    border-color: #6b93ff !important;
+    color: #ffffff !important;
+    box-shadow:
+      0 16px 30px rgba(43, 92, 240, 0.34) !important,
+      0 0 0 1px rgba(129, 162, 255, 0.22) inset !important;
+  }
+
+  @media (max-width: 1199.98px) {
+    .profile-settings-shell {
+      grid-template-columns: 1fr;
+    }
+
+    .profile-panel--sticky {
+      position: static;
+    }
+  }
+
+  @media (max-width: 767.98px) {
+    .profile-form__section,
+    .profile-form__footer,
+    .profile-summary__body {
+      padding-left: 18px;
+      padding-right: 18px;
+    }
+
+    .profile-form__grid {
+      grid-template-columns: 1fr;
+    }
+
+    .profile-form__section-head {
+      flex-direction: column;
+    }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{% if profile_saved %}
+<div class="alert alert-success profile-page-alert" role="alert">
+  <i class="bi bi-check-circle me-2"></i>프로필 설정이 저장되었습니다.
+</div>
+{% endif %}
+
+{% if profile_errors %}
+<div class="alert alert-danger profile-page-alert" role="alert">
+  <div class="fw-semibold mb-2"><i class="bi bi-exclamation-triangle me-2"></i>저장 전에 확인해주세요.</div>
+  <ul class="mb-0 ps-3">
+    {% for message in profile_errors %}
+    <li>{{ message }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="profile-settings-shell">
+  <aside class="profile-panel profile-panel--sticky">
+    <div class="profile-summary__cover"></div>
+    <div class="profile-summary__body">
+      <div class="profile-avatar-editor">
+        <img
+          id="profileImagePreview"
+          class="profile-avatar-editor__image {% if not profile_form.profile_image_url %}d-none{% endif %}"
+          src="{{ profile_form.profile_image_url or '' }}"
+          alt="{{ profile_form.display_name }}"
+        >
+        <span
+          id="profileImageFallback"
+          class="profile-avatar-editor__fallback {% if profile_form.profile_image_url %}d-none{% endif %}"
+        >{{ profile_form.avatar_initial }}</span>
+      </div>
+
+      <div class="profile-summary__name" id="profileSummaryName">{{ profile_form.display_name }}</div>
+      <div class="profile-summary__sub">@{{ profile_form.user_id }}</div>
+      <div class="profile-summary__role">
+        <i class="bi bi-shield-check"></i>
+        <span>{{ profile_form.role_label }}</span>
+      </div>
+
+      <div class="profile-summary__bio" id="profileSummaryBio">
+        {{ profile_form.bio or '프로필 소개를 입력하면 여기에서 바로 미리볼 수 있습니다.' }}
+      </div>
+
+      <div class="profile-summary__meta">
+        <div class="profile-summary__meta-item">
+          <div class="profile-summary__meta-label">이메일</div>
+          <div class="profile-summary__meta-value" id="profileSummaryEmail">{{ profile_form.email or '-' }}</div>
+        </div>
+        <div class="profile-summary__meta-item">
+          <div class="profile-summary__meta-label">연락처</div>
+          <div class="profile-summary__meta-value" id="profileSummaryPhone">{{ profile_form.phone or '-' }}</div>
+        </div>
+        <div class="profile-summary__meta-item">
+          <div class="profile-summary__meta-label">소속 / 부서</div>
+          <div class="profile-summary__meta-value" id="profileSummaryDepartment">{{ profile_form.department or '-' }}</div>
+        </div>
+        <div class="profile-summary__meta-item">
+          <div class="profile-summary__meta-label">위치</div>
+          <div class="profile-summary__meta-value" id="profileSummaryLocation">{{ profile_form.location or '-' }}</div>
+        </div>
+        <div class="profile-summary__meta-item">
+          <div class="profile-summary__meta-label">가입일</div>
+          <div class="profile-summary__meta-value">{{ profile_form.join_date or '-' }}</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <section class="profile-panel">
+    <form class="profile-form" method="post" action="/profile-settings" enctype="multipart/form-data" id="profileSettingsForm">
+      <input type="hidden" name="remove_profile_image" id="removeProfileImage" value="{{ profile_form.remove_profile_image or '0' }}">
+
+      <div class="profile-form__section">
+        <div class="profile-form__section-head">
+          <div>
+            <div class="profile-form__eyebrow">Photo</div>
+            <h2 class="profile-form__section-title">프로필 이미지</h2>
+            <p class="profile-form__section-copy">상단 사용자 메뉴와 프로필 미리보기에 사용할 대표 이미지를 선택합니다.</p>
+          </div>
+          <div class="profile-form__toolbar">
+            <label class="btn btn-outline-primary btn-sm profile-form__upload-label">
+              <i class="bi bi-upload me-1"></i>사진 업로드
+              <input type="file" name="profile_image" id="profileImageInput" accept=".jpg,.jpeg,.png,.gif,.webp" hidden>
+            </label>
+            <button
+              type="button"
+              class="btn btn-outline-secondary btn-sm"
+              id="btnRemoveProfileImage"
+              {% if not profile_form.profile_image_url %}disabled{% endif %}
+            >
+              <i class="bi bi-trash3 me-1"></i>사진 제거
+            </button>
+          </div>
+        </div>
+        <div class="profile-form__hint">허용 형식: JPG, PNG, GIF, WEBP / 최대 {{ profile_image_max_mb }}MB</div>
+      </div>
+
+      <div class="profile-form__section">
+        <div class="profile-form__section-head">
+          <div>
+            <div class="profile-form__eyebrow">Display</div>
+            <h2 class="profile-form__section-title">표시 정보</h2>
+            <p class="profile-form__section-copy">다른 화면에 노출되는 이름과 소개를 이 영역에서 조정합니다.</p>
+          </div>
+        </div>
+
+        <div class="profile-form__grid">
+          <div class="profile-form__field">
+            <label for="profileNickname">닉네임</label>
+            <input id="profileNickname" name="nickname" type="text" value="{{ profile_form.nickname }}" maxlength="64" required>
+          </div>
+          <div class="profile-form__field">
+            <label for="profileName">이름</label>
+            <input id="profileName" name="name" type="text" value="{{ profile_form.name }}" maxlength="64" required>
+          </div>
+          <div class="profile-form__field profile-form__field--wide">
+            <label for="profileBio">소개</label>
+            <textarea id="profileBio" name="bio" maxlength="500" placeholder="업무 소개나 한 줄 메모를 입력해보세요.">{{ profile_form.bio }}</textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="profile-form__section">
+        <div class="profile-form__section-head">
+          <div>
+            <div class="profile-form__eyebrow">Contact</div>
+            <h2 class="profile-form__section-title">연락 및 업무 정보</h2>
+            <p class="profile-form__section-copy">ABBAS_WEB 운영 환경에서 자주 확인하는 연락처와 조직 정보를 한곳에서 정리합니다.</p>
+          </div>
+        </div>
+
+        <div class="profile-form__grid">
+          <div class="profile-form__field">
+            <label for="profileEmail">이메일</label>
+            <input id="profileEmail" name="email" type="email" value="{{ profile_form.email }}" maxlength="255" required>
+          </div>
+          <div class="profile-form__field">
+            <label for="profilePhone">연락처</label>
+            <input id="profilePhone" name="phone" type="text" value="{{ profile_form.phone }}" maxlength="32" placeholder="010-0000-0000">
+          </div>
+          <div class="profile-form__field">
+            <label for="profileDepartment">소속 / 부서</label>
+            <input id="profileDepartment" name="department" type="text" value="{{ profile_form.department }}" maxlength="64" placeholder="Platform Team">
+          </div>
+          <div class="profile-form__field">
+            <label for="profileLocation">위치</label>
+            <input id="profileLocation" name="location" type="text" value="{{ profile_form.location }}" maxlength="64" placeholder="Seoul, KR">
+          </div>
+        </div>
+      </div>
+
+      <div class="profile-form__section">
+        <div class="profile-form__section-head">
+          <div>
+            <div class="profile-form__eyebrow">Account</div>
+            <h2 class="profile-form__section-title">계정 정보</h2>
+            <p class="profile-form__section-copy">계정 식별 정보는 읽기 전용으로 보여주고, 개인 기본값만 필요한 범위에서 수정합니다.</p>
+          </div>
+        </div>
+
+        <div class="profile-form__grid">
+          <div class="profile-form__field">
+            <label for="profileUserId">아이디</label>
+            <input id="profileUserId" type="text" value="{{ profile_form.user_id }}" readonly>
+          </div>
+          <div class="profile-form__field">
+            <label for="profileRole">권한</label>
+            <input id="profileRole" type="text" value="{{ profile_form.role_label }}" readonly>
+          </div>
+          <div class="profile-form__field">
+            <label for="profileBirth">생년월일</label>
+            <input id="profileBirth" name="birth" type="date" value="{{ profile_form.birth }}">
+          </div>
+          <div class="profile-form__field">
+            <label for="profileJoinDate">가입일</label>
+            <input id="profileJoinDate" type="text" value="{{ profile_form.join_date or '-' }}" readonly>
+          </div>
+          <div class="profile-form__field">
+            <label for="profileNewPassword">비밀번호 변경</label>
+            <input id="profileNewPassword" name="new_password" type="password" value="" minlength="6" autocomplete="new-password" placeholder="새 비밀번호 입력">
+          </div>
+          <div class="profile-form__field">
+            <label for="profileConfirmPassword">비밀번호 재확인</label>
+            <div class="profile-form__field-check">
+              <input id="profileConfirmPassword" name="confirm_password" type="password" value="" minlength="6" autocomplete="new-password" placeholder="비밀번호 다시 입력">
+              <button type="button" class="btn btn-outline-secondary btn-sm profile-form__action-btn profile-form__check-btn" id="btnCheckPasswordMatch">비밀번호 확인</button>
+            </div>
+            <div class="profile-form__field-message" id="passwordMatchMessage"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="profile-form__footer">
+        <div class="profile-form__footer-main">
+          <div class="profile-form__footer-copy">저장하면 상단 사용자 메뉴와 프로필 설정 요약에 바로 반영됩니다.</div>
+          <div class="profile-form__footer-withdraw">
+              <button
+                type="submit"
+                class="btn btn-outline-danger btn-sm profile-form__action-btn profile-form__withdraw-btn"
+                id="btnDeleteAccount"
+                formaction="/profile-settings/delete"
+                formmethod="post"
+              formnovalidate
+            >
+              <i class="bi bi-person-dash me-1"></i>회원탈퇴
+            </button>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg profile-form__action-btn profile-form__submit-btn">
+          <i class="bi bi-save me-1"></i>프로필 저장
+        </button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="{{ url_for('static', path='js/profile_settings.js') }}"></script>
+{% endblock %}

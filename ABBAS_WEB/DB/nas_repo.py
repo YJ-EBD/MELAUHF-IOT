@@ -243,3 +243,30 @@ def remap_uploader_prefix(old_rel_path: str, new_rel_path: str) -> int:
             if old_hashes:
                 cur.executemany("DELETE FROM nas_item_uploaders WHERE rel_path_hash=%s", old_hashes)
             return len(next_rows)
+
+
+def anonymize_uploader_user(user_id: str, fallback_nickname: str = "") -> int:
+    uid = _normalize_rel_path(user_id)
+    if not uid:
+        return 0
+
+    nickname = _normalize_rel_path(fallback_nickname)
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                UPDATE nas_item_uploaders
+                SET user_id='-',
+                    nickname=CASE
+                        WHEN TRIM(COALESCE(nickname, ''))='' THEN %s
+                        ELSE nickname
+                    END,
+                    name='',
+                    updated_at=NOW()
+                WHERE user_id=%s
+                """,
+                (nickname, uid),
+            )
+            return int(cur.rowcount or 0)

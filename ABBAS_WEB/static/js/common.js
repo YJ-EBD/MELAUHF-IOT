@@ -15,6 +15,10 @@
         icon.className = (t === "dark") ? "bi bi-sun" : "bi bi-moon-stars";
       }
     }
+
+    window.dispatchEvent(new CustomEvent("app:themechange", {
+      detail: { theme: t },
+    }));
   }
 
   function initTheme() {
@@ -35,6 +39,47 @@
     btn.addEventListener("click", () => {
       const cur = document.documentElement.getAttribute("data-bs-theme") || "light";
       setTheme(cur === "dark" ? "light" : "dark");
+    });
+  }
+
+  function setupTopbarUserMenu() {
+    const root = document.querySelector("[data-topbar-user-menu]");
+    if (!(root instanceof HTMLElement)) return;
+
+    const toggle = root.querySelector("[data-topbar-user-toggle]");
+    const panel = root.querySelector("[data-topbar-user-panel]");
+    if (!(toggle instanceof HTMLElement) || !(panel instanceof HTMLElement)) return;
+
+    const setOpen = (open) => {
+      root.classList.toggle("is-open", open);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      panel.setAttribute("aria-hidden", open ? "false" : "true");
+    };
+
+    toggle.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      setOpen(!root.classList.contains("is-open"));
+    });
+
+    panel.addEventListener("click", (ev) => {
+      const target = ev.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest("a, button")) {
+        setOpen(false);
+      }
+    });
+
+    document.addEventListener("click", (ev) => {
+      const target = ev.target;
+      if (target instanceof Node && !root.contains(target)) {
+        setOpen(false);
+      }
+    });
+
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        setOpen(false);
+      }
     });
   }
 
@@ -215,6 +260,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     initTheme();
     setupThemeToggle();
+    setupTopbarUserMenu();
     setupRipple();
     setupClock();
     setupApiHealth();

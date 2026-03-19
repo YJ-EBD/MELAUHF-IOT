@@ -31,6 +31,7 @@ ABBAS_WEB/storage/device_logs/**/.TotalEnergy.txt.energy.part
 
 # Local OTA firmware artifacts
 ABBAS_WEB/storage/firmware/**/*.bin
+ABBAS_WEB/static/uploads/profile-images/**
 
 # Local comparison/reference firmware trees
 therma_med/

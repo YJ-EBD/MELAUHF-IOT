@@ -55,6 +55,14 @@
   {% set section_key = 'lifecycle' %}
   {% set section_title = '플랜/배포' %}
   {% set section_sub = '구독 상태와 OTA 배포 자산을 같은 맥락에서 정리하는 영역입니다.' %}
+{% elif nav_active == 'settings' %}
+  {% set section_key = 'settings' %}
+  {% set section_title = '설정' %}
+  {% set section_sub = '콘솔 환경과 운영 규칙을 조정하는 기본 설정 공간입니다.' %}
+{% elif nav_active == 'profile_settings' %}
+  {% set section_key = 'profile' %}
+  {% set section_title = '개인 기능설정' %}
+  {% set section_sub = '내 계정 정보와 프로필 화면으로 빠르게 이동할 수 있는 사용자 영역입니다.' %}
 {% else %}
   {% set section_key = 'admin' %}
   {% set section_title = '관리설정' %}
@@ -87,6 +95,9 @@
 {% elif nav_active == 'settings' %}
   {% set page_icon = 'bi-gear-fill' %}
   {% set page_description = '콘솔 동작 방식과 화면 옵션을 점검하고 저장하는 기본 설정 화면입니다.' %}
+{% elif nav_active == 'profile_settings' %}
+  {% set page_icon = 'bi-person-badge-fill' %}
+  {% set page_description = '프로필 이미지와 개인 정보를 ABBAS_WEB 운영 콘솔 흐름에 맞춰 한 화면에서 관리하는 사용자 설정 화면입니다.' %}
 {% elif nav_active == '' %}
   {% set page_icon = 'bi-shield-lock-fill' %}
   {% set page_description = '현재 계정 권한으로 접근할 수 없는 화면입니다.' %}
@@ -129,23 +140,55 @@
         <span>플랜/배포</span>
         <i class="bi bi-chevron-down"></i>
       </a>
-      <a class="primary-nav__item {% if section_key == 'admin' %}is-active{% endif %}" href="/settings">
-        <span>관리설정</span>
-      </a>
     </nav>
 
     <div class="topbar-tools">
-      <div class="topbar-user">
-        <div class="topbar-user__avatar">
-          {{ ((current_user_name or current_user_id or 'U')[:1])|upper }}
-        </div>
-        <div class="topbar-user__meta">
-          <div class="topbar-user__name">{{ current_user_name or current_user_id }}님</div>
-          <div class="topbar-user__sub">ID {{ current_user_id }} · {{ (current_user_role or 'user')|upper }}</div>
+      <div class="topbar-user" data-topbar-user-menu>
+        <button
+          class="topbar-user__toggle"
+          id="topbarUserToggle"
+          type="button"
+          aria-haspopup="true"
+          aria-expanded="false"
+          aria-controls="topbarUserMenu"
+          data-topbar-user-toggle
+        >
+          <span class="topbar-user__avatar">
+            {% if current_user_profile_image_url %}
+            <img
+              src="{{ current_user_profile_image_url }}"
+              alt="{{ current_user_name or current_user_id }}"
+              class="topbar-user__avatar-image"
+              loading="lazy"
+            >
+            {% else %}
+            {{ ((current_user_name or current_user_id or 'U')[:1])|upper }}
+            {% endif %}
+          </span>
+          <span class="topbar-user__meta">
+            <span class="topbar-user__name">{{ current_user_name or current_user_id }}님</span>
+            <span class="topbar-user__sub">ID {{ current_user_id }} · {{ current_user_role_label or 'USER' }}</span>
+          </span>
+          <span class="topbar-user__caret" aria-hidden="true">
+            <i class="bi bi-chevron-down"></i>
+          </span>
+        </button>
+
+        <div class="topbar-user-menu" id="topbarUserMenu" role="menu" aria-hidden="true" data-topbar-user-panel>
+          <a class="topbar-user-menu__item" href="/profile-settings" role="menuitem">
+            <i class="bi bi-person-circle"></i>
+            <span>프로필 설정</span>
+          </a>
+          <a class="topbar-user-menu__item topbar-user-menu__item--danger" href="/logout" role="menuitem">
+            <i class="bi bi-box-arrow-right"></i>
+            <span>로그아웃</span>
+          </a>
         </div>
       </div>
 
-      <a class="header-btn header-btn--solid" href="/logout">로그아웃</a>
+      {% if is_superuser %}
+      <a class="header-btn header-btn--solid" href="/settings">통합관리</a>
+      {% endif %}
       <button class="header-icon-btn" id="themeToggle" type="button" aria-label="테마 전환">
         <i class="bi bi-moon-stars"></i>
       </button>
@@ -212,7 +255,13 @@
             <span class="section-nav__label">Firmware Manage</span>
             <i class="bi bi-chevron-right section-nav__arrow"></i>
           </a>
-        {% else %}
+        {% elif section_key == 'profile' %}
+          <a class="section-nav__item {% if nav_active == 'profile_settings' %}is-active{% endif %}" href="/profile-settings">
+            <span class="section-nav__icon"><i class="bi bi-person-badge-fill"></i></span>
+            <span class="section-nav__label">프로필 설정</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+        {% elif section_key == 'settings' %}
           <a class="section-nav__item {% if nav_active == 'settings' %}is-active{% endif %}" href="/settings">
             <span class="section-nav__icon"><i class="bi bi-gear-fill"></i></span>
             <span class="section-nav__label">설정</span>
@@ -224,7 +273,7 @@
       <div class="section-sidebar__footer">
         <div class="section-sidebar__hint">{{ section_sub }}</div>
         <div class="section-sidebar__meta">
-          <span class="section-sidebar__meta-pill">{{ (current_user_role or 'user')|upper }}</span>
+          <span class="section-sidebar__meta-pill">{{ current_user_role_label or 'USER' }}</span>
           <span class="section-sidebar__meta-pill">{{ current_user_id }}</span>
         </div>
       </div>
@@ -244,7 +293,7 @@
         <div class="workspace-strip__status">
           <div class="status-pill status-pill--muted" title="현재 권한">
             <i class="bi bi-shield-lock"></i>
-            <span>{{ (current_user_role or 'user')|upper }}</span>
+            <span>{{ current_user_role_label or 'USER' }}</span>
           </div>
 
           <div class="status-pill" id="apiConnPill" title="API 연결 상태">

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
@@ -25,10 +25,11 @@ from DB import device_repo
 from DB import device_ops_repo
 from DB import firmware_repo
 from DB import nas_repo
+from DB import user_repo
 from DB.runtime import get_mysql
 from services.log_store import read_logs as db_read_logs
-from services.user_store import read_user
-from redis.session import SESSION_COOKIE_NAME, read_session_user
+from services.user_store import hash_password_for_storage, read_user
+from redis.session import SESSION_COOKIE_NAME, clear_session_cookie, delete_session, read_session_user
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 DEVICE_LOG_ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage", "device_logs")
@@ -59,6 +60,10 @@ _NAS_INFO_CACHE_TS = 0.0
 _NAS_STATUS_CACHE: dict[str, Any] = {}
 _NAS_STATUS_CACHE_TS = 0.0
 _NAS_USER_PROFILE_CACHE: dict[str, dict[str, str]] = {}
+PROFILE_IMAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "uploads", "profile-images")
+PROFILE_IMAGE_PUBLIC_PREFIX = "/static/uploads/profile-images"
+PROFILE_IMAGE_MAX_BYTES = int(os.getenv("ABBAS_PROFILE_IMAGE_MAX_BYTES", str(3 * 1024 * 1024)))
+PROFILE_IMAGE_ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _fmt(dt: datetime) -> str:
@@ -236,9 +241,59 @@ def _merge_sd_payload(payload: dict[str, Any], prev: dict[str, Any] | None = Non
 
 def _normalize_role(value: Any) -> str:
     role = str(value or "").strip().lower()
-    if role == "admin":
-        return "admin"
+    if role in {"admin", "superuser"}:
+        return role
     return "user"
+
+
+def _role_has_admin_access(value: Any) -> bool:
+    return _normalize_role(value) in {"admin", "superuser"}
+
+
+def _role_label(value: Any) -> str:
+    role = _normalize_role(value)
+    if role == "superuser":
+        return "SuperUser"
+    if role == "admin":
+        return "ADMIN"
+    return "USER"
+
+
+def _profile_image_url_from_value(value: Any) -> str:
+    path = str(value or "").strip()
+    if path.startswith(f"{PROFILE_IMAGE_PUBLIC_PREFIX}/"):
+        return path
+    return ""
+
+
+def _profile_avatar_initial(display_name: Any, fallback: Any = "U") -> str:
+    text = str(display_name or fallback or "U").strip()
+    return (text[:1] or "U").upper()
+
+
+def _build_profile_form(user_id: str, row: dict[str, Any] | None = None) -> dict[str, str]:
+    row = row or {}
+    nickname = str(row.get("NICKNAME") or "").strip()
+    name = str(row.get("NAME") or "").strip()
+    display_name = nickname or name or user_id
+    return {
+        "user_id": str(user_id or "").strip(),
+        "role": _normalize_role(row.get("ROLE") or ""),
+        "role_label": _role_label(row.get("ROLE") or ""),
+        "name": name,
+        "nickname": nickname,
+        "email": str(row.get("EMAIL") or "").strip(),
+        "birth": str(row.get("BIRTH") or "").strip(),
+        "phone": str(row.get("PHONE") or "").strip(),
+        "department": str(row.get("DEPARTMENT") or "").strip(),
+        "location": str(row.get("LOCATION") or "").strip(),
+        "bio": str(row.get("BIO") or "").strip(),
+        "join_date": str(row.get("JOIN_DATE") or "").strip(),
+        "profile_image_url": _profile_image_url_from_value(row.get("PROFILE_IMAGE_PATH") or ""),
+        "display_name": display_name,
+        "avatar_initial": _profile_avatar_initial(display_name, user_id),
+        "remove_profile_image": "0",
+    }
 
 
 def _request_user_row(request: Request) -> dict[str, Any]:
@@ -262,7 +317,7 @@ def _request_user_role(request: Request) -> str:
 
 
 def _request_is_admin(request: Request) -> bool:
-    return _request_user_role(request) == "admin"
+    return _role_has_admin_access(_request_user_role(request))
 
 
 def _require_admin(request: Request) -> None:
@@ -271,7 +326,7 @@ def _require_admin(request: Request) -> None:
 
 
 def _admin_forbidden_page(request: Request, *, message: str = ""):
-    detail = message or "role 값이 admin인 계정만 이 페이지에 접근할 수 있습니다."
+    detail = message or "role 값이 admin 또는 superuser인 계정만 이 페이지에 접근할 수 있습니다."
     return templates.TemplateResponse(
         "forbidden.html",
         _base_context(
@@ -939,6 +994,8 @@ def _list_nas_directory(rel_path: str) -> dict[str, Any]:
         item["uploader_name"] = str(uploader_entry.get("display_name") or "-")
         item["uploader_nickname"] = str(uploader_entry.get("nickname") or "")
         item["uploader_id"] = str(uploader_entry.get("user_id") or "")
+        item["uploader_profile_image_url"] = str(uploader_entry.get("profile_image_url") or "")
+        item["uploader_avatar_initial"] = str(uploader_entry.get("avatar_initial") or "U")
 
     entries.sort(
         key=lambda item: (
@@ -1171,10 +1228,19 @@ def _lookup_nas_user_profile(user_id: Any) -> dict[str, str]:
         "user_id": normalized_user_id,
         "nickname": str(row.get("NICKNAME") or "").strip(),
         "name": str(row.get("NAME") or "").strip(),
+        "profile_image_url": _profile_image_url_from_value(row.get("PROFILE_IMAGE_PATH") or ""),
     }
     profile["display_name"] = profile["nickname"] or profile["name"] or normalized_user_id
+    profile["avatar_initial"] = _profile_avatar_initial(profile["display_name"], normalized_user_id)
     _NAS_USER_PROFILE_CACHE[normalized_user_id] = dict(profile)
     return dict(profile)
+
+
+def _clear_nas_user_profile_cache(user_id: Any) -> None:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return
+    _NAS_USER_PROFILE_CACHE.pop(normalized_user_id, None)
 
 
 def _normalize_nas_uploader_entry(value: Any) -> dict[str, Any]:
@@ -1182,12 +1248,15 @@ def _normalize_nas_uploader_entry(value: Any) -> dict[str, Any]:
     user_id = str(payload.get("user_id") or "").strip()
     nickname = str(payload.get("nickname") or "").strip()
     name = str(payload.get("name") or "").strip()
-    if user_id and (not nickname or not name):
+    profile_image_url = _profile_image_url_from_value(payload.get("profile_image_url") or "")
+    if user_id and (not nickname or not name or not profile_image_url):
         profile = _lookup_nas_user_profile(user_id)
         if not nickname:
             nickname = profile.get("nickname") or ""
         if not name:
             name = profile.get("name") or ""
+        if not profile_image_url:
+            profile_image_url = profile.get("profile_image_url") or ""
     display_name = nickname or name or user_id
     if not display_name:
         return {}
@@ -1202,6 +1271,8 @@ def _normalize_nas_uploader_entry(value: Any) -> dict[str, Any]:
         "nickname": nickname,
         "name": name,
         "display_name": display_name,
+        "profile_image_url": profile_image_url,
+        "avatar_initial": _profile_avatar_initial(display_name, user_id),
         "updated_at": updated_at,
     }
 
@@ -1966,13 +2037,11 @@ def _base_context(request: Request, active_key: str, **kwargs: Any) -> dict[str,
     user_id = getattr(request.state, "user_id", "") or ""
     logged_in = bool(user_id)
     current_user_role = _request_user_role(request) if logged_in else "user"
-    is_admin = current_user_role == "admin"
+    is_admin = _role_has_admin_access(current_user_role)
+    is_superuser = current_user_role == "superuser"
     current_user = _request_user_row(request) if logged_in else {}
-    current_user_name = (
-        str(current_user.get("NICKNAME") or "").strip()
-        or str(current_user.get("NAME") or "").strip()
-        or user_id
-    )
+    current_profile = _build_profile_form(user_id, current_user) if logged_in else _build_profile_form("", {})
+    current_user_name = str(current_profile.get("display_name") or user_id or "").strip()
     return {
         "request": request,
         "nav_items": _nav_items(is_admin=is_admin),
@@ -1981,9 +2050,87 @@ def _base_context(request: Request, active_key: str, **kwargs: Any) -> dict[str,
         "current_user_id": user_id,
         "current_user_name": current_user_name,
         "current_user_role": current_user_role,
+        "current_user_role_label": _role_label(current_user_role),
+        "current_user_profile_image_url": current_profile.get("profile_image_url") or "",
         "is_admin": is_admin,
+        "is_superuser": is_superuser,
         **kwargs,
     }
+
+
+def _profile_settings_context(
+    request: Request,
+    *,
+    form_data: dict[str, Any] | None = None,
+    errors: list[str] | None = None,
+    saved: bool = False,
+) -> dict[str, Any]:
+    user_id = getattr(request.state, "user_id", "") or ""
+    row = _request_user_row(request) if user_id else {}
+    profile_form = _build_profile_form(user_id, row)
+    if form_data:
+        for key, value in form_data.items():
+            profile_form[key] = str(value or "").strip() if key != "profile_image_url" else _profile_image_url_from_value(value)
+        display_name = profile_form.get("nickname") or profile_form.get("name") or user_id
+        profile_form["display_name"] = display_name
+        profile_form["avatar_initial"] = _profile_avatar_initial(display_name, user_id)
+        profile_form["role_label"] = _role_label(profile_form.get("role") or row.get("ROLE") or "")
+    return _base_context(
+        request,
+        "profile_settings",
+        page_title="프로필 설정",
+        profile_form=profile_form,
+        profile_errors=errors or [],
+        profile_saved=saved,
+        profile_image_max_mb=max(1, PROFILE_IMAGE_MAX_BYTES // (1024 * 1024)),
+    )
+
+
+def _managed_profile_image_abspath(public_path: Any) -> str:
+    safe_public = _profile_image_url_from_value(public_path)
+    if not safe_public:
+        return ""
+    filename = os.path.basename(safe_public)
+    full_path = os.path.realpath(os.path.join(PROFILE_IMAGE_STORAGE_DIR, filename))
+    root = os.path.realpath(PROFILE_IMAGE_STORAGE_DIR)
+    if not full_path.startswith(root + os.sep):
+        return ""
+    return full_path
+
+
+def _delete_managed_profile_image(public_path: Any) -> None:
+    file_path = _managed_profile_image_abspath(public_path)
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+
+
+async def _store_profile_image(user_id: str, upload: UploadFile) -> str:
+    filename = str(upload.filename or "").strip()
+    ext = os.path.splitext(filename)[1].strip().lower()
+    if ext not in PROFILE_IMAGE_ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(PROFILE_IMAGE_ALLOWED_EXTENSIONS))
+        raise ValueError(f"프로필 이미지는 {allowed} 형식만 업로드할 수 있습니다.")
+
+    content_type = str(upload.content_type or "").strip().lower()
+    if content_type and not content_type.startswith("image/"):
+        raise ValueError("이미지 파일만 업로드할 수 있습니다.")
+
+    raw = await upload.read()
+    if not raw:
+        raise ValueError("업로드된 이미지 파일이 비어 있습니다.")
+    if len(raw) > PROFILE_IMAGE_MAX_BYTES:
+        raise ValueError(f"프로필 이미지는 최대 {max(1, PROFILE_IMAGE_MAX_BYTES // (1024 * 1024))}MB까지 업로드할 수 있습니다.")
+
+    os.makedirs(PROFILE_IMAGE_STORAGE_DIR, exist_ok=True)
+    safe_user_id = re.sub(r"[^A-Za-z0-9_-]+", "-", str(user_id or "").strip()).strip("-") or "user"
+    output_name = f"{safe_user_id}-{int(time.time())}-{secrets.token_hex(4)}{ext}"
+    output_path = os.path.join(PROFILE_IMAGE_STORAGE_DIR, output_name)
+    with open(output_path, "wb") as fp:
+        fp.write(raw)
+    return f"{PROFILE_IMAGE_PUBLIC_PREFIX}/{output_name}"
 
 
 # ==============================================================
@@ -2991,7 +3138,7 @@ def logs(request: Request):
 @router.get("/nas", name="nas")
 def nas_page(request: Request):
     if not _request_is_admin(request):
-        return _admin_forbidden_page(request, message="role 값이 admin인 계정만 NAS 메뉴를 보고 NAS 페이지에 접속할 수 있습니다.")
+        return _admin_forbidden_page(request, message="role 값이 admin 또는 superuser인 계정만 NAS 메뉴를 보고 NAS 페이지에 접속할 수 있습니다.")
 
     drive = _get_nas_drive_status(force_refresh=True)
     return templates.TemplateResponse(
@@ -3807,6 +3954,204 @@ def api_nas_trash_empty(request: Request):
             continue
 
     return JSONResponse({"ok": True, "removed_count": removed_count})
+
+
+@router.get("/profile-settings", name="profile_settings")
+def profile_settings_page(request: Request, saved: int = 0):
+    if not (getattr(request.state, "user_id", "") or ""):
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(
+        "profile_settings.html",
+        _profile_settings_context(request, saved=bool(saved)),
+    )
+
+
+@router.post("/profile-settings", name="profile_settings_save")
+async def profile_settings_save(
+    request: Request,
+    name: str = Form(""),
+    nickname: str = Form(""),
+    email: str = Form(""),
+    birth: str = Form(""),
+    phone: str = Form(""),
+    department: str = Form(""),
+    location: str = Form(""),
+    bio: str = Form(""),
+    new_password: str = Form(""),
+    confirm_password: str = Form(""),
+    remove_profile_image: str = Form("0"),
+    profile_image: UploadFile | None = File(default=None),
+):
+    user_id = getattr(request.state, "user_id", "") or ""
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=303)
+
+    current_row = _request_user_row(request)
+    current_form = _build_profile_form(user_id, current_row)
+    remove_image = str(remove_profile_image or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    form_data = {
+        "user_id": user_id,
+        "role": current_form.get("role") or "user",
+        "role_label": current_form.get("role_label") or "USER",
+        "join_date": current_form.get("join_date") or "",
+        "name": str(name or "").strip(),
+        "nickname": str(nickname or "").strip(),
+        "email": str(email or "").strip(),
+        "birth": str(birth or "").strip(),
+        "phone": str(phone or "").strip(),
+        "department": str(department or "").strip(),
+        "location": str(location or "").strip(),
+        "bio": str(bio or "").strip(),
+        "new_password": "",
+        "confirm_password": "",
+        "profile_image_url": "" if remove_image else (current_form.get("profile_image_url") or ""),
+        "remove_profile_image": "1" if remove_image else "0",
+    }
+    new_password_value = str(new_password or "")
+    confirm_password_value = str(confirm_password or "")
+
+    errors: list[str] = []
+    if not form_data["name"]:
+        errors.append("이름을 입력해주세요.")
+    if not form_data["nickname"]:
+        errors.append("닉네임을 입력해주세요.")
+    if not form_data["email"] or "@" not in form_data["email"] or "." not in form_data["email"]:
+        errors.append("이메일 형식이 올바르지 않습니다.")
+    if form_data["birth"]:
+        try:
+            datetime.strptime(form_data["birth"], "%Y-%m-%d")
+        except Exception:
+            errors.append("생년월일은 YYYY-MM-DD 형식으로 입력해주세요.")
+
+    if len(form_data["phone"]) > 32:
+        errors.append("연락처는 32자 이하로 입력해주세요.")
+    if len(form_data["department"]) > 64:
+        errors.append("소속/부서는 64자 이하로 입력해주세요.")
+    if len(form_data["location"]) > 64:
+        errors.append("위치는 64자 이하로 입력해주세요.")
+    if len(form_data["bio"]) > 500:
+        errors.append("소개는 500자 이하로 입력해주세요.")
+    if new_password_value or confirm_password_value:
+        if len(new_password_value) < 6:
+            errors.append("새 비밀번호는 6자 이상이어야 합니다.")
+        if new_password_value != confirm_password_value:
+            errors.append("비밀번호 재확인이 일치하지 않습니다.")
+
+    old_image_url = current_form.get("profile_image_url") or ""
+    uploaded_image_url = ""
+    try:
+        if profile_image and str(profile_image.filename or "").strip():
+            uploaded_image_url = await _store_profile_image(user_id, profile_image)
+            form_data["profile_image_url"] = uploaded_image_url
+    except ValueError as exc:
+        errors.append(str(exc))
+    finally:
+        if profile_image is not None:
+            try:
+                await profile_image.close()
+            except Exception:
+                pass
+
+    if errors:
+        if uploaded_image_url:
+            _delete_managed_profile_image(uploaded_image_url)
+        form_data["profile_image_url"] = old_image_url if not remove_image else ""
+        return templates.TemplateResponse(
+            "profile_settings.html",
+            _profile_settings_context(request, form_data=form_data, errors=errors),
+            status_code=400,
+        )
+
+    final_image_url = uploaded_image_url or ("" if remove_image else old_image_url)
+
+    try:
+        user_repo.update_user_profile_row(
+            user_id=user_id,
+            email=form_data["email"],
+            birth=form_data["birth"],
+            name=form_data["name"],
+            nickname=form_data["nickname"],
+            phone=form_data["phone"],
+            department=form_data["department"],
+            location=form_data["location"],
+            bio=form_data["bio"],
+            profile_image_path=final_image_url,
+        )
+        if new_password_value:
+            user_repo.update_user_password_hash(
+                user_id=user_id,
+                pw_hash=hash_password_for_storage(new_password_value),
+            )
+    except Exception:
+        if uploaded_image_url:
+            _delete_managed_profile_image(uploaded_image_url)
+        return templates.TemplateResponse(
+            "profile_settings.html",
+            _profile_settings_context(
+                request,
+                form_data={**form_data, "profile_image_url": old_image_url if not remove_image else ""},
+                errors=["프로필 정보를 저장하지 못했습니다. 잠시 후 다시 시도해주세요."],
+            ),
+            status_code=500,
+        )
+
+    if old_image_url and old_image_url != final_image_url:
+        _delete_managed_profile_image(old_image_url)
+
+    _clear_nas_user_profile_cache(user_id)
+
+    try:
+        request.state.user_row = read_user(user_id) or {}
+    except Exception:
+        pass
+
+    return RedirectResponse(url="/profile-settings?saved=1", status_code=303)
+
+
+@router.post("/profile-settings/delete", name="profile_settings_delete")
+def profile_settings_delete(request: Request):
+    user_id = getattr(request.state, "user_id", "") or ""
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=303)
+
+    current_row = _request_user_row(request)
+    current_form = _build_profile_form(user_id, current_row)
+    profile_image_url = current_form.get("profile_image_url") or ""
+    nickname = current_form.get("nickname") or current_form.get("name") or ""
+
+    try:
+        nas_repo.anonymize_uploader_user(user_id, fallback_nickname=nickname)
+        user_repo.delete_user_row(user_id=user_id)
+    except Exception:
+        return templates.TemplateResponse(
+            "profile_settings.html",
+            _profile_settings_context(request, errors=["회원탈퇴를 처리하지 못했습니다. 잠시 후 다시 시도해주세요."]),
+            status_code=500,
+        )
+
+    _delete_managed_profile_image(profile_image_url)
+    _clear_nas_user_profile_cache(user_id)
+
+    try:
+        request.state.user_row = {}
+    except Exception:
+        pass
+    try:
+        request.state.user_id = ""
+    except Exception:
+        pass
+
+    sid = request.cookies.get(SESSION_COOKIE_NAME, "") or ""
+    if sid:
+        try:
+            delete_session(sid)
+        except Exception:
+            pass
+
+    response = RedirectResponse(url="/login", status_code=303)
+    clear_session_cookie(response)
+    return response
 
 
 @router.get("/settings", name="settings")

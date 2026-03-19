@@ -809,6 +809,46 @@
   }
 
   .nas-uploader-cell {
+    display: flex;
+    align-items: center;
+    gap: .72rem;
+    min-width: 0;
+  }
+
+  .nas-uploader-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    overflow: hidden;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #edf4ff 0%, #dce8ff 100%);
+    color: #1c4fd7;
+    font-size: .88rem;
+    font-weight: 800;
+    box-shadow: inset 0 0 0 1px rgba(31, 94, 255, 0.08);
+  }
+
+  .nas-uploader-avatar__image,
+  .nas-uploader-avatar__fallback {
+    width: 100%;
+    height: 100%;
+  }
+
+  .nas-uploader-avatar__image {
+    display: block;
+    object-fit: cover;
+  }
+
+  .nas-uploader-avatar__fallback {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .nas-uploader-text {
     min-width: 0;
   }
 
@@ -816,6 +856,9 @@
     font-weight: 600;
     color: var(--nas-ink);
     line-height: 1.15;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .nas-uploader-id {
@@ -1070,6 +1113,12 @@
   html[data-bs-theme="dark"] #nasPageRoot .nas-meta-value,
   html[data-bs-theme="dark"] #nasPageRoot .nas-navtool-btn {
     color: #eef4ff;
+  }
+
+  html[data-bs-theme="dark"] #nasPageRoot .nas-uploader-avatar {
+    background: linear-gradient(135deg, rgba(67, 112, 255, 0.28) 0%, rgba(24, 196, 181, 0.18) 100%);
+    color: #eef4ff;
+    box-shadow: inset 0 0 0 1px rgba(151, 177, 255, 0.16);
   }
 
   html[data-bs-theme="dark"] #nasPageRoot .nas-pane-item:hover {

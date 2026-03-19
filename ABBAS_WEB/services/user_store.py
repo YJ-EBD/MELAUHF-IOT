@@ -23,6 +23,11 @@ USER_HEADERS = [
     "BIRTH",
     "NAME",
     "NICKNAME",
+    "PHONE",
+    "DEPARTMENT",
+    "LOCATION",
+    "BIO",
+    "PROFILE_IMAGE_PATH",
     "ROLE",
     "JOIN_DATE",
 ]
@@ -59,6 +64,10 @@ def _hash_password(password: str, iterations: int = 200_000) -> str:
     return f"pbkdf2_sha256${iterations}${salt_b64}${dk_b64}"
 
 
+def hash_password_for_storage(password: str) -> str:
+    return _hash_password(password)
+
+
 def _verify_password(password: str, stored: str) -> bool:
     try:
         algo, it_s, salt_b64, dk_b64 = (stored or "").split("$", 3)
@@ -90,13 +99,13 @@ def get_user_role(user_id: str) -> str:
     if not user:
         return "user"
     role = str(user.get("ROLE") or "").strip().lower()
-    if role == "admin":
-        return "admin"
+    if role in {"admin", "superuser"}:
+        return role
     return "user"
 
 
 def is_admin_user(user_id: str) -> bool:
-    return get_user_role(user_id) == "admin"
+    return get_user_role(user_id) in {"admin", "superuser"}
 
 
 def _friendly_create_user_error(exc: Exception) -> str:

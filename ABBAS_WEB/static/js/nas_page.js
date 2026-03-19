@@ -1124,9 +1124,14 @@
       const subLabel = subParts.join(" · ");
       const uploaderName = String(item.uploader_name || item.uploader_nickname || item.uploader_id || "-").trim() || "-";
       const uploaderId = String(item.uploader_id || "").trim();
+      const uploaderImageUrl = String(item.uploader_profile_image_url || "").trim();
+      const uploaderAvatarInitial = String(item.uploader_avatar_initial || uploaderName.charAt(0) || "U").trim() || "U";
       const uploaderIdLabel = uploaderId && uploaderId !== uploaderName
         ? `<div class="nas-uploader-id">ID: ${escapeHtml(uploaderId)}</div>`
         : "";
+      const uploaderAvatar = uploaderImageUrl
+        ? `<img class="nas-uploader-avatar__image" src="${escapeHtml(uploaderImageUrl)}" alt="${escapeHtml(uploaderName)}">`
+        : `<span class="nas-uploader-avatar__fallback">${escapeHtml(uploaderAvatarInitial)}</span>`;
 
       return `
         <tr class="nas-file-row ${isSelected ? "is-selected" : ""} ${item.marked ? "is-marked" : ""}" data-row-path="${escapeHtml(item.path)}" data-row-type="${escapeHtml(item.type)}" data-row-name="${escapeHtml(item.name)}" draggable="true" ${rowStyle ? `style="${escapeHtml(rowStyle)}"` : ""}>
@@ -1141,8 +1146,11 @@
           </td>
           <td>
             <div class="nas-uploader-cell">
-              <div class="nas-uploader-name">${escapeHtml(uploaderName)}</div>
-              ${uploaderIdLabel}
+              <span class="nas-uploader-avatar">${uploaderAvatar}</span>
+              <div class="nas-uploader-text">
+                <div class="nas-uploader-name">${escapeHtml(uploaderName)}</div>
+                ${uploaderIdLabel}
+              </div>
             </div>
           </td>
           <td>${escapeHtml(item.modified_at || "-")}</td>
