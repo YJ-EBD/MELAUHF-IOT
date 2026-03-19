@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -29,7 +30,22 @@ from DB import user_repo
 from DB.runtime import get_mysql
 from services.log_store import read_logs as db_read_logs
 from services.user_store import hash_password_for_storage, read_user
-from redis.session import SESSION_COOKIE_NAME, clear_session_cookie, delete_session, read_session_user
+from redis.session import (
+    SESSION_COOKIE_NAME,
+    clear_live_presence,
+    clear_session_cookie,
+    delete_session,
+    list_active_sessions,
+    list_live_presence,
+    read_session_user,
+    touch_live_presence,
+)
+
+try:
+    import psutil
+except Exception:
+    psutil = None
+
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 DEVICE_LOG_ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage", "device_logs")
@@ -64,6 +80,7 @@ PROFILE_IMAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file_
 PROFILE_IMAGE_PUBLIC_PREFIX = "/static/uploads/profile-images"
 PROFILE_IMAGE_MAX_BYTES = int(os.getenv("ABBAS_PROFILE_IMAGE_MAX_BYTES", str(3 * 1024 * 1024)))
 PROFILE_IMAGE_ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_NET_RATE_CACHE: dict[str, dict[str, float]] = {}
 
 
 def _fmt(dt: datetime) -> str:
@@ -259,6 +276,146 @@ def _role_label(value: Any) -> str:
     return "USER"
 
 
+def _normalize_approval_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status == "approved":
+        return "approved"
+    return "pending"
+
+
+def _approval_label(value: Any) -> str:
+    status = _normalize_approval_status(value)
+    if status == "approved":
+        return "승인완료"
+    return "승인대기"
+
+
+def _role_rank(value: Any) -> int:
+    role = _normalize_role(value)
+    if role == "superuser":
+        return 2
+    if role == "admin":
+        return 1
+    return 0
+
+
+def _promoted_role(value: Any) -> str:
+    role = _normalize_role(value)
+    if role == "user":
+        return "admin"
+    if role == "admin":
+        return "superuser"
+    return "superuser"
+
+
+def _demoted_role(value: Any) -> str:
+    role = _normalize_role(value)
+    if role == "superuser":
+        return "admin"
+    if role == "admin":
+        return "user"
+    return "user"
+
+
+def _format_duration_text(total_seconds: Any) -> str:
+    try:
+        seconds = max(int(float(total_seconds or 0)), 0)
+    except Exception:
+        seconds = 0
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    if days > 0:
+        return f"{days}일 {hours}시간"
+    if hours > 0:
+        return f"{hours}시간 {minutes}분"
+    if minutes > 0:
+        return f"{minutes}분"
+    return "방금"
+
+
+def _normalize_presence_state(value: Any) -> str:
+    state = str(value or "").strip().lower()
+    if state in {"live", "visible"}:
+        return "live"
+    if state in {"background", "hidden"}:
+        return "background"
+    return "inactive"
+
+
+def _presence_rank(value: Any) -> int:
+    state = _normalize_presence_state(value)
+    if state == "live":
+        return 2
+    if state == "background":
+        return 1
+    return 0
+
+
+def _presence_label(value: Any) -> str:
+    state = _normalize_presence_state(value)
+    if state == "live":
+        return "LIVE"
+    if state == "background":
+        return "BACKGROUND"
+    return "INACTIVE"
+
+
+def _presence_page_label(title: Any, path: Any) -> str:
+    title_text = str(title or "").strip()
+    path_text = str(path or "").strip()
+    if title_text and "|" in title_text:
+        title_text = title_text.split("|", 1)[0].strip()
+    return title_text or path_text
+
+
+def _presence_detail_text(state: Any, *, is_logged_in: bool, visible_count: Any = 0, hidden_count: Any = 0) -> str:
+    normalized = _normalize_presence_state(state)
+    try:
+        visible = max(int(visible_count or 0), 0)
+    except Exception:
+        visible = 0
+    try:
+        hidden = max(int(hidden_count or 0), 0)
+    except Exception:
+        hidden = 0
+
+    if normalized == "live":
+        if hidden > 0:
+            return f"표시 {max(visible, 1)} · 숨김 {hidden}"
+        return "창 표시 중"
+    if normalized == "background":
+        if hidden > 1:
+            return f"숨김 창 {hidden}개"
+        return "창 숨김 상태"
+    if is_logged_in:
+        return "로그인 유지, 브라우저 미접속"
+    return "세션 없음"
+
+
+def _format_rate_bits_per_sec(bits_per_sec: Any) -> str:
+    try:
+        rate = max(float(bits_per_sec or 0), 0.0)
+    except Exception:
+        rate = 0.0
+    units = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"]
+    idx = 0
+    while rate >= 1000.0 and idx < (len(units) - 1):
+        rate /= 1000.0
+        idx += 1
+    if idx == 0:
+        return f"{int(rate)} {units[idx]}"
+    return f"{rate:.1f} {units[idx]}"
+
+
+def _display_user_name(row: dict[str, Any] | None) -> str:
+    row = row or {}
+    user_id = str(row.get("ID") or row.get("user_id") or "").strip()
+    nickname = str(row.get("NICKNAME") or row.get("nickname") or "").strip()
+    name = str(row.get("NAME") or row.get("name") or "").strip()
+    return nickname or name or user_id
+
+
 def _profile_image_url_from_value(value: Any) -> str:
     path = str(value or "").strip()
     if path.startswith(f"{PROFILE_IMAGE_PUBLIC_PREFIX}/"):
@@ -325,6 +482,11 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
 
 
+def _require_superuser(request: Request) -> None:
+    if _request_user_role(request) != "superuser":
+        raise HTTPException(status_code=403, detail="슈퍼어드민 권한이 필요합니다.")
+
+
 def _admin_forbidden_page(request: Request, *, message: str = ""):
     detail = message or "role 값이 admin 또는 superuser인 계정만 이 페이지에 접근할 수 있습니다."
     return templates.TemplateResponse(
@@ -334,6 +496,21 @@ def _admin_forbidden_page(request: Request, *, message: str = ""):
             "",
             page_title="접근 제한",
             forbidden_title="관리자 전용 페이지",
+            forbidden_message=detail,
+        ),
+        status_code=403,
+    )
+
+
+def _superuser_forbidden_page(request: Request, *, message: str = ""):
+    detail = message or "role 값이 superuser인 계정만 이 페이지에 접근할 수 있습니다."
+    return templates.TemplateResponse(
+        "forbidden.html",
+        _base_context(
+            request,
+            "",
+            page_title="접근 제한",
+            forbidden_title="슈퍼어드민 전용 페이지",
             forbidden_message=detail,
         ),
         status_code=403,
@@ -369,6 +546,437 @@ def _format_bytes(value: Any) -> str:
     if unit_idx == 0:
         return f"{int(size)} {units[unit_idx]}"
     return f"{size:.2f} {units[unit_idx]}"
+
+
+def _network_primary_interface() -> tuple[str, Any, Any]:
+    if psutil is None:
+        return "", None, None
+    try:
+        stats = psutil.net_if_stats()
+        counters = psutil.net_io_counters(pernic=True)
+    except Exception:
+        return "", None, None
+
+    candidates: list[tuple[float, float, str, Any, Any]] = []
+    for iface, iface_stats in (stats or {}).items():
+        if not iface or iface.startswith("lo") or not getattr(iface_stats, "isup", False):
+            continue
+        iface_counter = (counters or {}).get(iface)
+        total_bytes = 0.0
+        if iface_counter is not None:
+            total_bytes = float(getattr(iface_counter, "bytes_recv", 0) or 0) + float(getattr(iface_counter, "bytes_sent", 0) or 0)
+        speed = float(getattr(iface_stats, "speed", 0) or 0)
+        candidates.append((total_bytes, speed, iface, iface_stats, iface_counter))
+
+    if not candidates:
+        return "", None, None
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _total_bytes, _speed, iface, iface_stats, iface_counter = candidates[0]
+    return iface, iface_stats, iface_counter
+
+
+def _system_metric_cards() -> list[dict[str, Any]]:
+    hostname = socket.gethostname() or "-"
+    machine = ""
+    try:
+        machine = platform.machine()
+    except Exception:
+        machine = ""
+    if psutil is None:
+        return [
+            {
+                "key": "cpu",
+                "label": "CPU",
+                "percent": 0.0,
+                "center_text": "0%",
+                "metric_text": "psutil unavailable",
+                "detail_text": f"{hostname} {machine}".strip(),
+            },
+            {
+                "key": "memory",
+                "label": "RAM",
+                "percent": 0.0,
+                "center_text": "0%",
+                "metric_text": "psutil unavailable",
+                "detail_text": "메모리 정보 비활성화",
+            },
+            {
+                "key": "disk",
+                "label": "Storage",
+                "percent": 0.0,
+                "center_text": "0%",
+                "metric_text": "psutil unavailable",
+                "detail_text": "디스크 정보 비활성화",
+            },
+            {
+                "key": "network",
+                "label": "Network",
+                "percent": 0.0,
+                "center_text": "0%",
+                "metric_text": "psutil unavailable",
+                "detail_text": "네트워크 정보 비활성화",
+            },
+        ]
+
+    cpu_percent = 0.0
+    try:
+        cpu_percent = float(psutil.cpu_percent(interval=0.12))
+    except Exception:
+        cpu_percent = 0.0
+    cpu_count = 0
+    try:
+        cpu_count = int(psutil.cpu_count(logical=True) or 0)
+    except Exception:
+        cpu_count = 0
+    load_text = ""
+    try:
+        load1, load5, load15 = os.getloadavg()
+        load_text = f"Load {load1:.2f} / {load5:.2f} / {load15:.2f}"
+    except Exception:
+        load_text = "Load 정보 없음"
+
+    memory_percent = 0.0
+    memory_used = 0
+    memory_total = 0
+    try:
+        vm = psutil.virtual_memory()
+        memory_percent = float(getattr(vm, "percent", 0.0) or 0.0)
+        memory_used = int(getattr(vm, "used", 0) or 0)
+        memory_total = int(getattr(vm, "total", 0) or 0)
+    except Exception:
+        pass
+
+    disk_percent = 0.0
+    disk_used = 0
+    disk_total = 0
+    disk_free = 0
+    try:
+        disk = psutil.disk_usage("/")
+        disk_percent = float(getattr(disk, "percent", 0.0) or 0.0)
+        disk_used = int(getattr(disk, "used", 0) or 0)
+        disk_total = int(getattr(disk, "total", 0) or 0)
+        disk_free = int(getattr(disk, "free", 0) or 0)
+    except Exception:
+        pass
+
+    iface, iface_stats, iface_counter = _network_primary_interface()
+    speed_mbps = float(getattr(iface_stats, "speed", 0) or 0) if iface_stats is not None else 0.0
+    speed_inferred = False
+    if speed_mbps <= 0:
+        speed_mbps = 100.0
+        speed_inferred = True
+
+    rx_total = int(getattr(iface_counter, "bytes_recv", 0) or 0) if iface_counter is not None else 0
+    tx_total = int(getattr(iface_counter, "bytes_sent", 0) or 0) if iface_counter is not None else 0
+    total_bytes = rx_total + tx_total
+    now_ts = time.time()
+    prev = _NET_RATE_CACHE.get(iface or "")
+    rate_bytes_per_sec = 0.0
+    if prev and iface:
+        prev_total = float(prev.get("total_bytes") or 0.0)
+        prev_ts = float(prev.get("ts") or 0.0)
+        if now_ts > prev_ts:
+            rate_bytes_per_sec = max(float(total_bytes) - prev_total, 0.0) / max(now_ts - prev_ts, 0.25)
+    if iface:
+        _NET_RATE_CACHE[iface] = {"ts": now_ts, "total_bytes": float(total_bytes)}
+    network_percent = min(100.0, ((rate_bytes_per_sec * 8.0) / (speed_mbps * 1_000_000.0)) * 100.0) if speed_mbps > 0 else 0.0
+
+    network_detail = f"{iface or '인터페이스 없음'} | RX {_format_bytes(rx_total)} / TX {_format_bytes(tx_total)}"
+    if speed_inferred and iface:
+        network_detail = f"{network_detail} | 100Mbps 기준 추정"
+
+    return [
+        {
+            "key": "cpu",
+            "label": "CPU",
+            "percent": round(cpu_percent, 1),
+            "center_text": f"{cpu_percent:.1f}%",
+            "metric_text": f"{cpu_count} Threads" if cpu_count > 0 else "CPU 정보 없음",
+            "detail_text": load_text,
+        },
+        {
+            "key": "memory",
+            "label": "RAM",
+            "percent": round(memory_percent, 1),
+            "center_text": f"{memory_percent:.1f}%",
+            "metric_text": f"{_format_bytes(memory_used)} / {_format_bytes(memory_total)}",
+            "detail_text": "메모리 사용량",
+        },
+        {
+            "key": "disk",
+            "label": "Storage",
+            "percent": round(disk_percent, 1),
+            "center_text": f"{disk_percent:.1f}%",
+            "metric_text": f"{_format_bytes(disk_used)} / {_format_bytes(disk_total)}",
+            "detail_text": f"여유 공간 {_format_bytes(disk_free)}",
+        },
+        {
+            "key": "network",
+            "label": "Network",
+            "percent": round(network_percent, 1),
+            "center_text": f"{network_percent:.1f}%",
+            "metric_text": _format_rate_bits_per_sec(rate_bytes_per_sec * 8.0),
+            "detail_text": network_detail,
+        },
+    ]
+
+
+def _system_overview_summary() -> dict[str, str]:
+    hostname = socket.gethostname() or "-"
+    platform_label = f"{platform.system()} {platform.release()}".strip()
+    machine = ""
+    try:
+        machine = platform.machine()
+    except Exception:
+        machine = ""
+
+    uptime_text = "-"
+    if psutil is not None:
+        try:
+            boot_ts = float(psutil.boot_time() or 0.0)
+            if boot_ts > 0:
+                uptime_text = _format_duration_text(time.time() - boot_ts)
+        except Exception:
+            uptime_text = "-"
+
+    return {
+        "hostname": hostname,
+        "platform": " ".join(part for part in [platform_label, machine] if part).strip() or "-",
+        "uptime_text": uptime_text,
+    }
+
+
+def _build_integrated_admin_system_payload() -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "system": {
+            **_system_overview_summary(),
+            "metrics": _system_metric_cards(),
+        },
+    }
+
+
+def _build_integrated_admin_presence_state_map() -> dict[str, dict[str, Any]]:
+    presence_map: dict[str, dict[str, Any]] = {}
+    for entry in list_live_presence():
+        user_id = str(entry.get("user_id") or "").strip()
+        if not user_id:
+            continue
+        state = _normalize_presence_state(entry.get("state") or "")
+        info = presence_map.setdefault(
+            user_id,
+            {
+                "state": "inactive",
+                "client_count": 0,
+                "visible_count": 0,
+                "hidden_count": 0,
+                "page_title": "",
+                "page_path": "",
+                "last_seen_ts": 0.0,
+            },
+        )
+        info["client_count"] += 1
+        if state == "live":
+            info["visible_count"] += 1
+        elif state == "background":
+            info["hidden_count"] += 1
+
+        if _presence_rank(state) > _presence_rank(info.get("state")):
+            info["state"] = state
+
+        try:
+            updated_at_ts = float(entry.get("updated_at_ts") or 0.0)
+        except Exception:
+            updated_at_ts = 0.0
+        if updated_at_ts >= float(info.get("last_seen_ts") or 0.0):
+            info["last_seen_ts"] = updated_at_ts
+            info["page_title"] = str(entry.get("title") or "").strip()
+            info["page_path"] = str(entry.get("path") or "").strip()
+
+    for info in presence_map.values():
+        info["page_label"] = _presence_page_label(info.get("page_title"), info.get("page_path"))
+    return presence_map
+
+
+def _build_integrated_admin_user_views(current_user_id: str) -> dict[str, Any]:
+    rows = user_repo.list_user_rows()
+    sessions = list_active_sessions()
+    session_map = {
+        str(item.get("user_id") or "").strip(): item
+        for item in sessions
+        if str(item.get("user_id") or "").strip()
+    }
+    presence_map = _build_integrated_admin_presence_state_map()
+
+    approved_users: list[dict[str, Any]] = []
+    pending_users: list[dict[str, Any]] = []
+
+    for row in rows:
+        user_id = str(row.get("ID") or "").strip()
+        role = _normalize_role(row.get("ROLE") or "")
+        approval_status = _normalize_approval_status(row.get("APPROVAL_STATUS") or "")
+        session = session_map.get(user_id)
+        presence = presence_map.get(user_id) or {}
+        presence_state = _normalize_presence_state(presence.get("state") or "")
+        display_name = _display_user_name(row)
+        item = {
+            "user_id": user_id,
+            "display_name": display_name,
+            "email": str(row.get("EMAIL") or "").strip(),
+            "role": role,
+            "role_label": _role_label(role),
+            "approval_status": approval_status,
+            "approval_label": _approval_label(approval_status),
+            "join_date": str(row.get("JOIN_DATE") or "").strip(),
+            "approved_at": str(row.get("APPROVED_AT") or "").strip(),
+            "approved_by": str(row.get("APPROVED_BY") or "").strip(),
+            "is_logged_in": bool(session),
+            "session_ttl_text": _format_duration_text(session.get("ttl_sec") or 0) if session else "-",
+            "session_id_preview": (str(session.get("sid") or "")[:12] + "...") if session else "",
+            "presence_state": presence_state,
+            "presence_label": _presence_label(presence_state),
+            "presence_detail_text": _presence_detail_text(
+                presence_state,
+                is_logged_in=bool(session),
+                visible_count=presence.get("visible_count") or 0,
+                hidden_count=presence.get("hidden_count") or 0,
+            ),
+            "presence_page_text": str(presence.get("page_label") or "").strip(),
+            "presence_client_count": int(presence.get("client_count") or 0),
+            "is_active_presence": presence_state in {"live", "background"},
+            "can_promote": approval_status == "approved" and role != "superuser" and user_id != current_user_id,
+            "can_demote": approval_status == "approved" and role != "user" and user_id != current_user_id,
+            "is_current_user": user_id == current_user_id,
+        }
+        if approval_status == "pending":
+            pending_users.append(item)
+        else:
+            approved_users.append(item)
+
+    approved_users.sort(
+        key=lambda item: (
+            -_presence_rank(item.get("presence_state")),
+            0 if item.get("is_logged_in") else 1,
+            -_role_rank(item.get("role")),
+            str(item.get("user_id") or ""),
+        )
+    )
+    pending_users.sort(key=lambda item: str(item.get("join_date") or ""), reverse=True)
+
+    return {
+        "total_users": len(rows),
+        "approved_users": approved_users,
+        "pending_users": pending_users,
+        "active_users": list(approved_users),
+        "active_sessions": sum(1 for item in approved_users if item.get("is_active_presence")),
+    }
+
+
+def _collect_usb_devices() -> list[dict[str, str]]:
+    devices: list[dict[str, str]] = []
+    try:
+        proc = subprocess.run(
+            ["lsusb"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3.0,
+        )
+        if proc.returncode == 0:
+            for raw_line in (proc.stdout or "").splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                match = re.match(r"Bus\s+(\d+)\s+Device\s+(\d+):\s+ID\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s*(.*)", line)
+                if not match:
+                    continue
+                name = match.group(4).strip() or "USB Device"
+                devices.append(
+                    {
+                        "bus": match.group(1),
+                        "device": match.group(2),
+                        "id": match.group(3).lower(),
+                        "name": name,
+                        "source": "lsusb",
+                    }
+                )
+    except Exception:
+        devices = []
+
+    if devices:
+        return devices
+
+    sysfs_root = "/sys/bus/usb/devices"
+    if not os.path.isdir(sysfs_root):
+        return []
+
+    for entry_name in sorted(os.listdir(sysfs_root)):
+        entry_path = os.path.join(sysfs_root, entry_name)
+        if not os.path.isdir(entry_path):
+            continue
+
+        def _read(path_name: str) -> str:
+            try:
+                with open(os.path.join(entry_path, path_name), "r", encoding="utf-8") as fp:
+                    return fp.read().strip()
+            except Exception:
+                return ""
+
+        product = _read("product")
+        manufacturer = _read("manufacturer")
+        vendor_id = _read("idVendor")
+        product_id = _read("idProduct")
+        bus = _read("busnum")
+        device = _read("devnum")
+        if not any([product, manufacturer, vendor_id, product_id]):
+            continue
+        name = " ".join(part for part in [manufacturer, product] if part).strip() or "USB Device"
+        devices.append(
+            {
+                "bus": bus,
+                "device": device,
+                "id": f"{vendor_id}:{product_id}".strip(":"),
+                "name": name,
+                "source": "sysfs",
+            }
+        )
+
+    return devices
+
+
+def _build_integrated_admin_realtime_payload(current_user_id: str) -> dict[str, Any]:
+    user_views = _build_integrated_admin_user_views(current_user_id)
+    return {
+        **_build_integrated_admin_system_payload(),
+        "summary": {
+            "active_sessions": user_views["active_sessions"],
+        },
+        "users": user_views["approved_users"],
+        "active_users": user_views["active_users"],
+    }
+
+
+def _build_integrated_admin_payload(request: Request) -> dict[str, Any]:
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    user_views = _build_integrated_admin_user_views(current_user_id)
+    usb_devices = _collect_usb_devices()
+    summary = {
+        "total_users": user_views["total_users"],
+        "approved_users": len(user_views["approved_users"]),
+        "pending_users": len(user_views["pending_users"]),
+        "active_sessions": user_views["active_sessions"],
+        "usb_devices": len(usb_devices),
+    }
+
+    return {
+        **_build_integrated_admin_system_payload(),
+        "summary": summary,
+        "users": user_views["approved_users"],
+        "pending_users": user_views["pending_users"],
+        "active_users": user_views["active_users"],
+        "usb_devices": usb_devices,
+    }
 
 
 def _clean_drive_text(value: Any) -> str:
@@ -4157,6 +4765,203 @@ def profile_settings_delete(request: Request):
 @router.get("/settings", name="settings")
 def settings(request: Request):
     return templates.TemplateResponse("settings.html", _base_context(request, "settings", page_title="설정"))
+
+
+@router.get("/integrated-admin", name="integrated_admin")
+def integrated_admin_page(request: Request):
+    if _request_user_role(request) != "superuser":
+        return _superuser_forbidden_page(request, message="role 값이 superuser인 계정만 통합관리 페이지에 접근할 수 있습니다.")
+    return templates.TemplateResponse(
+        "integrated_admin.html",
+        _base_context(
+            request,
+            "settings",
+            page_title="통합관리",
+        ),
+    )
+
+
+@router.get("/api/integrated-admin/overview")
+def api_integrated_admin_overview(request: Request):
+    _require_superuser(request)
+    return JSONResponse({"ok": True, "payload": _build_integrated_admin_payload(request)})
+
+
+@router.post("/api/live-presence/disconnect")
+def api_live_presence_disconnect(request: Request, client_id: str = ""):
+    sid = request.cookies.get(SESSION_COOKIE_NAME, "") or ""
+    user_id = read_session_user(sid)
+    if user_id and client_id:
+        clear_live_presence(user_id=user_id, client_id=client_id)
+    return Response(status_code=204)
+
+
+@router.websocket("/ws/live-presence")
+async def ws_live_presence(websocket: WebSocket):
+    client_id = str(websocket.query_params.get("client_id") or "").strip()
+    if not re.match(r"^[A-Za-z0-9._:-]{8,128}$", client_id):
+        try:
+            await websocket.close(code=4400)
+        except Exception:
+            pass
+        return
+
+    sid = ""
+    try:
+        sid = (websocket.cookies.get(SESSION_COOKIE_NAME, "") or "").strip()
+    except Exception:
+        sid = ""
+
+    user_id = read_session_user(sid)
+    if not user_id:
+        try:
+            await websocket.close(code=4401)
+        except Exception:
+            pass
+        return
+
+    await websocket.accept()
+    current_state = "visible"
+    current_path = ""
+    current_title = ""
+
+    try:
+        while True:
+            try:
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=8.0)
+                try:
+                    payload = json.loads(raw or "{}")
+                except Exception:
+                    payload = {}
+                current_state = str(payload.get("state") or current_state or "visible")
+                current_path = str(payload.get("path") or current_path or "")
+                current_title = str(payload.get("title") or current_title or "")
+            except asyncio.TimeoutError:
+                pass
+            await asyncio.to_thread(
+                touch_live_presence,
+                user_id=user_id,
+                client_id=client_id,
+                sid=sid,
+                state=current_state,
+                path=current_path,
+                title=current_title,
+            )
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+    finally:
+        await asyncio.to_thread(clear_live_presence, user_id=user_id, client_id=client_id)
+
+
+@router.websocket("/ws/integrated-admin/system")
+async def ws_integrated_admin_system(websocket: WebSocket):
+    sid = ""
+    try:
+        sid = (websocket.cookies.get(SESSION_COOKIE_NAME, "") or "").strip()
+    except Exception:
+        sid = ""
+
+    user_id = read_session_user(sid)
+    if not user_id:
+        try:
+            await websocket.close(code=4401)
+        except Exception:
+            pass
+        return
+
+    row = read_user(user_id) or {}
+    if _normalize_role(row.get("ROLE") or "") != "superuser":
+        try:
+            await websocket.close(code=4403)
+        except Exception:
+            pass
+        return
+
+    await websocket.accept()
+
+    try:
+        while True:
+            payload = await asyncio.to_thread(_build_integrated_admin_realtime_payload, user_id)
+            await websocket.send_text(json.dumps({"type": "realtime_snapshot", "payload": payload}, ensure_ascii=False))
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        return
+
+
+def _integrated_admin_target_user(target_user_id: str) -> dict[str, Any]:
+    row = read_user(target_user_id) or {}
+    if not row:
+        raise HTTPException(status_code=404, detail="대상 계정을 찾을 수 없습니다.")
+    return row
+
+
+@router.post("/api/integrated-admin/users/{target_user_id}/promote")
+def api_integrated_admin_user_promote(request: Request, target_user_id: str):
+    _require_superuser(request)
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    target_row = _integrated_admin_target_user(target_user_id)
+    target_id = str(target_row.get("ID") or "").strip()
+    if target_id == current_user_id:
+        return JSONResponse({"ok": False, "detail": "현재 로그인한 슈퍼어드민 계정은 직접 승격/강등할 수 없습니다."}, status_code=400)
+
+    if _normalize_approval_status(target_row.get("APPROVAL_STATUS") or "") != "approved":
+        return JSONResponse({"ok": False, "detail": "승인 완료된 계정만 role 변경이 가능합니다."}, status_code=409)
+
+    current_role = _normalize_role(target_row.get("ROLE") or "")
+    next_role = _promoted_role(current_role)
+    if next_role == current_role:
+        return JSONResponse({"ok": True, "message": "이미 최고 권한입니다.", "role": current_role, "role_label": _role_label(current_role)})
+
+    user_repo.update_user_role(user_id=target_id, role=next_role)
+    return JSONResponse({"ok": True, "message": "승격 완료", "role": next_role, "role_label": _role_label(next_role)})
+
+
+@router.post("/api/integrated-admin/users/{target_user_id}/demote")
+def api_integrated_admin_user_demote(request: Request, target_user_id: str):
+    _require_superuser(request)
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    target_row = _integrated_admin_target_user(target_user_id)
+    target_id = str(target_row.get("ID") or "").strip()
+    if target_id == current_user_id:
+        return JSONResponse({"ok": False, "detail": "현재 로그인한 슈퍼어드민 계정은 직접 승격/강등할 수 없습니다."}, status_code=400)
+
+    if _normalize_approval_status(target_row.get("APPROVAL_STATUS") or "") != "approved":
+        return JSONResponse({"ok": False, "detail": "승인 완료된 계정만 role 변경이 가능합니다."}, status_code=409)
+
+    current_role = _normalize_role(target_row.get("ROLE") or "")
+    next_role = _demoted_role(current_role)
+    if next_role == current_role:
+        return JSONResponse({"ok": True, "message": "이미 최하위 권한입니다.", "role": current_role, "role_label": _role_label(current_role)})
+
+    user_repo.update_user_role(user_id=target_id, role=next_role)
+    return JSONResponse({"ok": True, "message": "강등 완료", "role": next_role, "role_label": _role_label(next_role)})
+
+
+@router.post("/api/integrated-admin/users/{target_user_id}/approve")
+def api_integrated_admin_user_approve(request: Request, target_user_id: str):
+    _require_superuser(request)
+    target_row = _integrated_admin_target_user(target_user_id)
+    target_id = str(target_row.get("ID") or "").strip()
+    if _normalize_approval_status(target_row.get("APPROVAL_STATUS") or "") == "approved":
+        return JSONResponse({"ok": True, "message": "이미 승인된 계정입니다."})
+
+    user_repo.update_user_approval(
+        user_id=target_id,
+        approval_status="approved",
+        approved_by=(getattr(request.state, "user_id", "") or ""),
+    )
+    return JSONResponse({"ok": True, "message": "승인 완료"})
 
 
 @router.get("/firmware-manage", name="firmware_manage")

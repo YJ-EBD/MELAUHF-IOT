@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Form, Request
 from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from services.user_store import authenticate
+from services.user_store import authenticate_with_status
 from services.user_store import create_user, user_exists
 from services.smtp_utils import send_naver_verification_email
 from redis.session import (
@@ -146,7 +146,11 @@ def signup_action(
     # 가입 완료 후 로그인 화면으로
     return templates.TemplateResponse(
         "login.html",
-        {"request": request, "next": "/", "ok": "회원가입이 완료되었습니다. 로그인 해주세요."},
+        {
+            "request": request,
+            "next": "/",
+            "ok": "회원가입 신청이 완료되었습니다. 관리자 승인 후 로그인할 수 있습니다.",
+        },
         status_code=200,
     )
 
@@ -247,7 +251,21 @@ def login_action(
     remember_id: str = Form("", alias="remember_id"),
     auto_login: str = Form("", alias="auto_login"),
 ):
-    if not authenticate(user_id, password):
+    ok, auth_status = authenticate_with_status(user_id, password)
+    if not ok:
+        if auth_status == "pending":
+            pending_msg = "관리자 승인대기중 입니다"
+            return templates.TemplateResponse(
+                "login.html",
+                {
+                    "request": request,
+                    "next": next,
+                    "error": pending_msg,
+                    "swal_error_title": "승인 대기",
+                    "swal_error_text": pending_msg,
+                },
+                status_code=403,
+            )
         return templates.TemplateResponse(
             "login.html",
             {

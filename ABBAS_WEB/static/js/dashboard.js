@@ -1,18 +1,21 @@
 (function () {
   if (!window.Chart) return;
 
+  const DONUT_SEGMENT_WEIGHTS = [18, 22, 20, 24, 16];
+  const DONUT_SEGMENT_COLORS = [
+    "#ff7f8f",
+    "#2de2c6",
+    "#5b80ff",
+    "#8c67ff",
+    "#39c9ff",
+  ];
+
   function readPalette() {
-    const css = getComputedStyle(document.documentElement);
     const isDark = (document.documentElement.getAttribute("data-bs-theme") || "light") === "dark";
     return {
-      primary: css.getPropertyValue("--bs-primary").trim() || "#0d6efd",
-      success: css.getPropertyValue("--bs-success").trim() || "#198754",
-      danger: css.getPropertyValue("--bs-danger").trim() || "#dc3545",
-      warning: css.getPropertyValue("--bs-warning").trim() || "#ffc107",
-      secondary: css.getPropertyValue("--bs-secondary").trim() || "#6c757d",
-      bodyColor: css.getPropertyValue("--bs-body-color").trim() || "#212529",
-      secondaryColor: css.getPropertyValue("--bs-secondary-color").trim() || "#6c757d",
-      remainderColor: isDark ? "rgba(148,163,184,0.22)" : "rgba(108,117,125,0.18)",
+      donutTextColor: isDark ? "#f6f7ff" : "#1a2340",
+      donutSubtextColor: isDark ? "rgba(199, 205, 255, 0.72)" : "rgba(74, 86, 122, 0.78)",
+      trackColor: isDark ? "rgba(98, 113, 176, 0.24)" : "rgba(136, 151, 204, 0.22)",
     };
   }
 
@@ -37,13 +40,13 @@
       ctx.textBaseline = "middle";
 
       // value
-      ctx.fillStyle = palette.bodyColor;
-      ctx.font = "600 18px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+      ctx.fillStyle = palette.donutTextColor;
+      ctx.font = "700 18px Inter, Noto Sans KR, sans-serif";
       ctx.fillText(valueText, x, y - 6);
 
       // label
-      ctx.fillStyle = palette.secondaryColor;
-      ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+      ctx.fillStyle = palette.donutSubtextColor;
+      ctx.font = "12px Inter, Noto Sans KR, sans-serif";
       ctx.fillText(labelText, x, y + 14);
 
       ctx.restore();
@@ -57,14 +60,60 @@
     return Number.isFinite(n) ? n : 0;
   }
 
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function buildSegmentedDataset(value, max) {
+    const palette = readPalette();
+    const totalWeight = DONUT_SEGMENT_WEIGHTS.reduce((sum, weight) => sum + weight, 0);
+    const ratio = clamp(max > 0 ? value / max : 0, 0, 1);
+    let remainingFill = totalWeight * ratio;
+    const data = [];
+    const backgroundColor = [];
+
+    DONUT_SEGMENT_WEIGHTS.forEach((weight, index) => {
+      const fill = clamp(remainingFill, 0, weight);
+      const empty = Math.max(weight - fill, 0);
+      const segmentColor = DONUT_SEGMENT_COLORS[index % DONUT_SEGMENT_COLORS.length];
+
+      if (fill > 0.001) {
+        data.push(fill);
+        backgroundColor.push(segmentColor);
+      }
+      if (empty > 0.001) {
+        data.push(empty);
+        backgroundColor.push(palette.trackColor);
+      }
+
+      remainingFill = Math.max(remainingFill - weight, 0);
+    });
+
+    if (!data.length) {
+      return {
+        data: [totalWeight],
+        backgroundColor: [palette.trackColor],
+      };
+    }
+
+    return {
+      data,
+      backgroundColor,
+    };
+  }
+
   const charts = [];
 
   function applyThemeToChart(chart) {
     if (!chart || !chart.data || !chart.data.datasets || !chart.data.datasets.length) return;
-    const palette = readPalette();
-    const colorKey = chart.canvas.dataset.color || "primary";
-    const accent = palette[colorKey] || palette.primary;
-    chart.data.datasets[0].backgroundColor = [accent, palette.remainderColor];
+    const value = toNumber(chart.canvas.dataset.value);
+    const max = Math.max(toNumber(chart.canvas.dataset.max) || 1, 1);
+    const segmented = buildSegmentedDataset(value, max);
+    chart.data.labels = segmented.data.map(function (_, index) {
+      return "segment-" + index;
+    });
+    chart.data.datasets[0].data = segmented.data;
+    chart.data.datasets[0].backgroundColor = segmented.backgroundColor;
     chart.update("none");
   }
 
@@ -84,42 +133,33 @@
     const max = Math.max(toNumber(canvas.dataset.max) || 1, 1);
     const unit = canvas.dataset.unit || "";
     const label = canvas.dataset.label || "";
-    const palette = readPalette();
-    const colorKey = canvas.dataset.color || "primary";
-    const accent = palette[colorKey] || palette.primary;
-
-    const remainder = Math.max(max - value, 0);
-
-    // value가 0이고 remainder도 0인 경우(비정상) 대비
-    const safeValue = (value === 0 && remainder === 0) ? 1 : value;
+    const segmented = buildSegmentedDataset(value, max);
 
     const chart = new Chart(canvas.getContext("2d"), {
       type: "doughnut",
       data: {
-        labels: ["값", "잔여"],
+        labels: segmented.data.map(function (_, index) {
+          return "segment-" + index;
+        }),
         datasets: [
           {
-            data: remainder > 0 ? [value, remainder] : [safeValue, 0],
-            backgroundColor: [accent, palette.remainderColor],
+            data: segmented.data,
+            backgroundColor: segmented.backgroundColor,
             borderWidth: 0,
-            hoverOffset: 2,
+            hoverOffset: 0,
+            spacing: 4,
+            borderRadius: 999,
           },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        cutout: "76%",
+        cutout: "72%",
+        rotation: -0.92 * Math.PI,
         plugins: {
           legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => {
-                if (ctx.dataIndex === 0) return `${label}: ${value} ${unit}`.trim();
-                return "잔여";
-              },
-            },
-          },
+          tooltip: { enabled: false },
           centerText: {
             valueText: `${value} ${unit}`.trim(),
             labelText: label,

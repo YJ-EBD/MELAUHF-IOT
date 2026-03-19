@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
+import time
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 # NOTE:
 # This project has a local package named "redis/".
@@ -198,6 +200,8 @@ def get_boot_id() -> str:
 
 SESSION_COOKIE_NAME = "sid"
 USER_SESSION_PREFIX = "for_rnd_web:user_sess"
+LIVE_PRESENCE_PREFIX = "for_rnd_web:presence"
+LIVE_PRESENCE_TTL_SEC = max(int(_env("LIVE_PRESENCE_TTL_SEC", "20")), 5)
 
 # Default TTLs (override via settings.env or OS env)
 DEFAULT_SESSION_TTL_SEC = int(_env("SESSION_TTL_SEC", "43200"))  # 12 hours
@@ -342,6 +346,135 @@ def delete_session(sid: str) -> None:
                 r.delete(_user_sess_key(user))
     except Exception:
         return
+
+
+def _presence_key(user_id: str, client_id: str) -> str:
+    return f"{LIVE_PRESENCE_PREFIX}:{(user_id or '').strip()}:{(client_id or '').strip()}"
+
+
+def _normalize_presence_client_state(value: Any) -> str:
+    state = str(value or "").strip().lower()
+    if state == "hidden":
+        return "hidden"
+    return "visible"
+
+
+def touch_live_presence(*, user_id: str, client_id: str, sid: str, state: Any, path: str = "", title: str = "") -> None:
+    user = (user_id or "").strip()
+    client = (client_id or "").strip()
+    session_id = (sid or "").strip()
+    if not user or not client or not session_id:
+        return
+
+    payload = {
+        "user_id": user,
+        "client_id": client,
+        "sid": session_id,
+        "state": _normalize_presence_client_state(state),
+        "path": str(path or "").strip()[:160],
+        "title": str(title or "").strip()[:160],
+        "updated_at_ts": time.time(),
+    }
+    try:
+        get_redis().setex(_presence_key(user, client), LIVE_PRESENCE_TTL_SEC, json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        return
+
+
+def clear_live_presence(*, user_id: str, client_id: str) -> None:
+    user = (user_id or "").strip()
+    client = (client_id or "").strip()
+    if not user or not client:
+        return
+    try:
+        get_redis().delete(_presence_key(user, client))
+    except Exception:
+        return
+
+
+def list_live_presence() -> list[dict[str, Any]]:
+    try:
+        r = get_redis()
+    except Exception:
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for presence_key in r.scan_iter(match=f"{LIVE_PRESENCE_PREFIX}:*"):
+        try:
+            raw = r.get(presence_key)
+            if not raw:
+                continue
+            data = json.loads(raw)
+            user_id = str(data.get("user_id") or "").strip()
+            client_id = str(data.get("client_id") or "").strip()
+            sid = str(data.get("sid") or "").strip()
+            if not user_id or not client_id or not sid:
+                continue
+
+            if r.get(_sess_key(sid)) != user_id:
+                try:
+                    r.delete(presence_key)
+                except Exception:
+                    pass
+                continue
+
+            active_sid = r.get(_user_sess_key(user_id))
+            if active_sid and active_sid != sid:
+                try:
+                    r.delete(presence_key)
+                except Exception:
+                    pass
+                continue
+
+            ttl = r.ttl(presence_key)
+            entries.append(
+                {
+                    "user_id": user_id,
+                    "client_id": client_id,
+                    "sid": sid,
+                    "state": _normalize_presence_client_state(data.get("state")),
+                    "path": str(data.get("path") or "").strip(),
+                    "title": str(data.get("title") or "").strip(),
+                    "updated_at_ts": float(data.get("updated_at_ts") or 0.0),
+                    "ttl_sec": ttl if ttl > 0 else 0,
+                }
+            )
+        except Exception:
+            continue
+
+    entries.sort(key=lambda item: (str(item.get("user_id") or ""), str(item.get("client_id") or "")))
+    return entries
+
+
+def list_active_sessions() -> list[dict[str, Any]]:
+    try:
+        r = get_redis()
+    except Exception:
+        return []
+
+    sessions: list[dict[str, Any]] = []
+    for sess_key in r.scan_iter(match="for_rnd_web:sess:*"):
+        try:
+            user_id = str(r.get(sess_key) or "").strip()
+            if not user_id:
+                continue
+            sid = sess_key.rsplit(":", 1)[-1]
+            active_sid = r.get(_user_sess_key(user_id))
+            if active_sid and active_sid != sid:
+                continue
+            ttl = r.ttl(sess_key)
+            sessions.append(
+                {
+                    "sid": sid,
+                    "user_id": user_id,
+                    "ttl_sec": ttl if ttl > 0 else 0,
+                }
+            )
+        except Exception:
+            continue
+
+    sessions.sort(key=lambda item: (str(item.get("user_id") or ""), str(item.get("sid") or "")))
+    return sessions
 
 
 def set_session_cookie(response, sid: str, *, auto_login: bool) -> None:

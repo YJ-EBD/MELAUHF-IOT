@@ -29,6 +29,9 @@ USER_HEADERS = [
     "BIO",
     "PROFILE_IMAGE_PATH",
     "ROLE",
+    "APPROVAL_STATUS",
+    "APPROVED_AT",
+    "APPROVED_BY",
     "JOIN_DATE",
 ]
 
@@ -104,6 +107,16 @@ def get_user_role(user_id: str) -> str:
     return "user"
 
 
+def get_user_approval_status(user_id: str) -> str:
+    user = read_user(user_id)
+    if not user:
+        return "pending"
+    status = str(user.get("APPROVAL_STATUS") or "").strip().lower()
+    if status == "approved":
+        return "approved"
+    return "pending"
+
+
 def is_admin_user(user_id: str) -> bool:
     return get_user_role(user_id) in {"admin", "superuser"}
 
@@ -168,6 +181,7 @@ def create_user(
             name=name,
             nickname=nickname,
             role="user",
+            approval_status="pending",
             email_verified=True,
         )
     except Exception as e:
@@ -177,8 +191,21 @@ def create_user(
     return True, "ok"
 
 
-def authenticate(user_id: str, password: str) -> bool:
+def authenticate_with_status(user_id: str, password: str) -> Tuple[bool, str]:
     user = read_user(user_id)
     if not user:
-        return False
-    return _verify_password(password, user.get("PW_HASH") or "")
+        return False, "invalid"
+
+    if not _verify_password(password, user.get("PW_HASH") or ""):
+        return False, "invalid"
+
+    approval_status = str(user.get("APPROVAL_STATUS") or "").strip().lower()
+    if approval_status != "approved":
+        return False, "pending"
+
+    return True, "approved"
+
+
+def authenticate(user_id: str, password: str) -> bool:
+    ok, status = authenticate_with_status(user_id, password)
+    return ok and status == "approved"

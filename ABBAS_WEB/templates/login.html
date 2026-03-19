@@ -55,6 +55,9 @@
       {% if error %}
         <div class="auth-error">{{ error }}</div>
       {% endif %}
+      {% if ok %}
+        <div class="auth-ok">{{ ok }}</div>
+      {% endif %}
 
       <form id="loginForm" class="auth-form" method="post" action="/login" autocomplete="off">
         <input type="hidden" name="next" value="{{ next or '/' }}">

@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>통합관리 | IOT Control Platforms</title>
+  <link rel="icon" type="image/png" href="/favicon.ico">
+  <link rel="shortcut icon" href="/favicon.ico">
+  <link rel="apple-touch-icon" href="/favicon.ico">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link href="{{ url_for('static', path='css/integrated_admin.css') }}" rel="stylesheet">
+</head>
+<body class="integrated-admin-body">
+  <div class="ia-app-shell">
+    <aside class="ia-sidebar">
+      <div class="ia-sidebar__top">
+        <a class="ia-brand" href="/integrated-admin">
+          <span class="ia-brand__word">ABBAS</span>
+          <span class="ia-brand__dot">.</span>
+        </a>
+        <button class="ia-sidebar__menu-btn" type="button" aria-label="메뉴">
+          <i class="bi bi-list"></i>
+        </button>
+      </div>
+
+      <section class="ia-profile-card">
+        <div class="ia-profile-card__avatar">
+          {% if current_user_profile_image_url %}
+          <img src="{{ current_user_profile_image_url }}" alt="{{ current_user_name or current_user_id }}">
+          {% else %}
+          {{ ((current_user_name or current_user_id or 'S')[:1])|upper }}
+          {% endif %}
+        </div>
+        <div class="ia-profile-card__name">{{ current_user_name or current_user_id }}</div>
+        <div class="ia-profile-card__meta">{{ current_user_id }} · {{ current_user_role_label }}</div>
+        <div class="ia-profile-card__sub">Super admin control layer</div>
+      </section>
+
+      <nav class="ia-sidebar-nav" aria-label="통합관리 메뉴">
+        <div class="ia-sidebar-nav__group">
+          <div class="ia-sidebar-nav__label">Main</div>
+          <a class="ia-sidebar-nav__item is-active" href="#dashboard">
+            <i class="bi bi-grid-1x2-fill"></i>
+            <span>Integrated Management Solution</span>
+          </a>
+          <a class="ia-sidebar-nav__item" href="#monitor">
+            <i class="bi bi-cpu-fill"></i>
+            <span>System Monitor</span>
+          </a>
+          <a class="ia-sidebar-nav__item" href="#sessions">
+            <i class="bi bi-person-badge-fill"></i>
+            <span>Live Sessions</span>
+          </a>
+          <a class="ia-sidebar-nav__item" href="#accounts">
+            <i class="bi bi-shield-lock-fill"></i>
+            <span>Role Control</span>
+          </a>
+          <a class="ia-sidebar-nav__item" href="#approvals">
+            <i class="bi bi-patch-check-fill"></i>
+            <span>Signups</span>
+          </a>
+          <a class="ia-sidebar-nav__item" href="#usb">
+            <i class="bi bi-usb-symbol"></i>
+            <span>USB Inventory</span>
+          </a>
+        </div>
+
+        <div class="ia-sidebar-nav__group">
+          <div class="ia-sidebar-nav__label">Apps</div>
+          <a class="ia-sidebar-nav__item" href="/">
+            <i class="bi bi-window"></i>
+            <span>Workspace</span>
+          </a>
+          <a class="ia-sidebar-nav__item" href="/profile-settings">
+            <i class="bi bi-person-circle"></i>
+            <span>Profile</span>
+          </a>
+          <a class="ia-sidebar-nav__item" href="/logout">
+            <i class="bi bi-box-arrow-right"></i>
+            <span>Logout</span>
+          </a>
+        </div>
+      </nav>
+
+      <section class="ia-sidebar-stats" aria-label="핵심 수치">
+        <article class="ia-sidebar-stat">
+          <span>Accounts</span>
+          <strong id="summaryTotalUsers">-</strong>
+        </article>
+        <article class="ia-sidebar-stat">
+          <span>Approved</span>
+          <strong id="summaryApprovedUsers">-</strong>
+        </article>
+        <article class="ia-sidebar-stat">
+          <span>Pending</span>
+          <strong id="summaryPendingUsers">-</strong>
+        </article>
+        <article class="ia-sidebar-stat">
+          <span>Live</span>
+          <strong id="summaryActiveSessions">-</strong>
+        </article>
+        <article class="ia-sidebar-stat ia-sidebar-stat--wide">
+          <span>USB Attached</span>
+          <strong id="summaryUsbDevices">-</strong>
+        </article>
+      </section>
+    </aside>
+
+    <main class="ia-main" id="dashboard">
+      <header class="ia-header">
+        <div class="ia-search">
+          <i class="bi bi-search"></i>
+          <input id="dashboardSearchInput" type="search" placeholder="Search accounts, approvals, USB devices">
+        </div>
+
+        <button class="ia-header__add-btn" type="button" aria-label="추가">
+          <i class="bi bi-plus-lg"></i>
+        </button>
+
+        <div class="ia-header__actions">
+          <button class="ia-header__icon-btn" type="button" aria-label="알림">
+            <i class="bi bi-bell"></i>
+          </button>
+          <button class="ia-header__icon-btn" type="button" aria-label="상태">
+            <i class="bi bi-chat-square-text"></i>
+          </button>
+          <button class="ia-header__icon-btn" type="button" aria-label="앱">
+            <i class="bi bi-grid-3x3-gap-fill"></i>
+          </button>
+        </div>
+      </header>
+
+      <section class="ia-hero">
+        <div>
+          <div class="ia-hero__eyebrow">Integrated Management Solution</div>
+          <h1 class="ia-hero__title">Integrated Management Solution</h1>
+          <p class="ia-hero__desc">Welcome aboard, {{ current_user_name or current_user_id }}. Super admin runtime control panel is online.</p>
+        </div>
+
+        <div class="ia-runtime-pills">
+          <div class="ia-runtime-pill">
+            <span>Generated</span>
+            <strong id="generatedAtText">-</strong>
+          </div>
+          <div class="ia-runtime-pill">
+            <span>Platform</span>
+            <strong id="systemPlatform">-</strong>
+          </div>
+          <div class="ia-runtime-pill">
+            <span>Uptime</span>
+            <strong id="systemUptime">-</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="ia-health-row" id="monitor">
+        <div class="ia-health-grid" id="healthMetricsGrid">
+          <div class="ia-empty">시스템 메트릭을 불러오는 중입니다.</div>
+        </div>
+      </section>
+
+      <section class="ia-content-grid ia-content-grid--top">
+        <article class="ia-widget ia-widget--overview">
+          <div class="ia-widget__head">
+            <div>
+              <div class="ia-widget__eyebrow">Raspberry Pi board</div>
+              <h2 class="ia-widget__title">System Overview</h2>
+            </div>
+            <div class="ia-widget__tool" id="systemHostname">-</div>
+          </div>
+          <div class="ia-widget__body" id="systemOverviewPanel">
+            <div class="ia-empty">시스템 개요를 준비하는 중입니다.</div>
+          </div>
+        </article>
+
+        <article class="ia-widget ia-widget--focus">
+          <div class="ia-widget__head">
+            <div>
+              <div class="ia-widget__eyebrow">Primary Load</div>
+              <h2 class="ia-widget__title">System Focus</h2>
+            </div>
+            <div class="ia-widget__tool">Live</div>
+          </div>
+          <div class="ia-widget__body" id="focusMetricPanel">
+            <div class="ia-empty">포커스 메트릭을 계산하는 중입니다.</div>
+          </div>
+        </article>
+
+        <article class="ia-widget ia-widget--sessions" id="sessions">
+          <div class="ia-widget__head">
+            <div>
+              <div class="ia-widget__eyebrow">Real-time presence</div>
+              <h2 class="ia-widget__title">Active Sessions</h2>
+            </div>
+            <div class="ia-widget__tool" id="activeUsersCount">0</div>
+          </div>
+          <div class="ia-widget__body">
+            <div class="ia-compact-table-wrap">
+              <table class="ia-compact-table">
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="activeUsersTableBody">
+                  <tr>
+                    <td colspan="3" class="ia-empty">접속 계정 정보를 불러오는 중입니다.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="ia-content-grid ia-content-grid--middle">
+        <article class="ia-widget" id="approvals">
+          <div class="ia-widget__head">
+            <div>
+              <div class="ia-widget__eyebrow">Approval queue</div>
+              <h2 class="ia-widget__title">Signup Approvals</h2>
+            </div>
+            <div class="ia-widget__tool">Pending</div>
+          </div>
+          <div class="ia-widget__body">
+            <div class="ia-approval-grid" id="pendingUsersGrid">
+              <div class="ia-empty">승인 대기 목록을 불러오는 중입니다.</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="ia-widget" id="usb">
+          <div class="ia-widget__head">
+            <div>
+              <div class="ia-widget__eyebrow">Attached devices</div>
+              <h2 class="ia-widget__title">USB Inventory</h2>
+            </div>
+            <div class="ia-widget__tool" id="usbCountText">0</div>
+          </div>
+          <div class="ia-widget__body">
+            <div class="ia-usb-stack" id="usbDevicesList">
+              <div class="ia-empty">USB 목록을 불러오는 중입니다.</div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="ia-widget ia-widget--accounts" id="accounts">
+        <div class="ia-widget__head">
+          <div>
+            <div class="ia-widget__eyebrow">Role control center</div>
+            <h2 class="ia-widget__title">Account Control Board</h2>
+          </div>
+          <div class="ia-widget__tool">Promote / Demote</div>
+        </div>
+        <div class="ia-widget__body">
+          <div class="ia-table-wrap">
+            <table class="ia-users-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Approval</th>
+                  <th>Role</th>
+                  <th>Session</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="approvedUsersTableBody">
+                <tr>
+                  <td colspan="5" class="ia-empty">계정 데이터를 불러오는 중입니다.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    window.LivePresenceConfig = {
+      wsPath: "/ws/live-presence",
+      disconnectUrl: "/api/live-presence/disconnect",
+      heartbeatMs: 8000
+    };
+    window.IntegratedAdminConfig = {
+      overviewUrl: "/api/integrated-admin/overview",
+      systemWsPath: "/ws/integrated-admin/system",
+      userActionPrefix: "/api/integrated-admin/users/",
+      refreshMs: 12000
+    };
+  </script>
+  <script src="{{ url_for('static', path='js/live_presence.js') }}"></script>
+  <script src="{{ url_for('static', path='js/integrated_admin.js') }}"></script>
+</body>
+</html>

@@ -391,3 +391,50 @@
 - 간단한 설명
   - 프로필 설정 기능에서 생성되는 `ABBAS_WEB/static/uploads/profile-images/**` 파일은 사용자 업로드 산출물이므로 기본 커밋 범위에서 제외하도록 기준을 추가했다.
   - 이 기준으로 기능 코드와 런타임 데이터가 분리되어, 다른 디렉토리나 배포 코드에 영향 없이 Source Control을 정리할 수 있게 맞췄다.
+
+## 43. SuperUser 통합관리 페이지 및 관리자 승인 플로우 추가
+- 수정코드
+  - `SQL/01_tables.sql`
+  - `DB/user_repo.py`
+  - `services/user_store.py`
+  - `router/auth.py`
+  - `router/pages.py`
+  - `templates/base.html`
+  - `templates/login.html`
+  - `templates/integrated_admin.html`
+  - `static/css/integrated_admin.css`
+  - `static/js/integrated_admin.js`
+  - `requirements.txt`
+- 간단한 설명
+  - `SuperUser` 전용 `/integrated-admin` 페이지를 추가하고, CPU/RAM/Storage/Network 상태, 승인 대기 회원, 역할 승격/강등, USB 목록을 한 화면에서 관리할 수 있게 정리했다.
+  - 회원가입은 기본적으로 `pending` 승인 대기 상태로 저장되며, 관리자 승인 전 로그인 시 `관리자 승인대기중 입니다` 안내가 뜨도록 승인 플로우를 연결했다.
+
+## 44. 통합관리 슈퍼어드민 다크 UI 및 사이드바/상태표시 보정
+- 수정코드
+  - `templates/integrated_admin.html`
+  - `static/css/integrated_admin.css`
+  - `static/js/integrated_admin.js`
+- 간단한 설명
+  - 첨부 시안 기준의 완전 다크 슈퍼어드민 대시보드 레이아웃으로 통합관리 화면을 재구성하고, 좌측 고정 사이드바/검색/위젯 카드 구조를 반영했다.
+  - 모바일 및 낮은 화면 높이에서 하단 요소가 잘리던 문제를 고치고, 세션 상태 텍스트·버튼 색상·카드 레이아웃을 이번 채팅 기준으로 함께 보정했다.
+
+## 45. 통합관리 시스템 메트릭 WebSocket 실시간화 및 브라우저 Presence 추적 추가
+- 수정코드
+  - `redis/session.py`
+  - `router/pages.py`
+  - `templates/base.html`
+  - `templates/integrated_admin.html`
+  - `static/js/live_presence.js`
+  - `static/js/integrated_admin.js`
+  - `static/css/integrated_admin.css`
+- 간단한 설명
+  - 통합관리 시스템 메트릭은 WebSocket 기반으로 1초 단위 실시간 갱신되도록 바꾸고, 별도의 브라우저 presence WebSocket을 추가해 실제 창 표시/백그라운드/미접속 상태를 `LIVE / BACKGROUND / INACTIVE`로 구분해 보여주도록 정리했다.
+  - 기존 `Active Sessions`는 단순 로그인 유지 세션이 아니라 실제 브라우저 연결 상태 중심으로 바뀌었고, 비활성 계정은 흐리게 보이도록 처리했다.
+
+## 46. 대시보드 도넛 그래프 멀티세그먼트 디자인 및 테마 연동 배경 추가
+- 수정코드
+  - `static/js/dashboard.js`
+  - `static/css/admin.css`
+- 간단한 설명
+  - 대시보드의 `전체 기기 개수`, `구독 만료 기기 수`, `오늘 적재된 데이터` 도넛 그래프를 첨부 이미지 느낌의 멀티 컬러 분절 링 스타일로 변경하고, 중앙 수치/라벨은 기존처럼 그래프 정중앙에 유지했다.
+  - 도넛 그래프 배경은 라이트/다크 모드에 맞는 스테이지 색상으로 분리해 현재 ABBAS_WEB 테마와 자연스럽게 어울리도록 보정했다.
