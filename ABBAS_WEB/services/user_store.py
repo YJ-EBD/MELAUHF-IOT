@@ -99,6 +99,22 @@ def is_admin_user(user_id: str) -> bool:
     return get_user_role(user_id) == "admin"
 
 
+def _friendly_create_user_error(exc: Exception) -> str:
+    detail = str(exc or "")
+    detail_lc = detail.lower()
+    args = getattr(exc, "args", ()) or ()
+    code = args[0] if args else None
+
+    if code == 1062 or "duplicate entry" in detail_lc:
+        if "uq_users_email" in detail_lc:
+            return "이미 존재하는 이메일입니다."
+        if "uq_users_user_id" in detail_lc:
+            return "이미 존재하는 ID입니다."
+        return "이미 존재하는 회원 정보입니다."
+
+    return "저장에 실패했습니다. 잠시 후 다시 시도해주세요."
+
+
 def create_user(
     user_id: str,
     password: str,
@@ -146,8 +162,8 @@ def create_user(
             email_verified=True,
         )
     except Exception as e:
-        # MySQL duplicate key, connection error etc.
-        return False, f"저장 실패: {e}"
+        print(f"[AUTH] create_user failed: {e}")
+        return False, _friendly_create_user_error(e)
 
     return True, "ok"
 

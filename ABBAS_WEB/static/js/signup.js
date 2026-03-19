@@ -47,7 +47,7 @@
       setBadge(emailState, "", "코드 전송됨");
     } catch (e) {
       setBadge(emailState, "err", "전송 실패");
-      alert(`SMTP 전송 실패: ${e.message || e}`);
+      alert(e.message || "인증 메일 전송에 실패했습니다.");
     }
   }
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Body, Form, Request
-from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from services.user_store import authenticate
@@ -23,6 +25,13 @@ import time
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+_FAVICON_PATH = Path(__file__).resolve().parents[1] / "logo" / "logo.png"
+
+
+@router.head("/favicon.ico", response_class=FileResponse)
+@router.get("/favicon.ico", response_class=FileResponse)
+def favicon():
+    return FileResponse(str(_FAVICON_PATH), media_type="image/png")
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -169,12 +178,20 @@ def api_send_email_code(request: Request, payload: dict = Body(default={})):  # 
     try:
         r.set(f"email:code:{email.lower()}", f"{code}|{now}", ex=300)
     except Exception as e:
-        return JSONResponse({"ok": False, "detail": f"Redis 저장 실패: {e}"}, status_code=500)
+        print(f"[AUTH] email code cache failed: {e}")
+        return JSONResponse(
+            {"ok": False, "detail": "이메일 인증 요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."},
+            status_code=500,
+        )
 
     try:
         send_naver_verification_email(email, code)
     except Exception as e:
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=500)
+        print(f"[AUTH] email code send failed: {e}")
+        return JSONResponse(
+            {"ok": False, "detail": "인증 메일 전송에 실패했습니다. 잠시 후 다시 시도해주세요."},
+            status_code=500,
+        )
 
     return JSONResponse({"ok": True})
 
@@ -212,7 +229,11 @@ def api_verify_email_code(request: Request, payload: dict = Body(default={})):  
         # 사용된 코드 삭제
         r.execute("DEL", f"email:code:{email.lower()}")
     except Exception as e:
-        return JSONResponse({"ok": False, "detail": f"Redis 저장 실패: {e}"}, status_code=500)
+        print(f"[AUTH] email verify token save failed: {e}")
+        return JSONResponse(
+            {"ok": False, "detail": "이메일 인증 확인을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."},
+            status_code=500,
+        )
 
     return JSONResponse({"ok": True, "verify_token": verify_token})
 
