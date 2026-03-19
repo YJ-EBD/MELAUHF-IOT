@@ -228,3 +228,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 NAS Center 내부 드래그 이동, 중복 업로드 충돌 모달, 마킹 색상 시스템, 빈 폴더 안내 모달, 경로 버튼 드롭 이동을 정리하는 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
   - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 갱신했다.
+
+## 31. NAS Center 다중 파일 다운로드 구조 수정에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 NAS Center 다중 파일 다운로드 ZIP 구조를 평탄화해, 선택한 파일만 직접 내려받도록 정리한 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
+  - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 추가했다.

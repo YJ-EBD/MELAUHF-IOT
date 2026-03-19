@@ -821,8 +821,29 @@ def _safe_unlink(path: str) -> None:
 
 
 def _nas_archive_root_name(rel_path: str) -> str:
-    normalized = _normalize_nas_rel_path(rel_path).lstrip("/")
-    return normalized or "ROOT"
+    normalized = _normalize_nas_rel_path(rel_path).rstrip("/")
+    if normalized in {"", "/"}:
+        return "ROOT"
+    return os.path.basename(normalized) or "ROOT"
+
+
+def _nas_unique_archive_root_name(rel_path: str, used_names: set[str]) -> str:
+    base_name = _nas_archive_root_name(rel_path)
+    candidate = base_name
+    stem, ext = os.path.splitext(base_name)
+    suffix_index = 2
+    candidate_key = candidate.casefold()
+
+    while candidate_key in used_names:
+        if stem:
+            candidate = f"{stem} ({suffix_index}){ext}"
+        else:
+            candidate = f"{base_name} ({suffix_index})"
+        candidate_key = candidate.casefold()
+        suffix_index += 1
+
+    used_names.add(candidate_key)
+    return candidate
 
 
 def _nas_archive_download_name(paths: list[str]) -> str:
@@ -2897,6 +2918,8 @@ def api_nas_download_batch(request: Request, payload: dict[str, Any] = Body(defa
     if not paths:
         raise HTTPException(status_code=400, detail="다운로드할 항목을 선택해주세요.")
 
+    paths = _collapse_nas_rel_paths(paths)
+
     resolved_items: list[tuple[str, str, str]] = []
     for path in paths:
         _info, rel_path, full_path = _resolve_nas_path(path)
@@ -2914,8 +2937,9 @@ def api_nas_download_batch(request: Request, payload: dict[str, Any] = Body(defa
 
     try:
         with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            used_archive_roots: set[str] = set()
             for rel_path, full_path, item_type in resolved_items:
-                archive_root = _nas_archive_root_name(rel_path)
+                archive_root = _nas_unique_archive_root_name(rel_path, used_archive_roots)
                 if item_type == "file":
                     archive.write(full_path, arcname=archive_root)
                 else:
