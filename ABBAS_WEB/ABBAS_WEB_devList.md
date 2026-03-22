@@ -438,3 +438,25 @@
 - 간단한 설명
   - 대시보드의 `전체 기기 개수`, `구독 만료 기기 수`, `오늘 적재된 데이터` 도넛 그래프를 첨부 이미지 느낌의 멀티 컬러 분절 링 스타일로 변경하고, 중앙 수치/라벨은 기존처럼 그래프 정중앙에 유지했다.
   - 도넛 그래프 배경은 라이트/다크 모드에 맞는 스테이지 색상으로 분리해 현재 ABBAS_WEB 테마와 자연스럽게 어울리도록 보정했다.
+
+## 47. 사이트 파비콘 교체 및 공통 탭 아이콘 타입 정리
+- 수정코드
+  - `router/auth.py`
+  - `templates/base.html`
+  - `templates/login.html`
+  - `templates/signup.html`
+  - `templates/integrated_admin.html`
+  - `logo/abbas_favicon.ico`
+- 간단한 설명
+  - `/favicon.ico` 응답이 기존 `logo.png` 대신 `abbas_favicon.ico`를 반환하도록 교체하고, media type도 `.ico` 형식에 맞게 정리했다.
+  - 공통 베이스/로그인/회원가입/통합관리 템플릿의 favicon 링크 타입을 함께 맞춰 브라우저 탭 아이콘이 일관되게 표시되도록 보정했다.
+
+## 48. 로그인 세션 자동 회수 및 강제 로그인 확인 플로우 추가
+- 수정코드
+  - `redis/session.py`
+  - `router/auth.py`
+  - `router/pages.py`
+  - `templates/login.html`
+- 간단한 설명
+  - 동일 계정의 Redis 세션이 남아 있어도 실제 browser presence가 없으면 기존 세션을 자동 회수한 뒤 새 로그인을 허용하도록 로그인 정책을 바꿨다.
+  - 실제 presence가 살아 있는 경우에는 로그인 화면에서 `기존 세션 끊고 로그인` 확인을 띄워 강제 로그인할 수 있게 했고, 이전 세션의 presence heartbeat와 WebSocket도 더 이상 살아나지 않도록 정리했다.

@@ -4838,6 +4838,13 @@ async def ws_live_presence(websocket: WebSocket):
                 current_title = str(payload.get("title") or current_title or "")
             except asyncio.TimeoutError:
                 pass
+            current_user_id = await asyncio.to_thread(read_session_user, sid)
+            if current_user_id != user_id:
+                try:
+                    await websocket.close(code=4401)
+                except Exception:
+                    pass
+                break
             await asyncio.to_thread(
                 touch_live_presence,
                 user_id=user_id,

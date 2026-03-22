@@ -25,13 +25,87 @@ import time
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
-_FAVICON_PATH = Path(__file__).resolve().parents[1] / "logo" / "logo.png"
+_FAVICON_PATH = Path(__file__).resolve().parents[1] / "logo" / "abbas_favicon.ico"
+
+
+def _wants_json_response(request: Request) -> bool:
+    requested_with = (request.headers.get("x-requested-with", "") or "").strip().lower()
+    accept = (request.headers.get("accept", "") or "").strip().lower()
+    return requested_with == "xmlhttprequest" or "application/json" in accept
+
+
+def _login_template_response(
+    request: Request,
+    *,
+    next_url: str,
+    status_code: int,
+    user_id_value: str = "",
+    error: str = "",
+    ok: str = "",
+    swal_error_title: str = "",
+    swal_error_text: str = "",
+    can_force_login: bool = False,
+):
+    resp = templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "next": next_url,
+            "user_id_value": user_id_value,
+            "error": error,
+            "ok": ok,
+            "swal_error_title": swal_error_title,
+            "swal_error_text": swal_error_text,
+            "can_force_login": can_force_login,
+        },
+        status_code=status_code,
+    )
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _login_error_response(
+    request: Request,
+    *,
+    next_url: str,
+    status_code: int,
+    user_id_value: str = "",
+    error: str = "",
+    swal_error_title: str = "",
+    swal_error_text: str = "",
+    can_force_login: bool = False,
+):
+    if _wants_json_response(request):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": error,
+                "swal_error_title": swal_error_title,
+                "swal_error_text": swal_error_text,
+                "can_force_login": can_force_login,
+                "next": next_url,
+                "user_id_value": user_id_value,
+            },
+            status_code=status_code,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    return _login_template_response(
+        request,
+        next_url=next_url,
+        status_code=status_code,
+        user_id_value=user_id_value,
+        error=error,
+        swal_error_title=swal_error_title,
+        swal_error_text=swal_error_text,
+        can_force_login=can_force_login,
+    )
 
 
 @router.head("/favicon.ico", response_class=FileResponse)
 @router.get("/favicon.ico", response_class=FileResponse)
 def favicon():
-    return FileResponse(str(_FAVICON_PATH), media_type="image/png")
+    return FileResponse(str(_FAVICON_PATH), media_type="image/x-icon")
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -41,13 +115,7 @@ def login_page(request: Request, next: str = "/"):
     sid = request.cookies.get(SESSION_COOKIE_NAME, "") or ""
     if sid and read_session_user(sid):
         return RedirectResponse(url=next or "/", status_code=302)
-    resp = templates.TemplateResponse(
-        "login.html",
-        {"request": request, "next": next},
-    )
-    # 로그인 화면은 뒤로가기 캐시로 인해 잘못 노출될 수 있어 캐시 금지
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
+    return _login_template_response(request, next_url=next, status_code=200)
 
 
 @router.get("/signup", response_class=HTMLResponse)
@@ -250,60 +318,62 @@ def login_action(
     next: str = Form("/"),
     remember_id: str = Form("", alias="remember_id"),
     auto_login: str = Form("", alias="auto_login"),
+    force_login: str = Form("", alias="force_login"),
 ):
     ok, auth_status = authenticate_with_status(user_id, password)
     if not ok:
         if auth_status == "pending":
             pending_msg = "관리자 승인대기중 입니다"
-            return templates.TemplateResponse(
-                "login.html",
-                {
-                    "request": request,
-                    "next": next,
-                    "error": pending_msg,
-                    "swal_error_title": "승인 대기",
-                    "swal_error_text": pending_msg,
-                },
+            return _login_error_response(
+                request,
+                next_url=next,
                 status_code=403,
+                user_id_value=user_id,
+                error=pending_msg,
+                swal_error_title="승인 대기",
+                swal_error_text=pending_msg,
             )
-        return templates.TemplateResponse(
-            "login.html",
-            {
-                "request": request,
-                "next": next,
-                "error": "아이디 또는 비밀번호가 올바르지 않습니다.",
-            },
+        return _login_error_response(
+            request,
+            next_url=next,
             status_code=400,
+            user_id_value=user_id,
+            error="아이디 또는 비밀번호가 올바르지 않습니다.",
         )
 
     auto = str(auto_login).lower() in ("1", "true", "on", "yes")
+    force = str(force_login).lower() in ("1", "true", "on", "yes")
     try:
-        sid = create_session(user_id=user_id, auto_login=auto)
-    except ActiveSessionExistsError:
-        msg = "이미 이 계정이 다른 기기에서 로그인 중입니다. 기존 기기에서 로그아웃한 뒤 다시 시도해주세요."
-        return templates.TemplateResponse(
-            "login.html",
-            {
-                "request": request,
-                "next": next,
-                "error": msg,
-                "swal_error_title": "중복 로그인 차단",
-                "swal_error_text": msg,
-            },
+        sid = create_session(user_id=user_id, auto_login=auto, force_replace=force)
+    except ActiveSessionExistsError as exc:
+        live_msg = "현재 활성 세션이 감지되었습니다. 기존 세션을 종료하고 이 브라우저에서 다시 로그인할 수 있습니다."
+        return _login_error_response(
+            request,
+            next_url=next,
             status_code=409,
+            user_id_value=user_id,
+            error=live_msg,
+            swal_error_title="중복 로그인 감지",
+            swal_error_text=live_msg,
+            can_force_login=exc.has_live_presence,
         )
     except (RedisError, Exception):
-        return templates.TemplateResponse(
-            "login.html",
-            {
-                "request": request,
-                "next": next,
-                "error": "Redis 연결 실패로 로그인할 수 없습니다. (REDIS_HOST/PORT/PASSWORD 확인)",
-            },
+        return _login_error_response(
+            request,
+            next_url=next,
             status_code=500,
+            user_id_value=user_id,
+            error="Redis 연결 실패로 로그인할 수 없습니다. (REDIS_HOST/PORT/PASSWORD 확인)",
         )
 
-    resp = RedirectResponse(url=next or "/", status_code=302)
+    redirect_url = next or "/"
+    if _wants_json_response(request):
+        resp = JSONResponse({"ok": True, "redirect_url": redirect_url}, headers={"Cache-Control": "no-store"})
+        set_session_cookie(resp, sid, auto_login=auto)
+        _ = remember_id
+        return resp
+
+    resp = RedirectResponse(url=redirect_url, status_code=302)
     set_session_cookie(resp, sid, auto_login=auto)
 
     # remember_id: handled by client(localStorage). Server does not alter session.

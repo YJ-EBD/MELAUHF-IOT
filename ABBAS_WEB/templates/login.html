@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>로그인 | IOT Control Platforms</title>
-  <link rel="icon" type="image/png" href="/favicon.ico">
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
   <link rel="shortcut icon" href="/favicon.ico">
   <link rel="apple-touch-icon" href="/favicon.ico">
 
@@ -52,16 +52,15 @@
       <h1 class="auth-title">로그인</h1>
       <div class="auth-sub">관리자 콘솔에 접속하려면 계정 정보를 입력하세요.</div>
 
-      {% if error %}
-        <div class="auth-error">{{ error }}</div>
-      {% endif %}
+      <div id="loginError" class="auth-error auth-error--wide"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
       {% if ok %}
         <div class="auth-ok">{{ ok }}</div>
       {% endif %}
 
       <form id="loginForm" class="auth-form" method="post" action="/login" autocomplete="off">
         <input type="hidden" name="next" value="{{ next or '/' }}">
-        <input id="userIdInput" class="auth-input" type="text" name="user_id" placeholder="아이디를 입력하세요" autocomplete="username">
+        <input id="forceLoginInput" type="hidden" name="force_login" value="">
+        <input id="userIdInput" class="auth-input" type="text" name="user_id" placeholder="아이디를 입력하세요" autocomplete="username" value="{{ user_id_value or '' }}">
         <input class="auth-input" type="password" name="password" placeholder="비밀번호를 입력하세요" autocomplete="current-password">
 
         <div class="auth-options">
@@ -113,11 +112,15 @@
       const cb = document.getElementById('rememberId');
       const input = document.getElementById('userIdInput');
       const form = document.getElementById('loginForm');
+      const forceInput = document.getElementById('forceLoginInput');
+      const errorBox = document.getElementById('loginError');
+      const submitBtn = form ? form.querySelector('button[type="submit"]') : null;
+      const submitBtnText = submitBtn ? submitBtn.textContent : '로그인';
 
       try {
         const enabled = localStorage.getItem(KEY) === '1';
         if (cb) cb.checked = enabled;
-        if (enabled && input) {
+        if (enabled && input && !input.value) {
           const saved = localStorage.getItem(KEY_ID) || '';
           if (saved) input.value = saved;
         }
@@ -135,9 +138,113 @@
         } catch (e) {}
       }
 
+      function setError(message) {
+        if (!errorBox) return;
+        const text = String(message || '').trim();
+        errorBox.textContent = text;
+        errorBox.hidden = !text;
+      }
+
+      function setSubmitting(isSubmitting, forceMode) {
+        if (!submitBtn) return;
+        submitBtn.disabled = !!isSubmitting;
+        submitBtn.textContent = isSubmitting ? (forceMode ? '기존 세션 정리 중...' : '로그인 중...') : submitBtnText;
+      }
+
+      async function submitLogin(forceMode) {
+        if (!form || !window.fetch || !window.FormData) {
+          return;
+        }
+
+        persist();
+        setError('');
+        if (forceInput) forceInput.value = forceMode ? '1' : '';
+
+        const formData = new FormData(form);
+        if (forceMode) formData.set('force_login', '1');
+        else formData.delete('force_login');
+
+        setSubmitting(true, forceMode);
+
+        let res = null;
+        let data = {};
+        try {
+          res = await fetch(form.action, {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin',
+            headers: {
+              'X-Requested-With': 'XMLHttpRequest',
+              'Accept': 'application/json'
+            }
+          });
+          try {
+            data = await res.json();
+          } catch (_) {
+            data = {};
+          }
+        } catch (_) {
+          setSubmitting(false, false);
+          setError('네트워크 오류로 로그인할 수 없습니다. 잠시 후 다시 시도해주세요.');
+          return;
+        }
+
+        setSubmitting(false, false);
+        if (forceInput) forceInput.value = '';
+
+        if (res.ok && data && data.ok) {
+          const nextUrl = String((data && data.redirect_url) || formData.get('next') || '/');
+          window.location.assign(nextUrl || '/');
+          return;
+        }
+
+        const message = String((data && data.error) || '로그인에 실패했습니다.');
+        setError(message);
+
+        if (res.status === 409 && data && data.can_force_login) {
+          const title = data.swal_error_title || '중복 로그인 감지';
+          const text = data.swal_error_text || message;
+          let isConfirmed = false;
+
+          if (window.Swal && typeof window.Swal.fire === 'function') {
+            const result = await Swal.fire({
+              icon: 'warning',
+              title: title,
+              text: text,
+              showCancelButton: true,
+              confirmButtonText: '기존 세션 끊고 로그인',
+              cancelButtonText: '취소'
+            });
+            isConfirmed = !!(result && result.isConfirmed);
+          } else {
+            isConfirmed = window.confirm(text);
+          }
+
+          if (isConfirmed) {
+            submitLogin(true);
+          }
+          return;
+        }
+
+        if (data && data.swal_error_text && window.Swal && typeof window.Swal.fire === 'function') {
+          Swal.fire({
+            icon: res.status === 403 ? 'info' : 'warning',
+            title: data.swal_error_title || '로그인 안내',
+            text: data.swal_error_text,
+            confirmButtonText: '확인'
+          });
+        }
+      }
+
       if (cb) cb.addEventListener('change', persist);
       if (input) input.addEventListener('blur', persist);
       if (form) form.addEventListener('submit', persist);
+      if (form && window.fetch && window.FormData) {
+        form.addEventListener('submit', function (event) {
+          event.preventDefault();
+          submitLogin(false);
+        });
+      }
     })();
   </script>
 </body>

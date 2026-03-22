@@ -111,8 +111,11 @@ class RedisClient:
 
 
 class ActiveSessionExistsError(Exception):
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str, *, sid: str = "", has_live_presence: bool = False, presence_count: int = 0):
         self.user_id = (user_id or "").strip()
+        self.sid = (sid or "").strip()
+        self.has_live_presence = bool(has_live_presence)
+        self.presence_count = max(int(presence_count or 0), 0)
         super().__init__(f"active session exists for user '{self.user_id}'")
 
 
@@ -258,18 +261,125 @@ def _get_active_session_id(r: RedisClient, user_id: str) -> Optional[str]:
     return _find_existing_session_id(r, user)
 
 
+def _list_session_ids_for_user(r: RedisClient, user_id: str) -> list[str]:
+    user = (user_id or "").strip()
+    if not user:
+        return []
+
+    session_ids: list[str] = []
+    seen: set[str] = set()
+    indexed_sid = str(r.get(_user_sess_key(user)) or "").strip()
+    if indexed_sid and r.get(_sess_key(indexed_sid)) == user:
+        session_ids.append(indexed_sid)
+        seen.add(indexed_sid)
+
+    for sess_key in r.scan_iter(match="for_rnd_web:sess:*"):
+        try:
+            if r.get(sess_key) != user:
+                continue
+        except Exception:
+            continue
+
+        sid = sess_key.rsplit(":", 1)[-1]
+        if sid in seen:
+            continue
+        session_ids.append(sid)
+        seen.add(sid)
+    return session_ids
+
+
+def _list_presence_keys_for_session(r: RedisClient, user_id: str, sid: str) -> list[str]:
+    user = (user_id or "").strip()
+    session_id = (sid or "").strip()
+    if not user or not session_id:
+        return []
+
+    keys: list[str] = []
+    for presence_key in r.scan_iter(match=f"{LIVE_PRESENCE_PREFIX}:{user}:*"):
+        try:
+            raw = r.get(presence_key)
+            if not raw:
+                continue
+            data = json.loads(raw)
+            if str(data.get("user_id") or "").strip() != user:
+                continue
+            if str(data.get("sid") or "").strip() != session_id:
+                continue
+            if r.ttl(presence_key) <= 0:
+                continue
+            keys.append(presence_key)
+        except Exception:
+            continue
+    return keys
+
+
+def _delete_presence_for_session(r: RedisClient, user_id: str, sid: str) -> None:
+    keys = _list_presence_keys_for_session(r, user_id, sid)
+    if not keys:
+        return
+    try:
+        r.delete_many(keys)
+    except Exception:
+        pass
+
+
+def _delete_user_sessions(r: RedisClient, user_id: str, session_ids: Optional[Iterable[str]] = None) -> None:
+    user = (user_id or "").strip()
+    if not user:
+        return
+
+    ids = [str(sid or "").strip() for sid in (session_ids or _list_session_ids_for_user(r, user))]
+    ids = [sid for sid in ids if sid]
+    if not ids:
+        try:
+            r.delete(_user_sess_key(user))
+        except Exception:
+            pass
+        return
+
+    sess_keys = [_sess_key(sid) for sid in ids]
+    for sid in ids:
+        _delete_presence_for_session(r, user, sid)
+
+    try:
+        r.delete_many(sess_keys)
+    except Exception:
+        pass
+    try:
+        r.delete(_user_sess_key(user))
+    except Exception:
+        pass
+
+
 def new_session_id() -> str:
     return secrets.token_urlsafe(32)
 
 
-def create_session(*, user_id: str, auto_login: bool) -> str:
+def create_session(*, user_id: str, auto_login: bool, force_replace: bool = False) -> str:
     user = (user_id or "").strip()
     sid = new_session_id()
     ttl = AUTO_LOGIN_TTL_SEC if auto_login else DEFAULT_SESSION_TTL_SEC
     r = get_redis()
-    active_sid = _get_active_session_id(r, user)
-    if active_sid:
-        raise ActiveSessionExistsError(user)
+    session_ids = _list_session_ids_for_user(r, user)
+    if session_ids:
+        live_sid = ""
+        live_presence_count = 0
+        for existing_sid in session_ids:
+            presence_count = len(_list_presence_keys_for_session(r, user, existing_sid))
+            if presence_count > 0:
+                live_sid = existing_sid
+                live_presence_count = presence_count
+                break
+
+        if live_sid and not force_replace:
+            raise ActiveSessionExistsError(
+                user,
+                sid=live_sid,
+                has_live_presence=True,
+                presence_count=live_presence_count,
+            )
+
+        _delete_user_sessions(r, user, session_ids)
 
     # If Redis is down, login must fail clearly (do not silently create a dead session).
     r.setex(_sess_key(sid), ttl, user)
@@ -341,6 +451,7 @@ def delete_session(sid: str) -> None:
         r.delete(_sess_key(sid))
 
         if user:
+            _delete_presence_for_session(r, user, sid)
             active_sid = r.get(_user_sess_key(user))
             if active_sid == sid:
                 r.delete(_user_sess_key(user))
@@ -376,7 +487,23 @@ def touch_live_presence(*, user_id: str, client_id: str, sid: str, state: Any, p
         "updated_at_ts": time.time(),
     }
     try:
-        get_redis().setex(_presence_key(user, client), LIVE_PRESENCE_TTL_SEC, json.dumps(payload, ensure_ascii=False))
+        r = get_redis()
+        if r.get(_sess_key(session_id)) != user:
+            try:
+                r.delete(_presence_key(user, client))
+            except Exception:
+                pass
+            return
+
+        active_sid = r.get(_user_sess_key(user))
+        if active_sid and active_sid != session_id:
+            try:
+                r.delete(_presence_key(user, client))
+            except Exception:
+                pass
+            return
+
+        r.setex(_presence_key(user, client), LIVE_PRESENCE_TTL_SEC, json.dumps(payload, ensure_ascii=False))
     except Exception:
         return
 
