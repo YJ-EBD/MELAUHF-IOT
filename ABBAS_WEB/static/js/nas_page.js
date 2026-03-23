@@ -44,6 +44,14 @@
     mobileTapPath: "",
     mobileTapType: "",
     mobileTapAt: 0,
+    touchRowPath: "",
+    touchRowType: "",
+    touchStartX: 0,
+    touchStartY: 0,
+    touchMoved: false,
+    touchClickSuppressUntil: 0,
+    touchContextMenuSuppressUntil: 0,
+    touchDragSuppressUntil: 0,
   };
 
   const el = {
@@ -178,6 +186,10 @@
   let shellSyncFrame = 0;
   const INTERNAL_NAS_DRAG_TYPE = "application/x-abbas-nas-paths";
   const MOBILE_DOUBLE_TAP_WINDOW_MS = 360;
+  const TOUCH_MOVE_CANCEL_PX = 14;
+  const TOUCH_CLICK_SUPPRESS_MS = 450;
+  const TOUCH_CONTEXT_MENU_SUPPRESS_MS = 1400;
+  const TOUCH_DRAG_SUPPRESS_MS = 1800;
   const MARK_COLOR_OPTIONS = {
     red: {
       label: "레드",
@@ -341,6 +353,27 @@
     state.mobileTapPath = "";
     state.mobileTapType = "";
     state.mobileTapAt = 0;
+  }
+
+  function resetTouchRowInteraction() {
+    state.touchRowPath = "";
+    state.touchRowType = "";
+    state.touchStartX = 0;
+    state.touchStartY = 0;
+    state.touchMoved = false;
+  }
+
+  function latestChangedTouch(event) {
+    if (!event) return null;
+    const changedTouches = event.changedTouches;
+    if (changedTouches && changedTouches.length) {
+      return changedTouches[changedTouches.length - 1];
+    }
+    const touches = event.touches;
+    if (touches && touches.length) {
+      return touches[touches.length - 1];
+    }
+    return null;
   }
 
   function downloadFilenameFromDisposition(value) {
@@ -3131,6 +3164,10 @@
 
   if (el.tableBody) {
     el.tableBody.addEventListener("dragstart", (event) => {
+      if (Date.now() <= state.touchDragSuppressUntil) {
+        event.preventDefault();
+        return;
+      }
       const row = event.target.closest("tr[data-row-path]");
       if (!row || !event.dataTransfer) return;
       const path = row.getAttribute("data-row-path") || "";
@@ -3203,7 +3240,72 @@
       clearInternalDragState();
     });
 
+    el.tableBody.addEventListener("touchstart", (event) => {
+      const row = event.target.closest("tr[data-row-path]");
+      const touch = latestChangedTouch(event);
+      if (!row || !touch) {
+        resetTouchRowInteraction();
+        return;
+      }
+      state.touchRowPath = row.getAttribute("data-row-path") || "";
+      state.touchRowType = row.getAttribute("data-row-type") || "";
+      state.touchStartX = Number(touch.clientX || 0);
+      state.touchStartY = Number(touch.clientY || 0);
+      state.touchMoved = false;
+      const now = Date.now();
+      state.touchContextMenuSuppressUntil = now + TOUCH_CONTEXT_MENU_SUPPRESS_MS;
+      state.touchDragSuppressUntil = now + TOUCH_DRAG_SUPPRESS_MS;
+    }, { passive: true });
+
+    el.tableBody.addEventListener("touchmove", (event) => {
+      if (!state.touchRowPath) return;
+      const touch = latestChangedTouch(event);
+      if (!touch) return;
+      const deltaX = Math.abs(Number(touch.clientX || 0) - state.touchStartX);
+      const deltaY = Math.abs(Number(touch.clientY || 0) - state.touchStartY);
+      if (deltaX > TOUCH_MOVE_CANCEL_PX || deltaY > TOUCH_MOVE_CANCEL_PX) {
+        state.touchMoved = true;
+      }
+    }, { passive: true });
+
+    el.tableBody.addEventListener("touchend", (event) => {
+      if (state.suppressRowClick) {
+        resetTouchRowInteraction();
+        return;
+      }
+      const row = event.target.closest("tr[data-row-path]");
+      if (!row) {
+        resetTouchRowInteraction();
+        return;
+      }
+      const rowPath = row.getAttribute("data-row-path") || "";
+      const rowType = row.getAttribute("data-row-type") || "";
+      const sameRow = state.touchRowPath && state.touchRowPath === rowPath && state.touchRowType === rowType;
+      if (!sameRow || state.touchMoved) {
+        resetTouchRowInteraction();
+        return;
+      }
+
+      focusExplorerSelectionScope();
+      setSelectedItem(rowPath, rowType);
+      state.touchClickSuppressUntil = Date.now() + TOUCH_CLICK_SUPPRESS_MS;
+      const activated = handleMobileRowActivation(event, rowPath, rowType);
+      if (activated) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      resetTouchRowInteraction();
+    }, { passive: false });
+
+    el.tableBody.addEventListener("touchcancel", () => {
+      resetTouchRowInteraction();
+    }, { passive: true });
+
     el.tableBody.addEventListener("click", (event) => {
+      if (Date.now() <= state.touchClickSuppressUntil) {
+        event.preventDefault();
+        return;
+      }
       if (state.suppressRowClick) {
         state.suppressRowClick = false;
         event.preventDefault();
@@ -3240,6 +3342,10 @@
     });
 
     el.tableBody.addEventListener("contextmenu", (event) => {
+      if (Date.now() <= state.touchContextMenuSuppressUntil) {
+        event.preventDefault();
+        return;
+      }
       const row = event.target.closest("tr[data-row-path]");
       if (!row) return;
       event.preventDefault();
@@ -3291,6 +3397,10 @@
 
   if (el.browserShell) {
     el.browserShell.addEventListener("contextmenu", (event) => {
+      if (Date.now() <= state.touchContextMenuSuppressUntil) {
+        event.preventDefault();
+        return;
+      }
       if (event.target.closest("tr[data-row-path]")) return;
       if (event.target.closest(".modal")) return;
       event.preventDefault();

@@ -364,3 +364,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 후속 구현은 `ABBAS_WEB`의 `/nas` 페이지에서 모바일 터치 판별 범위를 넓히고 파일 `dblclick`도 다운로드 확인 모달로 연결하는 보정 작업이었고 MELAUHF ATmega 펌웨어 코드는 수정하지 않았다.
   - 펌웨어 디렉토리는 기존 MA5105 페이지 제어와 ESP UART 수신 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.
+
+## 42. Android 7.1.2 NAS 터치 후속 보정에 따른 MELAUHF 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+- 간단한 설명
+  - 이번 채팅의 실제 후속 구현은 `ABBAS_WEB`의 `/nas` 페이지에서 Android 7.1.2 터치 환경에 맞춰 더블탭, 합성 click, 롱프레스 drag/contextmenu 억제를 보강하는 작업이었고 MELAUHF ATmega 펌웨어 코드는 수정하지 않았다.
+  - 펌웨어 디렉토리는 기존 MA5105 페이지 제어와 ESP UART 수신 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.

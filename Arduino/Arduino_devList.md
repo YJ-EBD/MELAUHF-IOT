@@ -260,3 +260,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 후속 구현은 `ABBAS_WEB`의 `/nas` 페이지에서 모바일 터치 판별 범위를 넓히고 파일 `dblclick`도 다운로드 확인 모달로 연결하는 보정 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
   - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.
+
+## 35. Android 7.1.2 NAS 터치 후속 보정에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 후속 구현은 `ABBAS_WEB`의 `/nas` 페이지에서 Android 7.1.2 터치 환경에 맞춰 더블탭, 합성 click, 롱프레스 drag/contextmenu 억제를 보강하는 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
+  - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.

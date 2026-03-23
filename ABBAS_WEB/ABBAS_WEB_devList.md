@@ -500,3 +500,11 @@
 - 간단한 설명
   - 일부 모바일/테스트 환경에서 다운로드 확인 모달이 뜨지 않던 문제를 보완하기 위해 터치 입력 판별을 `matchMedia`뿐 아니라 `sourceCapabilities`, `pointerType`, `maxTouchPoints`까지 함께 보도록 넓혔다.
   - 파일 `dblclick`도 다운로드 확인 모달로 직접 연결해, 실제 모바일 더블탭과 브라우저 모바일 테스트 환경의 마우스 더블클릭 모두 같은 흐름으로 동작하도록 정리했다.
+
+## 53. Android 7.1.2 대응 NAS 터치 더블탭/롱프레스 억제 보강
+- 수정코드
+  - `static/js/nas_page.js`
+  - `templates/nas.html`
+- 간단한 설명
+  - Android 7.1.2 실기기에서 더블탭 시 브라우저 확대가 먼저 일어나고, 롱프레스 시 행 드래그/컨텍스트 메뉴가 개입하던 문제를 줄이기 위해 `touchstart/touchmove/touchend` 기반 행 처리와 합성 click 무시, drag/contextmenu 억제를 추가했다.
+  - `.nas-file-row`에 `touch-action: manipulation`과 `-webkit-touch-callout: none`을 넣고, 터치 직후에는 `dragstart`/`contextmenu`를 잠시 차단해 모바일 더블탭 다운로드 모달 흐름이 끊기지 않도록 정리했다.
