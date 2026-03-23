@@ -508,3 +508,11 @@
 - 간단한 설명
   - Android 7.1.2 실기기에서 더블탭 시 브라우저 확대가 먼저 일어나고, 롱프레스 시 행 드래그/컨텍스트 메뉴가 개입하던 문제를 줄이기 위해 `touchstart/touchmove/touchend` 기반 행 처리와 합성 click 무시, drag/contextmenu 억제를 추가했다.
   - `.nas-file-row`에 `touch-action: manipulation`과 `-webkit-touch-callout: none`을 넣고, 터치 직후에는 `dragstart`/`contextmenu`를 잠시 차단해 모바일 더블탭 다운로드 모달 흐름이 끊기지 않도록 정리했다.
+
+## 54. NAS 모바일 파일 재터치 즉시 다운로드 및 스크립트 캐시 갱신
+- 수정코드
+  - `static/js/nas_page.js`
+  - `templates/nas.html`
+- 간단한 설명
+  - 모바일에서는 같은 파일을 다시 터치하면 확인 모달 없이 바로 다운로드를 시작하고, 같은 폴더를 다시 터치하면 바로 진입하도록 `activateRowItem()` 기준으로 동작을 단순화했다.
+  - `nas_page.js` 로드 쿼리 버전을 갱신해 구형 안드로이드 브라우저가 이전 캐시 스크립트를 계속 쓰지 않도록 정리했다.

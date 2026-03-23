@@ -2237,6 +2237,20 @@
     await downloadItems(paths);
   }
 
+  function activateRowItem(path, type) {
+    const rowPath = String(path || "/").trim() || "/";
+    const rowType = String(type || "").trim();
+    if (rowType === "directory") {
+      loadFolder(rowPath);
+      return true;
+    }
+    if (rowType === "file") {
+      void downloadItems(rowPath);
+      return true;
+    }
+    return false;
+  }
+
   function handleMobileRowActivation(event, path, type) {
     if (!isMobileNasInteraction(event)) {
       resetMobileTapState();
@@ -2264,15 +2278,7 @@
     }
 
     resetMobileTapState();
-    if (rowType === "directory") {
-      loadFolder(rowPath);
-      return true;
-    }
-    if (rowType === "file") {
-      openDownloadConfirm(rowPath);
-      return true;
-    }
-    return false;
+    return activateRowItem(rowPath, rowType);
   }
 
   function renameItem(path, type) {
@@ -3286,9 +3292,20 @@
         return;
       }
 
+      const wasPrimarySelected = state.selectedPaths.length === 1 && state.selectedPath === rowPath;
       focusExplorerSelectionScope();
       setSelectedItem(rowPath, rowType);
       state.touchClickSuppressUntil = Date.now() + TOUCH_CLICK_SUPPRESS_MS;
+      if (wasPrimarySelected) {
+        resetMobileTapState();
+        const activated = activateRowItem(rowPath, rowType);
+        if (activated) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        resetTouchRowInteraction();
+        return;
+      }
       const activated = handleMobileRowActivation(event, rowPath, rowType);
       if (activated) {
         event.preventDefault();
@@ -3334,11 +3351,7 @@
       const rowType = row.getAttribute("data-row-type") || "";
       focusExplorerSelectionScope();
       setSelectedItem(rowPath, rowType);
-      if (rowType === "directory") {
-        loadFolder(rowPath);
-      } else if (rowType === "file") {
-        openDownloadConfirm(rowPath);
-      }
+      activateRowItem(rowPath, rowType);
     });
 
     el.tableBody.addEventListener("contextmenu", (event) => {

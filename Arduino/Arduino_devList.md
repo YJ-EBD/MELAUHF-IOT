@@ -268,3 +268,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 후속 구현은 `ABBAS_WEB`의 `/nas` 페이지에서 Android 7.1.2 터치 환경에 맞춰 더블탭, 합성 click, 롱프레스 drag/contextmenu 억제를 보강하는 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
   - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.
+
+## 36. NAS 모바일 파일 재터치 즉시 다운로드에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 최종 구현은 `ABBAS_WEB`의 `/nas` 페이지에서 모바일 파일 재터치 시 확인 모달 없이 바로 다운로드하도록 단순화하고, 구형 안드로이드 캐시를 피하기 위해 JS 버전 쿼리를 갱신하는 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
+  - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.
