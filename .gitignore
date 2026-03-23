@@ -31,7 +31,8 @@ ABBAS_WEB/storage/device_logs/**/.TotalEnergy.txt.energy.part
 
 # Local OTA firmware artifacts
 ABBAS_WEB/storage/firmware/**/*.bin
-ABBAS_WEB/static/uploads/profile-images/**
+ABBAS_WEB/static/uploads/**
+ABBAS_WEB/logo/KakaoTalk_*.png
 
 # Local comparison/reference firmware trees
 therma_med/

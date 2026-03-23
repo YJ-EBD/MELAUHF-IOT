@@ -25,6 +25,7 @@ from DB import data_repo
 from DB import device_repo
 from DB import device_ops_repo
 from DB import firmware_repo
+from DB import chat_repo
 from DB import nas_repo
 from DB import user_repo
 from DB.runtime import get_mysql
@@ -80,6 +81,23 @@ PROFILE_IMAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file_
 PROFILE_IMAGE_PUBLIC_PREFIX = "/static/uploads/profile-images"
 PROFILE_IMAGE_MAX_BYTES = int(os.getenv("ABBAS_PROFILE_IMAGE_MAX_BYTES", str(3 * 1024 * 1024)))
 PROFILE_IMAGE_ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+MESSENGER_UPLOAD_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "uploads", "messenger")
+MESSENGER_UPLOAD_PUBLIC_PREFIX = "/static/uploads/messenger"
+MESSENGER_UPLOAD_MAX_BYTES = int(os.getenv("ABBAS_MESSENGER_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024)))
+MESSENGER_UPLOAD_ALLOWED_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".txt", ".csv", ".zip", ".7z", ".mp4", ".mov", ".mp3", ".wav",
+}
+MESSENGER_ROOM_AVATAR_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "uploads", "messenger-room-avatars")
+MESSENGER_ROOM_AVATAR_PUBLIC_PREFIX = "/static/uploads/messenger-room-avatars"
+MESSENGER_ROOM_AVATAR_PRESET_PREFIX = "/static/img/messenger-room-presets"
+MESSENGER_ROOM_AVATAR_PRESETS = [
+    f"{MESSENGER_ROOM_AVATAR_PRESET_PREFIX}/preset-{index:02d}.svg"
+    for index in range(1, 11)
+]
+MESSENGER_ROOM_AVATAR_MAX_BYTES = int(os.getenv("ABBAS_MESSENGER_ROOM_AVATAR_MAX_BYTES", str(3 * 1024 * 1024)))
+MESSENGER_ROOM_AVATAR_ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 _NET_RATE_CACHE: dict[str, dict[str, float]] = {}
 
 
@@ -419,6 +437,15 @@ def _display_user_name(row: dict[str, Any] | None) -> str:
 def _profile_image_url_from_value(value: Any) -> str:
     path = str(value or "").strip()
     if path.startswith(f"{PROFILE_IMAGE_PUBLIC_PREFIX}/"):
+        return path
+    return ""
+
+
+def _messenger_room_avatar_url_from_value(value: Any) -> str:
+    path = str(value or "").strip()
+    if path.startswith(f"{MESSENGER_ROOM_AVATAR_PUBLIC_PREFIX}/"):
+        return path
+    if path in MESSENGER_ROOM_AVATAR_PRESETS:
         return path
     return ""
 
@@ -977,6 +1004,776 @@ def _build_integrated_admin_payload(request: Request) -> dict[str, Any]:
         "active_users": user_views["active_users"],
         "usb_devices": usb_devices,
     }
+
+
+def _messenger_presence_badge_label(state: str) -> str:
+    normalized = _normalize_presence_state(state)
+    if normalized == "live":
+        return "온라인"
+    if normalized == "background":
+        return "자리비움"
+    return "오프라인"
+
+
+def _messenger_presence_tone(state: str) -> str:
+    normalized = _normalize_presence_state(state)
+    if normalized == "live":
+        return "online"
+    if normalized == "background":
+        return "away"
+    return "offline"
+
+
+def _messenger_time_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 16:
+        return text[11:16]
+    return text
+
+
+def _messenger_preview_text(value: Any, limit: int = 100) -> str:
+    preview = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(preview) <= limit:
+        return preview
+    return preview[: max(limit - 1, 0)].rstrip() + "…"
+
+
+def _messenger_attachment_from_content(message_type: Any, content: Any) -> dict[str, Any]:
+    normalized_type = str(message_type or "").strip().lower()
+    if normalized_type not in {"file", "image"}:
+        return {}
+    try:
+        payload = json.loads(str(content or "{}"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {}
+    url = str(payload.get("url") or "").strip()
+    fallback_name = url.rsplit("/", 1)[-1] if url else ""
+    return {
+        "kind": normalized_type,
+        "name": str(payload.get("name") or payload.get("filename") or fallback_name).strip(),
+        "url": url,
+        "size_text": str(payload.get("size_text") or "").strip(),
+        "content_type": str(payload.get("content_type") or "").strip(),
+    }
+
+
+def _messenger_message_preview_for_view(message_type: Any, content: Any) -> str:
+    attachment = _messenger_attachment_from_content(message_type, content)
+    if attachment:
+        label = "[이미지]" if attachment.get("kind") == "image" else "[파일]"
+        name = str(attachment.get("name") or attachment.get("url") or "첨부").strip()
+        return f"{label} {name}".strip()
+    return _messenger_preview_text(content, limit=100)
+
+
+def _messenger_human_size(num_bytes: int) -> str:
+    value = float(max(int(num_bytes or 0), 0))
+    unit = "B"
+    for next_unit in ["B", "KB", "MB", "GB"]:
+        unit = next_unit
+        if value < 1024.0 or unit == "GB":
+            break
+        value /= 1024.0
+    if unit == "B":
+        return f"{int(value)} {unit}"
+    return f"{value:.1f} {unit}"
+
+
+def _messenger_unique_user_ids(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values or []:
+        user_id = str(value or "").strip()
+        if (not user_id) or (user_id in seen):
+            continue
+        seen.add(user_id)
+        result.append(user_id)
+    return result
+
+
+def _messenger_user_view_from_row(
+    row: dict[str, Any] | None,
+    presence_map: dict[str, dict[str, Any]],
+    *,
+    current_user_id: str = "",
+) -> dict[str, Any]:
+    row = row or {}
+    user_id = str(row.get("ID") or row.get("user_id") or "").strip()
+    nickname = str(row.get("NICKNAME") or row.get("nickname") or "").strip()
+    name = str(row.get("NAME") or row.get("name") or "").strip()
+    department = str(row.get("DEPARTMENT") or row.get("department") or "").strip()
+    role = _normalize_role(row.get("ROLE") or row.get("role") or "")
+    approval_status = _normalize_approval_status(row.get("APPROVAL_STATUS") or row.get("approval_status") or "approved")
+    display_name = nickname or name or user_id
+    profile_image_url = _profile_image_url_from_value(row.get("PROFILE_IMAGE_PATH") or row.get("profile_image_path") or "")
+    presence = presence_map.get(user_id) or {}
+    presence_state = _normalize_presence_state(presence.get("state") or "")
+    return {
+        "user_id": user_id,
+        "display_name": display_name,
+        "nickname": nickname,
+        "name": name,
+        "department": department,
+        "role": role,
+        "role_label": _role_label(role),
+        "approval_status": approval_status,
+        "profile_image_url": profile_image_url,
+        "avatar_initial": _profile_avatar_initial(display_name, user_id),
+        "presence_state": presence_state,
+        "presence_label": _messenger_presence_badge_label(presence_state),
+        "presence_tone": _messenger_presence_tone(presence_state),
+        "presence_page_text": str(presence.get("page_label") or "").strip(),
+        "is_online": presence_state in {"live", "background"},
+        "is_self": user_id == (current_user_id or ""),
+    }
+
+
+def _messenger_current_user_role(
+    current_user_id: str,
+    user_directory: dict[str, dict[str, Any]],
+) -> str:
+    current_user = user_directory.get(current_user_id) or {}
+    return _normalize_role(current_user.get("role") or "")
+
+
+def _messenger_is_system_room(room: dict[str, Any] | None) -> bool:
+    room = room or {}
+    room_type = str(room.get("room_type") or "").strip().lower()
+    created_by = str(room.get("created_by") or "").strip().lower()
+    if room_type == "dm":
+        return False
+    return created_by in {"", "system"}
+
+
+def _messenger_can_manage_room(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    room = room or {}
+    room_type = str(room.get("room_type") or "").strip().lower()
+    if room_type == "dm":
+        return False
+    if _normalize_role(current_user_role) == "superuser":
+        return True
+    if _messenger_is_system_room(room):
+        return False
+    return str(room.get("created_by") or "").strip() == str(current_user_id or "").strip()
+
+
+def _messenger_can_edit_message(
+    message: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    message = message or {}
+    if str(message.get("deleted_at") or "").strip():
+        return False
+    if str(message.get("message_type") or "text").strip().lower() != "text":
+        return False
+    return str(message.get("sender_user_id") or "").strip() == str(current_user_id or "").strip()
+
+
+def _messenger_can_delete_message(
+    message: dict[str, Any] | None,
+    current_user_id: str,
+    *,
+    current_user_role: str = "",
+    room_can_manage: bool = False,
+) -> bool:
+    message = message or {}
+    if str(message.get("deleted_at") or "").strip():
+        return False
+    if room_can_manage or _normalize_role(current_user_role) == "superuser":
+        return True
+    return str(message.get("sender_user_id") or "").strip() == str(current_user_id or "").strip()
+
+
+def _approved_user_rows() -> list[dict[str, Any]]:
+    rows = user_repo.list_user_rows() or []
+    approved_rows = [
+        row
+        for row in rows
+        if _normalize_approval_status(row.get("APPROVAL_STATUS") or "") == "approved"
+    ]
+    approved_rows.sort(
+        key=lambda row: (
+            str(row.get("DEPARTMENT") or "").strip(),
+            _display_user_name(row).lower(),
+            str(row.get("ID") or "").strip().lower(),
+        )
+    )
+    return approved_rows
+
+
+def _build_messenger_user_directory(current_user_id: str) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    presence_map = _build_integrated_admin_presence_state_map()
+    approved_rows = _approved_user_rows()
+    directory: dict[str, dict[str, Any]] = {}
+    contacts: list[dict[str, Any]] = []
+    for row in approved_rows:
+        user_view = _messenger_user_view_from_row(row, presence_map, current_user_id=current_user_id)
+        user_id = str(user_view.get("user_id") or "").strip()
+        if not user_id:
+            continue
+        directory[user_id] = user_view
+        if user_id != current_user_id:
+            contacts.append(user_view)
+
+    if current_user_id and current_user_id not in directory:
+        current_row = read_user(current_user_id) or {"user_id": current_user_id}
+        directory[current_user_id] = _messenger_user_view_from_row(current_row, presence_map, current_user_id=current_user_id)
+
+    contacts.sort(
+        key=lambda item: (
+            0 if item.get("is_online") else 1,
+            str(item.get("department") or ""),
+            str(item.get("display_name") or "").lower(),
+        )
+    )
+    return directory, contacts
+
+
+def _messenger_room_view(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    user_directory: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    room = room or {}
+    room_id = int(room.get("id") or 0)
+    if room_id <= 0:
+        return None
+
+    raw_members = list(room.get("members") or [])
+    member_views: list[dict[str, Any]] = []
+    for member in raw_members:
+        member_id = str((member or {}).get("user_id") or "").strip()
+        base_view = dict(user_directory.get(member_id) or _messenger_user_view_from_row(member, {}, current_user_id=current_user_id))
+        base_view["member_role"] = str((member or {}).get("member_role") or "member").strip().lower() or "member"
+        member_views.append(base_view)
+
+    member_views.sort(key=lambda item: (0 if item.get("user_id") == current_user_id else 1, str(item.get("display_name") or "").lower()))
+    room_type = str(room.get("room_type") or "group").strip().lower() or "group"
+    current_user_role = _messenger_current_user_role(current_user_id, user_directory)
+    can_manage_room = _messenger_can_manage_room(room, current_user_id, current_user_role)
+    created_by = str(room.get("created_by") or "").strip()
+    other_member = next((member for member in member_views if member.get("user_id") != current_user_id), None)
+    last_sender_user_id = str(room.get("last_sender_user_id") or "").strip()
+    last_sender = user_directory.get(last_sender_user_id) or {}
+    preview = str(room.get("last_message_preview") or "").strip()
+    if room_type in {"channel", "group"} and preview and last_sender_user_id:
+        sender_name = "나" if last_sender_user_id == current_user_id else str(last_sender.get("display_name") or last_sender_user_id)
+        preview = f"{sender_name}: {preview}"
+    elif not preview:
+        preview = str(room.get("topic") or "").strip() or "대화를 시작해보세요."
+
+    if room_type == "dm":
+        title = str((other_member or {}).get("display_name") or "새 대화")
+        subtitle = str((other_member or {}).get("department") or "").strip() or str((other_member or {}).get("presence_label") or "1:1 대화")
+        avatar_initial = str((other_member or {}).get("avatar_initial") or "D")
+        avatar_url = str((other_member or {}).get("profile_image_url") or "")
+        presence_state = str((other_member or {}).get("presence_state") or "inactive")
+        presence_label = str((other_member or {}).get("presence_label") or "오프라인")
+        section = "direct"
+    else:
+        title = str(room.get("name") or "").strip() or "그룹 대화"
+        subtitle = str(room.get("topic") or "").strip() or f"{len(member_views)}명 참여"
+        avatar_initial = _profile_avatar_initial(title, "C" if room_type == "channel" else "G")
+        avatar_url = _messenger_room_avatar_url_from_value(room.get("avatar_path"))
+        presence_state = "inactive"
+        presence_label = "채널" if room_type == "channel" else "그룹"
+        section = "channel" if room_type == "channel" else "group"
+
+    if bool(room.get("is_starred")):
+        section = "starred"
+
+    active_member_count = sum(1 for member in member_views if member.get("presence_state") in {"live", "background"})
+    return {
+        "id": room_id,
+        "room_type": room_type,
+        "room_key": str(room.get("room_key") or "").strip(),
+        "created_by": created_by,
+        "title": title,
+        "subtitle": subtitle,
+        "topic": str(room.get("topic") or "").strip(),
+        "avatar_initial": avatar_initial,
+        "avatar_url": avatar_url,
+        "avatar_path": str(room.get("avatar_path") or "").strip(),
+        "presence_state": presence_state,
+        "presence_label": presence_label,
+        "presence_tone": _messenger_presence_tone(presence_state),
+        "is_starred": bool(room.get("is_starred")),
+        "is_muted": bool(room.get("is_muted")),
+        "member_role": str(room.get("member_role") or "member").strip().lower() or "member",
+        "member_count": len(member_views),
+        "active_member_count": active_member_count,
+        "members": member_views,
+        "member_names": ", ".join(str(member.get("display_name") or "") for member in member_views[:4]),
+        "unread_count": max(int(room.get("unread_count") or 0), 0),
+        "last_message_id": int(room.get("last_message_id") or 0),
+        "last_message_at": str(room.get("last_message_at") or "").strip(),
+        "last_message_time_text": _messenger_time_text(room.get("last_message_at")),
+        "last_message_preview": preview,
+        "last_sender_user_id": last_sender_user_id,
+        "other_user_id": str((other_member or {}).get("user_id") or ""),
+        "section": section,
+        "is_system_room": _messenger_is_system_room(room),
+        "can_manage_room": can_manage_room,
+        "can_edit_room": can_manage_room,
+        "can_delete_room": can_manage_room,
+        "can_edit_avatar": can_manage_room,
+        "is_direct": room_type == "dm",
+        "is_channel": room_type == "channel",
+        "is_group": room_type == "group",
+    }
+
+
+def _messenger_message_view(
+    message: dict[str, Any] | None,
+    current_user_id: str,
+    user_directory: dict[str, dict[str, Any]],
+    *,
+    current_user_role: str = "",
+    room_can_manage: bool = False,
+) -> dict[str, Any] | None:
+    message = message or {}
+    message_id = int(message.get("id") or 0)
+    if message_id <= 0:
+        return None
+
+    sender_user_id = str(message.get("sender_user_id") or "").strip()
+    sender_view = dict(user_directory.get(sender_user_id) or _messenger_user_view_from_row(
+        {
+            "user_id": sender_user_id,
+            "nickname": message.get("sender_nickname"),
+            "name": message.get("sender_name"),
+            "department": message.get("sender_department"),
+            "profile_image_path": message.get("sender_profile_image_path"),
+            "role": message.get("sender_role"),
+        },
+        {},
+        current_user_id=current_user_id,
+    ))
+    created_at = str(message.get("created_at") or "").strip()
+    message_type = str(message.get("message_type") or "text").strip().lower() or "text"
+    attachment = _messenger_attachment_from_content(message_type, message.get("content"))
+    return {
+        "id": message_id,
+        "room_id": int(message.get("room_id") or 0),
+        "sender_user_id": sender_user_id,
+        "sender_display_name": str(sender_view.get("display_name") or sender_user_id),
+        "sender_nickname": str(sender_view.get("nickname") or ""),
+        "sender_name": str(sender_view.get("name") or ""),
+        "sender_avatar_initial": str(sender_view.get("avatar_initial") or _profile_avatar_initial(sender_user_id, "U")),
+        "sender_avatar_url": str(sender_view.get("profile_image_url") or ""),
+        "sender_department": str(sender_view.get("department") or ""),
+        "sender_role_label": str(sender_view.get("role_label") or _role_label(sender_view.get("role") or "")),
+        "sender_presence_tone": str(sender_view.get("presence_tone") or "offline"),
+        "sender_presence_label": str(sender_view.get("presence_label") or ""),
+        "sender_presence_page_text": str(sender_view.get("presence_page_text") or ""),
+        "message_type": message_type,
+        "content": str(message.get("content") or ""),
+        "attachment": attachment,
+        "preview_text": _messenger_message_preview_for_view(message_type, message.get("content")),
+        "created_at": created_at,
+        "created_date": created_at[:10] if len(created_at) >= 10 else "",
+        "time_text": _messenger_time_text(created_at),
+        "is_mine": sender_user_id == current_user_id,
+        "edited": bool(str(message.get("edited_at") or "").strip()),
+        "can_edit": _messenger_can_edit_message(message, current_user_id, current_user_role),
+        "can_delete": _messenger_can_delete_message(
+            message,
+            current_user_id,
+            current_user_role=current_user_role,
+            room_can_manage=room_can_manage,
+        ),
+    }
+
+
+def _build_messenger_room_views(current_user_id: str, user_directory: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rooms = chat_repo.list_rooms_for_user(current_user_id)
+    room_views = [_messenger_room_view(room, current_user_id, user_directory) for room in rooms]
+    return [room for room in room_views if room]
+
+
+def _messenger_notification_aliases(current_user_id: str, current_user: dict[str, Any] | None) -> list[str]:
+    current_user = current_user or {}
+    candidates = [
+        current_user_id,
+        current_user.get("display_name"),
+        current_user.get("nickname"),
+        current_user.get("name"),
+    ]
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        variants = [text]
+        squashed = re.sub(r"\s+", "", text)
+        if squashed and squashed != text:
+            variants.append(squashed)
+        for variant in variants:
+            lowered = variant.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            aliases.append(variant)
+    return aliases
+
+
+def _messenger_message_mentions_user(content: Any, current_user_id: str, current_user: dict[str, Any] | None) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    for alias in _messenger_notification_aliases(current_user_id, current_user):
+        alias_text = str(alias or "").strip()
+        if not alias_text:
+            continue
+        pattern = re.compile(
+            rf"(?<!\S)@{re.escape(alias_text)}(?=$|[\s.,!?;:)\]}}>\"])",
+            re.IGNORECASE,
+        )
+        if pattern.search(text):
+            return True
+        if ("@" + alias_text.lower()) in lowered:
+            return True
+    return False
+
+
+def _build_messenger_notifications_payload(
+    current_user_id: str,
+    user_directory: dict[str, dict[str, Any]],
+    room_views: list[dict[str, Any]],
+    current_user: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    room_map = {int(room.get("id") or 0): room for room in (room_views or []) if int(room.get("id") or 0) > 0}
+    current_user = current_user or user_directory.get(current_user_id) or {}
+    raw_notifications = chat_repo.list_recent_notifications_for_user(current_user_id, limit=16)
+    items: list[dict[str, Any]] = []
+
+    for row in raw_notifications:
+        room_id = int(row.get("room_id") or 0)
+        room_view = room_map.get(room_id)
+        if (not room_view) or bool(room_view.get("is_muted")):
+            continue
+        message_view = _messenger_message_view(row, current_user_id, user_directory)
+        if not message_view:
+            continue
+        content_preview = _messenger_preview_text(message_view.get("preview_text"), limit=92)
+        is_mention = _messenger_message_mentions_user(message_view.get("content"), current_user_id, current_user)
+        sender_display_name = str(message_view.get("sender_display_name") or "")
+        items.append(
+            {
+                "id": f"room-{room_id}-message-{int(message_view.get('id') or 0)}",
+                "room_id": room_id,
+                "message_id": int(message_view.get("id") or 0),
+                "kind": "mention" if is_mention else "message",
+                "kind_label": "멘션" if is_mention else "새 메시지",
+                "is_unread": bool(row.get("is_unread")),
+                "room_title": str(room_view.get("title") or "대화방"),
+                "room_type": str(room_view.get("room_type") or "group"),
+                "room_avatar_initial": str(room_view.get("avatar_initial") or "C"),
+                "room_avatar_url": str(room_view.get("avatar_url") or ""),
+                "sender_display_name": sender_display_name,
+                "sender_avatar_initial": str(message_view.get("sender_avatar_initial") or "U"),
+                "sender_avatar_url": str(message_view.get("sender_avatar_url") or ""),
+                "sender_department": str(message_view.get("sender_department") or ""),
+                "preview": content_preview,
+                "summary": f"{sender_display_name}: {content_preview}" if content_preview else sender_display_name,
+                "created_at": str(message_view.get("created_at") or ""),
+                "time_text": str(message_view.get("time_text") or ""),
+            }
+        )
+
+    counts = {
+        "total": len(items),
+        "unread_total": sum(1 for item in items if item.get("is_unread")),
+        "mention_total": sum(1 for item in items if item.get("kind") == "mention"),
+        "unread_mention_total": sum(1 for item in items if item.get("kind") == "mention" and item.get("is_unread")),
+    }
+    return {"items": items, "counts": counts}
+
+
+def _build_messenger_bootstrap_payload(current_user_id: str, *, requested_room_id: int = 0) -> dict[str, Any]:
+    chat_repo.ensure_default_rooms()
+    user_directory, contacts = _build_messenger_user_directory(current_user_id)
+    room_views = _build_messenger_room_views(current_user_id, user_directory)
+    selected_room_id = 0
+    if requested_room_id > 0 and any(int(room.get("id") or 0) == int(requested_room_id) for room in room_views):
+        selected_room_id = int(requested_room_id)
+    elif room_views:
+        selected_room_id = int(room_views[0].get("id") or 0)
+
+    current_user = user_directory.get(current_user_id) or _messenger_user_view_from_row(
+        read_user(current_user_id) or {"user_id": current_user_id},
+        {},
+        current_user_id=current_user_id,
+    )
+    notifications = _build_messenger_notifications_payload(current_user_id, user_directory, room_views, current_user)
+    counts = {
+        "room_total": len(room_views),
+        "unread_total": sum(int(room.get("unread_count") or 0) for room in room_views),
+        "starred_total": sum(1 for room in room_views if room.get("is_starred")),
+        "channel_total": sum(1 for room in room_views if room.get("is_channel")),
+        "group_total": sum(1 for room in room_views if room.get("is_group")),
+        "direct_total": sum(1 for room in room_views if room.get("is_direct")),
+        "online_contacts": sum(1 for contact in contacts if contact.get("is_online")),
+        "notification_total": int((notifications.get("counts") or {}).get("total") or 0),
+        "unread_notification_total": int((notifications.get("counts") or {}).get("unread_total") or 0),
+        "mention_total": int((notifications.get("counts") or {}).get("mention_total") or 0),
+    }
+    return {
+        "current_user": current_user,
+        "rooms": room_views,
+        "contacts": contacts,
+        "counts": counts,
+        "notifications": notifications,
+        "active_room_id": selected_room_id,
+    }
+
+
+def _build_messenger_room_messages_payload(
+    current_user_id: str,
+    room_id: int,
+    *,
+    limit: int = 80,
+    before_message_id: int = 0,
+) -> dict[str, Any] | None:
+    user_directory, _contacts = _build_messenger_user_directory(current_user_id)
+    room = chat_repo.get_room_for_user(room_id, current_user_id)
+    if not room:
+        return None
+
+    room_view = _messenger_room_view(room, current_user_id, user_directory)
+    if not room_view:
+        return None
+
+    current_user_role = _messenger_current_user_role(current_user_id, user_directory)
+    messages = chat_repo.list_messages_for_user(current_user_id, room_id, limit=limit, before_message_id=before_message_id)
+    message_views = [
+        _messenger_message_view(
+            message,
+            current_user_id,
+            user_directory,
+            current_user_role=current_user_role,
+            room_can_manage=bool(room_view.get("can_manage_room")),
+        )
+        for message in messages
+    ]
+    filtered_messages = [message for message in message_views if message]
+    next_before_message_id = int(filtered_messages[0].get("id") or 0) if filtered_messages else 0
+    return {
+        "room": room_view,
+        "messages": filtered_messages,
+        "next_before_message_id": next_before_message_id,
+    }
+
+
+def _build_single_messenger_room_payload(current_user_id: str, room_id: int) -> dict[str, Any] | None:
+    user_directory, _contacts = _build_messenger_user_directory(current_user_id)
+    room = chat_repo.get_room_for_user(room_id, current_user_id)
+    if not room:
+        return None
+    return _messenger_room_view(room, current_user_id, user_directory)
+
+
+def _build_single_messenger_message_payload(
+    current_user_id: str,
+    message: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    user_directory, _contacts = _build_messenger_user_directory(current_user_id)
+    current_user_role = _messenger_current_user_role(current_user_id, user_directory)
+    room_id = int((message or {}).get("room_id") or 0)
+    room = chat_repo.get_room_for_user(room_id, current_user_id) if room_id > 0 else None
+    room_view = _messenger_room_view(room, current_user_id, user_directory) if room else None
+    return _messenger_message_view(
+        message,
+        current_user_id,
+        user_directory,
+        current_user_role=current_user_role,
+        room_can_manage=bool((room_view or {}).get("can_manage_room")),
+    )
+
+
+def _build_messenger_user_profile_payload(
+    current_user_id: str,
+    target_user_id: str,
+) -> dict[str, Any] | None:
+    normalized_target_user_id = str(target_user_id or "").strip()
+    if not normalized_target_user_id:
+        return None
+
+    user_directory, _contacts = _build_messenger_user_directory(current_user_id)
+    target_row = read_user(normalized_target_user_id) or {}
+    if not target_row and normalized_target_user_id not in user_directory:
+        return None
+
+    presence_map = _build_integrated_admin_presence_state_map()
+    user_view = dict(
+        user_directory.get(normalized_target_user_id)
+        or _messenger_user_view_from_row(
+            target_row or {"user_id": normalized_target_user_id},
+            presence_map,
+            current_user_id=current_user_id,
+        )
+    )
+    profile_form = _build_profile_form(normalized_target_user_id, target_row)
+    return {
+        "user_id": normalized_target_user_id,
+        "display_name": str(user_view.get("display_name") or profile_form.get("display_name") or normalized_target_user_id),
+        "nickname": str(profile_form.get("nickname") or user_view.get("nickname") or ""),
+        "name": str(profile_form.get("name") or ""),
+        "department": str(user_view.get("department") or profile_form.get("department") or ""),
+        "role": str(user_view.get("role") or profile_form.get("role") or "user"),
+        "role_label": str(user_view.get("role_label") or profile_form.get("role_label") or "USER"),
+        "profile_image_url": str(profile_form.get("profile_image_url") or user_view.get("profile_image_url") or ""),
+        "avatar_initial": str(user_view.get("avatar_initial") or profile_form.get("avatar_initial") or _profile_avatar_initial(normalized_target_user_id, normalized_target_user_id)),
+        "presence_label": str(user_view.get("presence_label") or ""),
+        "presence_page_text": str(user_view.get("presence_page_text") or ""),
+        "presence_tone": str(user_view.get("presence_tone") or "offline"),
+        "is_self": normalized_target_user_id == current_user_id,
+        "email": str(profile_form.get("email") or ""),
+        "phone": str(profile_form.get("phone") or ""),
+        "location": str(profile_form.get("location") or ""),
+        "bio": str(profile_form.get("bio") or ""),
+        "join_date": str(profile_form.get("join_date") or ""),
+    }
+
+
+class _MessengerHub:
+    def __init__(self) -> None:
+        self._connections: dict[str, list[WebSocket]] = {}
+        self._lock = asyncio.Lock()
+
+    async def connect(self, user_id: str, websocket: WebSocket) -> None:
+        await websocket.accept()
+        async with self._lock:
+            sockets = self._connections.setdefault(user_id, [])
+            if websocket not in sockets:
+                sockets.append(websocket)
+
+    async def disconnect(self, user_id: str, websocket: WebSocket) -> None:
+        async with self._lock:
+            sockets = list(self._connections.get(user_id) or [])
+            if websocket in sockets:
+                sockets.remove(websocket)
+            if sockets:
+                self._connections[user_id] = sockets
+            else:
+                self._connections.pop(user_id, None)
+
+    async def send_to_user(self, user_id: str, payload: dict[str, Any]) -> None:
+        async with self._lock:
+            sockets = list(self._connections.get(user_id) or [])
+        if not sockets:
+            return
+
+        serialized = json.dumps(payload, ensure_ascii=False)
+        stale_sockets: list[WebSocket] = []
+        for websocket in sockets:
+            try:
+                await websocket.send_text(serialized)
+            except Exception:
+                stale_sockets.append(websocket)
+
+        if stale_sockets:
+            async with self._lock:
+                current = list(self._connections.get(user_id) or [])
+                current = [websocket for websocket in current if websocket not in stale_sockets]
+                if current:
+                    self._connections[user_id] = current
+                else:
+                    self._connections.pop(user_id, None)
+
+
+_MESSENGER_HUB = _MessengerHub()
+
+
+async def _messenger_emit_notifications_update(user_ids: list[str]) -> None:
+    for user_id in _messenger_unique_user_ids(user_ids):
+        payload = await asyncio.to_thread(_build_messenger_bootstrap_payload, user_id, requested_room_id=0)
+        await _MESSENGER_HUB.send_to_user(
+            user_id,
+            {
+                "type": "notifications_updated",
+                "notifications": payload.get("notifications") or {"items": [], "counts": {}},
+                "counts": payload.get("counts") or {},
+            },
+        )
+
+
+async def _messenger_emit_room_update(user_id: str, room_id: int) -> None:
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, user_id, room_id)
+    if room_payload is None:
+        await _MESSENGER_HUB.send_to_user(user_id, {"type": "room_removed", "room_id": int(room_id)})
+        return
+    await _MESSENGER_HUB.send_to_user(user_id, {"type": "room_updated", "room": room_payload})
+
+
+async def _messenger_emit_room_updates(user_ids: list[str], room_id: int) -> None:
+    for user_id in _messenger_unique_user_ids(user_ids):
+        await _messenger_emit_room_update(user_id, room_id)
+
+
+async def _messenger_emit_message_created(user_ids: list[str], message: dict[str, Any]) -> None:
+    room_id = int((message or {}).get("room_id") or 0)
+    if room_id <= 0:
+        return
+    for user_id in _messenger_unique_user_ids(user_ids):
+        message_payload = await asyncio.to_thread(_build_single_messenger_message_payload, user_id, message)
+        if not message_payload:
+            continue
+        await _MESSENGER_HUB.send_to_user(
+            user_id,
+            {"type": "message_created", "room_id": room_id, "message": message_payload},
+        )
+
+
+async def _messenger_emit_message_updated(user_ids: list[str], message: dict[str, Any]) -> None:
+    room_id = int((message or {}).get("room_id") or 0)
+    if room_id <= 0:
+        return
+    for user_id in _messenger_unique_user_ids(user_ids):
+        message_payload = await asyncio.to_thread(_build_single_messenger_message_payload, user_id, message)
+        if not message_payload:
+            continue
+        await _MESSENGER_HUB.send_to_user(
+            user_id,
+            {"type": "message_updated", "room_id": room_id, "message": message_payload},
+        )
+
+
+async def _messenger_emit_message_deleted(user_ids: list[str], *, room_id: int, message_id: int) -> None:
+    target_room_id = int(room_id or 0)
+    target_message_id = int(message_id or 0)
+    if target_room_id <= 0 or target_message_id <= 0:
+        return
+    for user_id in _messenger_unique_user_ids(user_ids):
+        await _MESSENGER_HUB.send_to_user(
+            user_id,
+            {"type": "message_deleted", "room_id": target_room_id, "message_id": target_message_id},
+        )
+
+
+async def _messenger_emit_typing(user_ids: list[str], *, room_id: int, actor_user_id: str, is_typing: bool) -> None:
+    actor_directory, _contacts = _build_messenger_user_directory(actor_user_id)
+    actor = actor_directory.get(actor_user_id) or {"display_name": actor_user_id}
+    payload = {
+        "type": "typing",
+        "room_id": int(room_id),
+        "user_id": actor_user_id,
+        "display_name": str(actor.get("display_name") or actor_user_id),
+        "is_typing": bool(is_typing),
+    }
+    for user_id in _messenger_unique_user_ids(user_ids):
+        if user_id == actor_user_id:
+            continue
+        await _MESSENGER_HUB.send_to_user(user_id, payload)
 
 
 def _clean_drive_text(value: Any) -> str:
@@ -1857,14 +2654,11 @@ def _normalize_nas_uploader_entry(value: Any) -> dict[str, Any]:
     nickname = str(payload.get("nickname") or "").strip()
     name = str(payload.get("name") or "").strip()
     profile_image_url = _profile_image_url_from_value(payload.get("profile_image_url") or "")
-    if user_id and (not nickname or not name or not profile_image_url):
+    if user_id and user_id != "-":
         profile = _lookup_nas_user_profile(user_id)
-        if not nickname:
-            nickname = profile.get("nickname") or ""
-        if not name:
-            name = profile.get("name") or ""
-        if not profile_image_url:
-            profile_image_url = profile.get("profile_image_url") or ""
+        nickname = profile.get("nickname") or nickname
+        name = profile.get("name") or name
+        profile_image_url = profile.get("profile_image_url") or profile_image_url
     display_name = nickname or name or user_id
     if not display_name:
         return {}
@@ -2739,6 +3533,52 @@ async def _store_profile_image(user_id: str, upload: UploadFile) -> str:
     with open(output_path, "wb") as fp:
         fp.write(raw)
     return f"{PROFILE_IMAGE_PUBLIC_PREFIX}/{output_name}"
+
+
+def _managed_messenger_room_avatar_abspath(public_path: Any) -> str:
+    safe_public = _messenger_room_avatar_url_from_value(public_path)
+    if not safe_public or not safe_public.startswith(f"{MESSENGER_ROOM_AVATAR_PUBLIC_PREFIX}/"):
+        return ""
+    filename = os.path.basename(safe_public)
+    full_path = os.path.realpath(os.path.join(MESSENGER_ROOM_AVATAR_STORAGE_DIR, filename))
+    root = os.path.realpath(MESSENGER_ROOM_AVATAR_STORAGE_DIR)
+    if not full_path.startswith(root + os.sep):
+        return ""
+    return full_path
+
+
+def _delete_managed_messenger_room_avatar(public_path: Any) -> None:
+    file_path = _managed_messenger_room_avatar_abspath(public_path)
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+
+
+async def _store_messenger_room_avatar(room_id: int, upload: UploadFile) -> str:
+    filename = str(upload.filename or "").strip()
+    ext = os.path.splitext(filename)[1].strip().lower()
+    if ext not in MESSENGER_ROOM_AVATAR_ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(MESSENGER_ROOM_AVATAR_ALLOWED_EXTENSIONS))
+        raise ValueError(f"방 이미지는 {allowed} 형식만 업로드할 수 있습니다.")
+
+    content_type = str(upload.content_type or "").strip().lower()
+    if content_type and not content_type.startswith("image/"):
+        raise ValueError("이미지 파일만 업로드할 수 있습니다.")
+
+    raw = await upload.read()
+    if not raw:
+        raise ValueError("업로드된 이미지 파일이 비어 있습니다.")
+    if len(raw) > MESSENGER_ROOM_AVATAR_MAX_BYTES:
+        raise ValueError(f"방 이미지는 최대 {max(1, MESSENGER_ROOM_AVATAR_MAX_BYTES // (1024 * 1024))}MB까지 업로드할 수 있습니다.")
+
+    os.makedirs(MESSENGER_ROOM_AVATAR_STORAGE_DIR, exist_ok=True)
+    output_name = f"room-{int(room_id)}-{int(time.time())}-{secrets.token_hex(4)}{ext}"
+    output_path = os.path.join(MESSENGER_ROOM_AVATAR_STORAGE_DIR, output_name)
+    with open(output_path, "wb") as fp:
+        fp.write(raw)
+    return f"{MESSENGER_ROOM_AVATAR_PUBLIC_PREFIX}/{output_name}"
 
 
 # ==============================================================
@@ -4686,6 +5526,11 @@ async def profile_settings_save(
             bio=form_data["bio"],
             profile_image_path=final_image_url,
         )
+        nas_repo.update_uploader_user_profile(
+            user_id,
+            nickname=form_data["nickname"],
+            name=form_data["name"],
+        )
         if new_password_value:
             user_repo.update_user_password_hash(
                 user_id=user_id,
@@ -4903,6 +5748,75 @@ async def ws_integrated_admin_system(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
+
+
+@router.websocket("/ws/messenger")
+async def ws_messenger(websocket: WebSocket):
+    sid = ""
+    try:
+        sid = (websocket.cookies.get(SESSION_COOKIE_NAME, "") or "").strip()
+    except Exception:
+        sid = ""
+
+    user_id = read_session_user(sid)
+    if not user_id:
+        try:
+            await websocket.close(code=4401)
+        except Exception:
+            pass
+        return
+
+    await _MESSENGER_HUB.connect(user_id, websocket)
+    await websocket.send_text(json.dumps({"type": "connected", "user_id": user_id}, ensure_ascii=False))
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                payload = json.loads(raw or "{}")
+            except Exception:
+                payload = {}
+
+            event_type = str(payload.get("type") or "").strip().lower()
+            if event_type == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}, ensure_ascii=False))
+                continue
+
+            if event_type == "typing":
+                room_id = _payload_int(payload.get("room_id"), 0)
+                if room_id <= 0:
+                    continue
+                has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
+                if not has_access:
+                    continue
+                participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+                await _messenger_emit_typing(
+                    participant_ids,
+                    room_id=room_id,
+                    actor_user_id=user_id,
+                    is_typing=_payload_bool(payload.get("is_typing"), False),
+                )
+                continue
+
+            if event_type == "refresh_room":
+                room_id = _payload_int(payload.get("room_id"), 0)
+                if room_id > 0:
+                    await _messenger_emit_room_update(user_id, room_id)
+                continue
+
+            if event_type == "refresh_bootstrap":
+                bootstrap_payload = await asyncio.to_thread(_build_messenger_bootstrap_payload, user_id)
+                await _MESSENGER_HUB.send_to_user(user_id, {"type": "bootstrap", "payload": bootstrap_payload})
+                continue
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+    finally:
+        await _MESSENGER_HUB.disconnect(user_id, websocket)
         return
 
 
@@ -5005,6 +5919,20 @@ def data_page(request: Request):
     )
 
 
+@router.get("/messenger", name="messenger")
+def messenger_page(request: Request):
+    requested_room_id = _payload_int(request.query_params.get("room_id"), 0)
+    redirect_url = "/?open_messenger=1"
+    if requested_room_id > 0:
+        redirect_url += f"&messenger_room_id={requested_room_id}"
+    return RedirectResponse(url=redirect_url, status_code=302)
+
+
+@router.get("/message", name="message")
+def message_page(request: Request):
+    return messenger_page(request)
+
+
 @router.get("/plan", name="plan")
 def plan_page(request: Request):
     payload = _build_plan_payload()
@@ -5031,6 +5959,524 @@ def api_plan_payload():
 @router.get("/api/firmware/payload")
 def api_firmware_payload():
     return {"ok": True, **_build_firmware_payload()}
+
+
+@router.get("/api/messenger/bootstrap")
+def api_messenger_bootstrap(request: Request, room_id: int = 0):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+    payload = _build_messenger_bootstrap_payload(current_user_id, requested_room_id=room_id)
+    return JSONResponse({"ok": True, "payload": payload})
+
+
+@router.get("/api/messenger/rooms/{room_id}/messages")
+def api_messenger_room_messages(
+    request: Request,
+    room_id: int,
+    limit: int = 80,
+    before_message_id: int = 0,
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+    payload = _build_messenger_room_messages_payload(
+        current_user_id,
+        room_id,
+        limit=limit,
+        before_message_id=before_message_id,
+    )
+    if not payload:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    return JSONResponse({"ok": True, "payload": payload})
+
+
+@router.post("/api/messenger/rooms")
+async def api_messenger_create_room(request: Request, payload: dict[str, Any] = Body(default={})):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room_mode = str(payload.get("mode") or payload.get("room_type") or "").strip().lower()
+    room_mode = "dm" if room_mode in {"dm", "direct"} else "group"
+    approved_user_ids = {str(row.get("ID") or "").strip() for row in _approved_user_rows()}
+
+    try:
+        if room_mode == "dm":
+            target_user_id = str(payload.get("target_user_id") or "").strip()
+            if (not target_user_id) or (target_user_id not in approved_user_ids):
+                return JSONResponse({"ok": False, "detail": "대화 상대를 찾을 수 없습니다."}, status_code=404)
+            room_id = await asyncio.to_thread(chat_repo.get_or_create_direct_room, current_user_id, target_user_id)
+        else:
+            room_name = str(payload.get("name") or "").strip()
+            topic = str(payload.get("topic") or "").strip()
+            member_ids = [
+                str(user_id or "").strip()
+                for user_id in (payload.get("member_ids") or [])
+                if str(user_id or "").strip() in approved_user_ids
+            ]
+            room_id = await asyncio.to_thread(chat_repo.create_group_room, room_name, current_user_id, member_ids, topic)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"대화방 생성 실패: {exc}"}, status_code=500)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    await _messenger_emit_notifications_update(participant_ids)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse({"ok": True, "room_id": room_id, "room": room_payload})
+
+
+@router.patch("/api/messenger/rooms/{room_id}")
+async def api_messenger_update_room(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    if str(room.get("room_type") or "").strip().lower() == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방은 이름을 수정할 수 없습니다."}, status_code=400)
+    if not _messenger_can_manage_room(room, current_user_id, _request_user_role(request)):
+        return JSONResponse({"ok": False, "detail": "대화방 수정 권한이 없습니다."}, status_code=403)
+
+    try:
+        await asyncio.to_thread(
+            chat_repo.update_room_details,
+            room_id,
+            name=str(payload.get("name") or room.get("name") or "").strip(),
+            topic=str(payload.get("topic") or "").strip(),
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"대화방 수정 실패: {exc}"}, status_code=500)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse({"ok": True, "room": room_payload})
+
+
+@router.delete("/api/messenger/rooms/{room_id}")
+async def api_messenger_delete_room(
+    request: Request,
+    room_id: int,
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    if str(room.get("room_type") or "").strip().lower() == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방은 삭제할 수 없습니다."}, status_code=400)
+    if not _messenger_can_manage_room(room, current_user_id, _request_user_role(request)):
+        return JSONResponse({"ok": False, "detail": "대화방 삭제 권한이 없습니다."}, status_code=403)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    previous_avatar_path = _messenger_room_avatar_url_from_value(room.get("avatar_path"))
+    deleted = await asyncio.to_thread(chat_repo.delete_room, room_id)
+    if not deleted:
+        return JSONResponse({"ok": False, "detail": "대화방 삭제에 실패했습니다."}, status_code=500)
+
+    if previous_avatar_path:
+        _delete_managed_messenger_room_avatar(previous_avatar_path)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    await _messenger_emit_notifications_update(participant_ids)
+    return JSONResponse({"ok": True, "room_id": room_id})
+
+
+@router.post("/api/messenger/rooms/{room_id}/members")
+async def api_messenger_invite_room_members(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    if str(room.get("room_type") or "").strip().lower() == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방에는 멤버를 초대할 수 없습니다."}, status_code=400)
+    if not _messenger_can_manage_room(room, current_user_id, _request_user_role(request)):
+        return JSONResponse({"ok": False, "detail": "멤버 초대 권한이 없습니다."}, status_code=403)
+
+    user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+    existing_member_ids = {
+        str((member or {}).get("user_id") or "").strip()
+        for member in list(room.get("members") or [])
+        if str((member or {}).get("user_id") or "").strip()
+    }
+    requested_member_ids = [
+        str(user_id or "").strip()
+        for user_id in (payload.get("member_ids") or [])
+    ]
+    invite_member_ids: list[str] = []
+    seen_user_ids: set[str] = set()
+    for user_id in requested_member_ids:
+        if not user_id or user_id in seen_user_ids:
+            continue
+        seen_user_ids.add(user_id)
+        if user_id not in user_directory:
+            continue
+        if user_id in existing_member_ids:
+            continue
+        invite_member_ids.append(user_id)
+
+    if not invite_member_ids:
+        return JSONResponse({"ok": False, "detail": "초대할 구성원을 선택해주세요."}, status_code=400)
+
+    try:
+        added_member_ids = await asyncio.to_thread(chat_repo.add_room_members, room_id, invite_member_ids)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"멤버 초대 실패: {exc}"}, status_code=500)
+
+    if not added_member_ids:
+        return JSONResponse({"ok": False, "detail": "추가로 초대할 수 있는 구성원이 없습니다."}, status_code=400)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    await _messenger_emit_notifications_update(participant_ids)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse({"ok": True, "room": room_payload, "member_ids": added_member_ids})
+
+
+@router.post("/api/messenger/rooms/{room_id}/messages")
+async def api_messenger_send_message(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    content = str(payload.get("content") or "").strip()
+    try:
+        message = await asyncio.to_thread(chat_repo.insert_message, room_id, current_user_id, content)
+    except PermissionError:
+        return JSONResponse({"ok": False, "detail": "대화방 접근 권한이 없습니다."}, status_code=403)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"메시지 전송 실패: {exc}"}, status_code=500)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_message_created(participant_ids, message)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    await _messenger_emit_notifications_update(participant_ids)
+    message_payload = await asyncio.to_thread(_build_single_messenger_message_payload, current_user_id, message)
+    return JSONResponse({"ok": True, "message": message_payload})
+
+
+@router.patch("/api/messenger/messages/{message_id}")
+async def api_messenger_update_message(
+    request: Request,
+    message_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    current_user_role = _request_user_role(request)
+    message = await asyncio.to_thread(chat_repo.get_message_by_id, message_id)
+    if not message or str(message.get("deleted_at") or "").strip():
+        return JSONResponse({"ok": False, "detail": "메시지를 찾을 수 없습니다."}, status_code=404)
+
+    room_id = int(message.get("room_id") or 0)
+    if room_id <= 0 or not await asyncio.to_thread(chat_repo.room_has_member, room_id, current_user_id):
+        return JSONResponse({"ok": False, "detail": "메시지를 찾을 수 없습니다."}, status_code=404)
+    if not _messenger_can_edit_message(message, current_user_id, current_user_role):
+        return JSONResponse({"ok": False, "detail": "메시지 수정 권한이 없습니다."}, status_code=403)
+
+    try:
+        updated_message = await asyncio.to_thread(chat_repo.update_message_content, message_id, str(payload.get("content") or ""))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"메시지 수정 실패: {exc}"}, status_code=500)
+    if not updated_message:
+        return JSONResponse({"ok": False, "detail": "메시지 수정에 실패했습니다."}, status_code=500)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_message_updated(participant_ids, updated_message)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    await _messenger_emit_notifications_update(participant_ids)
+    message_payload = await asyncio.to_thread(_build_single_messenger_message_payload, current_user_id, updated_message)
+    return JSONResponse({"ok": True, "message": message_payload})
+
+
+@router.delete("/api/messenger/messages/{message_id}")
+async def api_messenger_delete_message(
+    request: Request,
+    message_id: int,
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    current_user_role = _request_user_role(request)
+    message = await asyncio.to_thread(chat_repo.get_message_by_id, message_id)
+    if not message or str(message.get("deleted_at") or "").strip():
+        return JSONResponse({"ok": False, "detail": "메시지를 찾을 수 없습니다."}, status_code=404)
+
+    room_id = int(message.get("room_id") or 0)
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "메시지를 찾을 수 없습니다."}, status_code=404)
+    room_can_manage = _messenger_can_manage_room(room, current_user_id, current_user_role)
+    if not _messenger_can_delete_message(message, current_user_id, current_user_role=current_user_role, room_can_manage=room_can_manage):
+        return JSONResponse({"ok": False, "detail": "메시지 삭제 권한이 없습니다."}, status_code=403)
+
+    delete_result = await asyncio.to_thread(chat_repo.delete_message, message_id)
+    if int(delete_result.get("room_id") or 0) <= 0:
+        return JSONResponse({"ok": False, "detail": "메시지 삭제에 실패했습니다."}, status_code=500)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_message_deleted(participant_ids, room_id=room_id, message_id=message_id)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    await _messenger_emit_notifications_update(participant_ids)
+    return JSONResponse({"ok": True, "room_id": room_id, "message_id": message_id})
+
+
+@router.post("/api/messenger/rooms/{room_id}/read")
+async def api_messenger_mark_read(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    if not await asyncio.to_thread(chat_repo.room_has_member, room_id, current_user_id):
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+
+    message_id = _payload_int(payload.get("message_id"), 0)
+    resolved_message_id = await asyncio.to_thread(chat_repo.mark_room_read, room_id, current_user_id, message_id)
+    await _messenger_emit_room_update(current_user_id, room_id)
+    await _messenger_emit_notifications_update([current_user_id])
+    return JSONResponse({"ok": True, "message_id": resolved_message_id})
+
+
+@router.post("/api/messenger/rooms/{room_id}/star")
+async def api_messenger_room_star(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    if not await asyncio.to_thread(chat_repo.room_has_member, room_id, current_user_id):
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+
+    starred = _payload_bool(payload.get("starred"), False)
+    await asyncio.to_thread(chat_repo.set_room_star, room_id, current_user_id, starred)
+    await _messenger_emit_room_update(current_user_id, room_id)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse({"ok": True, "room": room_payload})
+
+
+@router.post("/api/messenger/rooms/{room_id}/mute")
+async def api_messenger_room_mute(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    if not await asyncio.to_thread(chat_repo.room_has_member, room_id, current_user_id):
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+
+    muted = _payload_bool(payload.get("muted"), False)
+    await asyncio.to_thread(chat_repo.set_room_mute, room_id, current_user_id, muted)
+    await _messenger_emit_room_update(current_user_id, room_id)
+    await _messenger_emit_notifications_update([current_user_id])
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse({"ok": True, "room": room_payload})
+
+
+@router.post("/api/messenger/rooms/{room_id}/avatar")
+async def api_messenger_room_avatar(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    if str(room.get("room_type") or "").strip().lower() == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방은 상대 프로필을 사용합니다."}, status_code=400)
+    if not _messenger_can_manage_room(room, current_user_id, _request_user_role(request)):
+        return JSONResponse({"ok": False, "detail": "방 이미지 수정 권한이 없습니다."}, status_code=403)
+
+    next_avatar_path = str(payload.get("avatar_path") or "").strip()
+    if next_avatar_path and next_avatar_path not in MESSENGER_ROOM_AVATAR_PRESETS:
+        return JSONResponse({"ok": False, "detail": "허용되지 않는 기본 이미지입니다."}, status_code=400)
+
+    previous_avatar_path = _messenger_room_avatar_url_from_value(room.get("avatar_path"))
+    await asyncio.to_thread(chat_repo.set_room_avatar, room_id, next_avatar_path)
+    if previous_avatar_path and previous_avatar_path != next_avatar_path:
+        _delete_managed_messenger_room_avatar(previous_avatar_path)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse({"ok": True, "room": room_payload})
+
+
+@router.post("/api/messenger/rooms/{room_id}/avatar/upload")
+async def api_messenger_room_avatar_upload(
+    request: Request,
+    room_id: int,
+    avatar: UploadFile = File(...),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    if str(room.get("room_type") or "").strip().lower() == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방은 상대 프로필을 사용합니다."}, status_code=400)
+    if not _messenger_can_manage_room(room, current_user_id, _request_user_role(request)):
+        return JSONResponse({"ok": False, "detail": "방 이미지 수정 권한이 없습니다."}, status_code=403)
+
+    try:
+        stored_avatar_path = await _store_messenger_room_avatar(room_id, avatar)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"방 이미지 업로드 실패: {exc}"}, status_code=500)
+    finally:
+        try:
+            await avatar.close()
+        except Exception:
+            pass
+
+    previous_avatar_path = _messenger_room_avatar_url_from_value(room.get("avatar_path"))
+    try:
+        await asyncio.to_thread(chat_repo.set_room_avatar, room_id, stored_avatar_path)
+    except Exception as exc:
+        _delete_managed_messenger_room_avatar(stored_avatar_path)
+        return JSONResponse({"ok": False, "detail": f"방 이미지 저장 실패: {exc}"}, status_code=500)
+
+    if previous_avatar_path and previous_avatar_path != stored_avatar_path:
+        _delete_managed_messenger_room_avatar(previous_avatar_path)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse({"ok": True, "room": room_payload})
+
+
+@router.post("/api/messenger/rooms/{room_id}/attachments")
+async def api_messenger_upload_attachment(
+    request: Request,
+    room_id: int,
+    attachment: UploadFile = File(...),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    if not await asyncio.to_thread(chat_repo.room_has_member, room_id, current_user_id):
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+
+    filename = os.path.basename(str(attachment.filename or "").strip())
+    content_type = str(attachment.content_type or "").strip()
+    if not filename:
+        return JSONResponse({"ok": False, "detail": "첨부 파일 이름이 올바르지 않습니다."}, status_code=400)
+
+    _, ext = os.path.splitext(filename)
+    ext = ext.lower()
+    if ext not in MESSENGER_UPLOAD_ALLOWED_EXTENSIONS:
+        return JSONResponse({"ok": False, "detail": "허용되지 않는 첨부 파일 형식입니다."}, status_code=400)
+
+    try:
+        file_bytes = await attachment.read()
+    finally:
+        try:
+            await attachment.close()
+        except Exception:
+            pass
+
+    if not file_bytes:
+        return JSONResponse({"ok": False, "detail": "빈 파일은 업로드할 수 없습니다."}, status_code=400)
+    if len(file_bytes) > MESSENGER_UPLOAD_MAX_BYTES:
+        return JSONResponse({"ok": False, "detail": f"첨부 파일은 최대 {_messenger_human_size(MESSENGER_UPLOAD_MAX_BYTES)}까지 업로드할 수 있습니다."}, status_code=400)
+
+    room_dir = os.path.join(MESSENGER_UPLOAD_STORAGE_DIR, str(int(room_id)))
+    os.makedirs(room_dir, exist_ok=True)
+    safe_root = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.splitext(filename)[0]).strip("._") or "file"
+    stored_name = f"{int(time.time())}_{secrets.token_hex(5)}_{safe_root[:80]}{ext}"
+    stored_path = os.path.join(room_dir, stored_name)
+    with open(stored_path, "wb") as file_obj:
+        file_obj.write(file_bytes)
+
+    public_url = f"{MESSENGER_UPLOAD_PUBLIC_PREFIX}/{int(room_id)}/{stored_name}"
+    message_type = "image" if (content_type.startswith("image/") or ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}) else "file"
+    message_content = json.dumps(
+        {
+            "name": filename,
+            "url": public_url,
+            "size_text": _messenger_human_size(len(file_bytes)),
+            "content_type": content_type,
+        },
+        ensure_ascii=False,
+    )
+
+    try:
+        message = await asyncio.to_thread(chat_repo.insert_message, room_id, current_user_id, message_content, message_type)
+    except Exception as exc:
+        try:
+            os.remove(stored_path)
+        except Exception:
+            pass
+        return JSONResponse({"ok": False, "detail": f"첨부 파일 전송 실패: {exc}"}, status_code=500)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    await _messenger_emit_message_created(participant_ids, message)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    await _messenger_emit_notifications_update(participant_ids)
+    message_payload = await asyncio.to_thread(_build_single_messenger_message_payload, current_user_id, message)
+    return JSONResponse({"ok": True, "message": message_payload})
+
+
+@router.get("/api/messenger/users/{target_user_id}/profile")
+async def api_messenger_user_profile(
+    request: Request,
+    target_user_id: str,
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    profile_payload = await asyncio.to_thread(_build_messenger_user_profile_payload, current_user_id, target_user_id)
+    if not profile_payload:
+        return JSONResponse({"ok": False, "detail": "사용자 정보를 찾을 수 없습니다."}, status_code=404)
+    return JSONResponse({"ok": True, "profile": profile_payload})
 
 
 @router.post("/api/firmware/releases")

@@ -236,3 +236,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 NAS Center 다중 파일 다운로드 ZIP 구조를 평탄화해, 선택한 파일만 직접 내려받도록 정리한 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
   - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 추가했다.
+
+## 32. ABBAS Talk 메신저/NAS 후속 보정에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 팝업 메신저, 실시간 메시지 알림, 프로필/권한/알림 UX, `/nas` 업로드 계정 닉네임 동기화까지 정리하는 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
+  - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.

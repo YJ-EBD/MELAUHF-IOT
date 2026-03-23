@@ -270,3 +270,60 @@ def anonymize_uploader_user(user_id: str, fallback_nickname: str = "") -> int:
                 (nickname, uid),
             )
             return int(cur.rowcount or 0)
+
+
+def update_uploader_user_profile(user_id: str, *, nickname: str = "", name: str = "") -> int:
+    uid = _normalize_rel_path(user_id)
+    if not uid:
+        return 0
+
+    normalized_nickname = _normalize_rel_path(nickname)
+    normalized_name = _normalize_rel_path(name)
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                UPDATE nas_item_uploaders
+                SET nickname=%s,
+                    name=%s,
+                    updated_at=NOW()
+                WHERE user_id=%s
+                """,
+                (normalized_nickname, normalized_name, uid),
+            )
+            return int(cur.rowcount or 0)
+
+
+def refresh_uploader_user_profiles(user_id: str = "") -> int:
+    uid = _normalize_rel_path(user_id)
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            if uid:
+                cur.execute(
+                    """
+                    UPDATE nas_item_uploaders n
+                    INNER JOIN users u
+                      ON u.user_id = n.user_id
+                    SET n.nickname=COALESCE(u.nickname, ''),
+                        n.name=COALESCE(u.name, ''),
+                        n.updated_at=NOW()
+                    WHERE n.user_id=%s
+                    """,
+                    (uid,),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE nas_item_uploaders n
+                    INNER JOIN users u
+                      ON u.user_id = n.user_id
+                    SET n.nickname=COALESCE(u.nickname, ''),
+                        n.name=COALESCE(u.name, ''),
+                        n.updated_at=NOW()
+                    """
+                )
+            return int(cur.rowcount or 0)

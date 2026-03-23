@@ -39,7 +39,8 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 
   <link href="{{ url_for('static', path='css/admin.css') }}" rel="stylesheet">
-  <link href="{{ url_for('static', path='css/cleanpay_theme.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', path='css/cleanpay_theme.css') }}?v=20260323_notify5" rel="stylesheet">
+  <link href="{{ url_for('static', path='css/messenger.css') }}?v=20260323_popup25" rel="stylesheet">
 
   {% block extra_head %}{% endblock %}
 </head>
@@ -103,7 +104,7 @@
   {% set page_description = '현재 계정 권한으로 접근할 수 없는 화면입니다.' %}
 {% endif %}
 
-<body class="app page-{{ nav_active }} section-{{ section_key }}">
+<body class="app page-{{ nav_active }} section-{{ section_key }}{% if request.query_params.get('open_messenger') == '1' %} messenger-popup-open{% endif %}">
 {% if not logged_in %}
 <script>window.location.replace("/login");</script>
 {% endif %}
@@ -192,13 +193,53 @@
       <button class="header-icon-btn" id="themeToggle" type="button" aria-label="테마 전환">
         <i class="bi bi-moon-stars"></i>
       </button>
+      <button
+        class="header-icon-btn messenger-launcher-btn{% if request.query_params.get('open_messenger') == '1' %} is-active{% endif %}"
+        id="messengerLauncherBtn"
+        type="button"
+        title="메신저"
+        aria-label="메신저"
+        aria-haspopup="dialog"
+        aria-controls="messengerPopupLayer"
+        aria-expanded="{{ 'true' if request.query_params.get('open_messenger') == '1' else 'false' }}"
+        onclick="if (window.ABBASMessenger && typeof window.ABBASMessenger.isReady === 'function' && !window.ABBASMessenger.isReady() && typeof window.ABBASMessenger.open === 'function') { window.ABBASMessenger.open(); }"
+      >
+        <i class="bi bi-chat-left-text-fill"></i>
+        <span class="messenger-launcher-btn__badge d-none" id="messengerHeaderUnreadBadge"></span>
+      </button>
       <a class="header-icon-btn" href="/settings" title="설정" aria-label="설정">
         <i class="bi bi-gear-fill"></i>
       </a>
-      <button class="header-icon-btn header-icon-btn--notify" type="button" aria-label="알림">
-        <i class="bi bi-bell-fill"></i>
-        <span class="header-icon-btn__dot"></span>
-      </button>
+      <div class="topbar-notify" id="topbarNotifyRoot">
+        <button
+          class="header-icon-btn header-icon-btn--notify"
+          id="topbarNotifyBtn"
+          type="button"
+          aria-label="알림"
+          aria-haspopup="true"
+          aria-controls="topbarNotifyMenu"
+          aria-expanded="false"
+        >
+          <i class="bi bi-bell-fill"></i>
+          <span class="header-icon-btn__dot d-none" id="topbarNotifyDot"></span>
+        </button>
+        <div class="topbar-notify-menu" id="topbarNotifyMenu" aria-hidden="true">
+          <div class="topbar-notify-menu__head">
+            <div class="topbar-notify-menu__copy">
+              <strong>메시지 알림</strong>
+              <span id="topbarNotifyMeta">최근 메시지와 멘션이 여기에 표시됩니다.</span>
+            </div>
+            <button class="topbar-notify-menu__link" id="topbarNotifyOpenMessengerBtn" type="button">메신저 열기</button>
+          </div>
+          <div class="topbar-notify-list" id="topbarNotifyList">
+            <div class="topbar-notify-empty">
+              <i class="bi bi-bell-slash"></i>
+              <strong>새 알림이 없습니다.</strong>
+              <span>최근 메시지와 멘션이 도착하면 여기에 표시됩니다.</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -342,6 +383,8 @@
   </div>
 </div>
 
+{% include "messenger_popup.html" %}
+
 <div class="app-loading d-none" id="appLoadingOverlay" aria-hidden="true">
   <div class="app-loading__inner">
     <div class="spinner-border" role="status" aria-label="Loading"></div>
@@ -350,7 +393,15 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script src="{{ url_for('static', path='js/common.js') }}"></script>
+<script>
+  window.MessengerConfig = {
+    requestedRoomId: {{ (request.query_params.get('messenger_room_id') or '0')|int }},
+    autoOpen: {{ 'true' if request.query_params.get('open_messenger') == '1' else 'false' }}
+  };
+</script>
+  <script src="{{ url_for('static', path='js/messenger.js') }}?v=20260323_popup25"></script>
 <script>
   window.LivePresenceConfig = {
     wsPath: "/ws/live-presence",

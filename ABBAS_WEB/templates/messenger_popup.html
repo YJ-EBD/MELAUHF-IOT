@@ -1,0 +1,318 @@
+<div class="messenger-popup-layer{% if request.query_params.get('open_messenger') == '1' %} is-open{% endif %}" id="messengerPopupLayer" aria-hidden="{{ 'false' if request.query_params.get('open_messenger') == '1' else 'true' }}">
+  <button class="messenger-popup-backdrop" id="messengerPopupBackdrop" type="button" aria-label="메신저 닫기"></button>
+
+  <section class="messenger-popup-window" role="dialog" aria-modal="false" aria-labelledby="messengerWindowTitle">
+    <div
+      class="messenger-page"
+      id="messengerPageRoot"
+      data-auto-open="{{ '1' if request.query_params.get('open_messenger') == '1' else '0' }}"
+      data-requested-room-id="{{ (request.query_params.get('messenger_room_id') or '0')|int }}"
+    >
+      <header class="messenger-shell-topbar" id="messengerDragHandle">
+        <div class="messenger-shell-topbar__brand">
+          <span class="messenger-shell-topbar__mark">A</span>
+          <div class="messenger-shell-topbar__copy">
+            <strong id="messengerWindowTitle">ABBAS Talk</strong>
+            <span>ABBAS_WEB 팀 메신저</span>
+          </div>
+        </div>
+
+        <div class="messenger-shell-topbar__chips">
+          <span class="messenger-shell-chip">Team Messenger</span>
+          <span class="messenger-shell-chip messenger-shell-chip--soft">Realtime Collaboration</span>
+        </div>
+
+        <div class="messenger-shell-topbar__actions" data-no-drag>
+          <button class="messenger-window-tool" type="button" id="messengerNewChatBtn" aria-label="새 대화">
+            <i class="bi bi-plus-lg"></i>
+          </button>
+          <button class="messenger-window-tool" type="button" id="messengerRefreshBtn" aria-label="새로고침">
+            <i class="bi bi-arrow-clockwise"></i>
+          </button>
+          <button class="messenger-window-tool" type="button" id="messengerMinimizeBtn" aria-label="메신저 최소화">
+            <i class="bi bi-dash-lg"></i>
+          </button>
+          <button class="messenger-window-tool messenger-window-tool--close" type="button" id="messengerCloseBtn" aria-label="메신저 닫기">
+            <i class="bi bi-x-lg"></i>
+          </button>
+        </div>
+      </header>
+
+      <section class="messenger-shell messenger-shell--channel">
+        <aside class="messenger-rail">
+          <div class="messenger-rail__group">
+            <button class="messenger-rail__item is-active" id="messengerRailRoomsBtn" type="button" aria-label="팀 메신저">
+              <i class="bi bi-people-fill"></i>
+              <span class="messenger-rail__badge d-none" id="messengerRailUnreadBadge"></span>
+            </button>
+            <button class="messenger-rail__item" id="messengerRailInboxBtn" type="button" aria-label="수신함">
+              <i class="bi bi-briefcase-fill"></i>
+              <span class="messenger-rail__badge d-none" id="messengerRailNotifyBadge"></span>
+            </button>
+          </div>
+
+          <div class="messenger-rail__group messenger-rail__group--muted">
+            <button class="messenger-rail__item is-ghost" id="messengerRailUnreadBtn" type="button" aria-label="안 읽은 대화">
+              <i class="bi bi-chat-left-dots"></i>
+            </button>
+            <button class="messenger-rail__item is-ghost" id="messengerRailStarredBtn" type="button" aria-label="즐겨찾기">
+              <i class="bi bi-bookmark-check"></i>
+            </button>
+            <button class="messenger-rail__item is-ghost" id="messengerRailAlertsBtn" type="button" aria-label="멘션 및 알림">
+              <i class="bi bi-bell"></i>
+            </button>
+            <button class="messenger-rail__item is-ghost" id="messengerRailComposeBtn" type="button" aria-label="빠른 새 대화">
+              <i class="bi bi-send"></i>
+            </button>
+          </div>
+
+          <div class="messenger-rail__group messenger-rail__group--bottom">
+            <button class="messenger-rail__item is-ghost" id="messengerRailRecentBtn" type="button" aria-label="최근 본 대화">
+              <i class="bi bi-clock-history"></i>
+            </button>
+            <button class="messenger-rail__item is-ghost" id="messengerRailGuideBtn" type="button" aria-label="메신저 도움말">
+              <i class="bi bi-book"></i>
+            </button>
+            <button class="messenger-rail__item is-ghost" id="messengerRailSettingsBtn" type="button" aria-label="메신저 설정">
+              <i class="bi bi-gear"></i>
+            </button>
+            <span class="messenger-rail__profile">
+              {% if current_user_profile_image_url %}
+              <img src="{{ current_user_profile_image_url }}" alt="{{ current_user_name or current_user_id }}">
+              {% else %}
+              {{ ((current_user_name or current_user_id or 'U')[:1])|upper }}
+              {% endif %}
+            </span>
+          </div>
+        </aside>
+
+        <aside class="messenger-sidebar">
+          <div class="messenger-sidebar__chrome">
+            <div class="messenger-sidebar__workspace">
+              <strong>{{ current_user_name or current_user_id }}</strong>
+              <span>{{ current_user_role_label or 'USER' }} · ABBAS Workspace</span>
+            </div>
+            <button class="messenger-sidebar__icon" id="messengerSidebarSearchBtn" type="button" aria-label="검색">
+              <i class="bi bi-search"></i>
+            </button>
+          </div>
+
+          <div class="messenger-search">
+            <i class="bi bi-search"></i>
+            <input id="messengerRoomSearch" type="search" placeholder="채팅방 또는 메시지 검색">
+          </div>
+
+          <div class="messenger-filter-tabs" id="messengerFilterTabs">
+            <button class="messenger-filter-tabs__item is-active" type="button" data-filter="all">전체</button>
+            <button class="messenger-filter-tabs__item" type="button" data-filter="starred">즐겨찾기</button>
+            <button class="messenger-filter-tabs__item" type="button" data-filter="channel">공개 그룹</button>
+            <button class="messenger-filter-tabs__item" type="button" data-filter="group">비공개 그룹</button>
+            <button class="messenger-filter-tabs__item" type="button" data-filter="direct">다이렉트</button>
+          </div>
+
+          <div class="messenger-room-summary" id="messengerRoomSummary">
+            <div class="messenger-room-summary__pill">
+              <span>전체</span>
+              <strong id="messengerRoomTotal">0</strong>
+            </div>
+            <div class="messenger-room-summary__pill">
+              <span>안 읽음</span>
+              <strong id="messengerUnreadTotal">0</strong>
+            </div>
+            <div class="messenger-room-summary__pill">
+              <span>온라인</span>
+              <strong id="messengerOnlineContacts">0</strong>
+            </div>
+          </div>
+
+          <section class="messenger-sidebar-block" id="messengerQuickSection">
+            <div class="messenger-sidebar-block__head">
+              <span>빠른 대화</span>
+              <strong id="messengerDirectCount">0</strong>
+            </div>
+            <div class="messenger-quick-contact-list" id="messengerQuickContactList">
+              <div class="messenger-empty-inline">조직 구성원을 불러오는 중입니다.</div>
+            </div>
+          </section>
+
+          <section class="messenger-sidebar-block messenger-sidebar-block--rooms" id="messengerListSection">
+            <div class="messenger-sidebar-block__head">
+              <span id="messengerListSectionTitle">채팅 목록</span>
+              <div class="messenger-sidebar-block__meta" id="messengerListSectionMeta">
+                <span>채널 <strong id="messengerChannelCount">0</strong></span>
+                <span>그룹 <strong id="messengerGroupCount">0</strong></span>
+              </div>
+            </div>
+            <div class="messenger-room-list" id="messengerRoomList">
+              <div class="messenger-empty-state">
+                <i class="bi bi-chat-left-text"></i>
+                <strong>대화방을 불러오는 중입니다.</strong>
+                <span>잠시만 기다려주세요.</span>
+              </div>
+            </div>
+          </section>
+        </aside>
+
+        <section class="messenger-conversation">
+          <header class="messenger-chat-header" id="messengerChatHeader">
+            <div class="messenger-chat-header__main">
+              <span class="messenger-chat-header__avatar" id="messengerActiveRoomAvatar">A</span>
+              <div class="messenger-chat-header__copy">
+                <div class="messenger-chat-header__title-line">
+                  <strong id="messengerActiveRoomTitle">대화방 선택</strong>
+                  <span class="messenger-chat-header__tag" id="messengerInspectorBadge">-</span>
+                </div>
+                <span id="messengerActiveRoomSubtitle">왼쪽 목록에서 대화방을 선택하면 메시지를 볼 수 있습니다.</span>
+              </div>
+            </div>
+
+            <div class="messenger-chat-header__actions" data-no-drag>
+              <button class="messenger-header-action" type="button" id="messengerStarToggleBtn" disabled aria-label="즐겨찾기">
+                <i class="bi bi-star"></i>
+              </button>
+              <button class="messenger-header-action" type="button" id="messengerRoomRefreshBtn" disabled aria-label="대화 새로고침">
+                <i class="bi bi-arrow-repeat"></i>
+              </button>
+              <button class="messenger-header-action" type="button" id="messengerRoomLinkBtn" aria-label="링크 복사" disabled>
+                <i class="bi bi-link-45deg"></i>
+              </button>
+              <button class="messenger-header-action" type="button" id="messengerRoomMuteBtn" aria-label="알림" disabled>
+                <i class="bi bi-bell"></i>
+              </button>
+              <div class="messenger-flyout-anchor">
+                <button class="messenger-header-action" type="button" id="messengerRoomMoreBtn" aria-label="더보기" aria-haspopup="true" aria-expanded="false" disabled>
+                  <i class="bi bi-three-dots-vertical"></i>
+                </button>
+                <div class="messenger-flyout-menu" id="messengerRoomMoreMenu" aria-hidden="true">
+                  <button type="button" data-room-menu-action="copy-link"><i class="bi bi-link-45deg"></i><span>대화 링크 복사</span></button>
+                  <button type="button" data-room-menu-action="toggle-mute"><i class="bi bi-bell-slash"></i><span>알림 끄기</span></button>
+                  <button type="button" data-room-menu-action="toggle-star"><i class="bi bi-star"></i><span>즐겨찾기 토글</span></button>
+                  <button type="button" data-room-menu-action="refresh-room"><i class="bi bi-arrow-repeat"></i><span>대화 새로고침</span></button>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          <div class="messenger-message-scroll" id="messengerMessageScroll">
+            <div class="messenger-empty-state messenger-empty-state--large" id="messengerConversationEmpty">
+              <i class="bi bi-chat-square-heart"></i>
+              <strong>대화를 시작할 준비가 되었습니다.</strong>
+              <span>채널이나 1:1 대화를 선택한 뒤 메시지를 보내보세요.</span>
+            </div>
+            <div class="messenger-message-list d-none" id="messengerMessageList"></div>
+          </div>
+
+          <footer class="messenger-composer">
+            <div class="messenger-composer__flyouts">
+              <div class="messenger-tool-popover" id="messengerEmojiPicker" aria-hidden="true"></div>
+              <div class="messenger-tool-popover messenger-tool-popover--list" id="messengerMentionPicker" aria-hidden="true"></div>
+            </div>
+            <div class="messenger-composer__toolbar">
+              <input id="messengerAttachInput" type="file" class="d-none">
+              <button class="messenger-composer__tool" id="messengerAttachBtn" type="button" aria-label="첨부" disabled><i class="bi bi-paperclip"></i></button>
+              <button class="messenger-composer__tool" id="messengerEmojiBtn" type="button" aria-label="이모지" disabled><i class="bi bi-emoji-smile"></i></button>
+              <button class="messenger-composer__tool" id="messengerMentionBtn" type="button" aria-label="멘션" disabled><i class="bi bi-at"></i></button>
+              <button class="messenger-composer__tool" id="messengerLinkInsertBtn" type="button" aria-label="링크" disabled><i class="bi bi-link-45deg"></i></button>
+              <button class="messenger-composer__tool" id="messengerFormatBtn" type="button" aria-label="서식" disabled><i class="bi bi-type-bold"></i></button>
+            </div>
+
+            <div class="messenger-composer__inner">
+              <textarea
+                id="messengerComposerInput"
+                placeholder="메시지를 입력해주세요. Enter 전송, Shift+Enter 줄바꿈"
+                rows="1"
+                disabled
+              ></textarea>
+              <button class="btn btn-primary" id="messengerSendBtn" type="button" disabled>
+                전송
+              </button>
+            </div>
+          </footer>
+        </section>
+
+        <aside class="messenger-inspector">
+          <section class="messenger-panel messenger-panel--members">
+            <div class="messenger-panel__head">
+              <span>참여자</span>
+              <div class="messenger-panel__head-actions">
+                <button class="messenger-panel__action d-none" id="messengerInviteMemberBtn" type="button">
+                  <i class="bi bi-person-plus"></i>
+                  <span>초대</span>
+                </button>
+                <strong id="messengerParticipantCount">0명</strong>
+              </div>
+            </div>
+            <div class="messenger-participant-list" id="messengerParticipantList">
+              <div class="messenger-empty-inline">참여자 목록을 준비하는 중입니다.</div>
+            </div>
+          </section>
+
+          <section class="messenger-panel">
+            <div class="messenger-panel__head">
+              <span>대화방 설명</span>
+              <strong>INFO</strong>
+            </div>
+            <input id="messengerRoomAvatarInput" type="file" class="d-none" accept="image/*">
+            <div class="messenger-room-info" id="messengerRoomInfo">
+              <div class="messenger-empty-inline">대화방을 선택하면 상세 정보가 표시됩니다.</div>
+            </div>
+          </section>
+
+          <section class="messenger-panel">
+            <div class="messenger-panel__head">
+              <span>파일, 링크 모아보기</span>
+              <strong>RECENT</strong>
+            </div>
+            <div class="messenger-resource-list" id="messengerResourceList">
+              <div class="messenger-empty-inline">메시지에 공유된 링크와 파일이 여기에 표시됩니다.</div>
+            </div>
+          </section>
+        </aside>
+      </section>
+    </div>
+  </section>
+</div>
+
+<div class="modal fade messenger-modal" id="messengerNewRoomModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">새 대화 시작</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+      </div>
+      <div class="modal-body">
+        <form id="messengerNewRoomForm" class="messenger-modal-form">
+          <div class="messenger-modal-mode" id="messengerNewRoomMode">
+            <button type="button" class="messenger-modal-mode__item is-active" data-mode="dm">1:1 대화</button>
+            <button type="button" class="messenger-modal-mode__item" data-mode="group">그룹방</button>
+          </div>
+
+          <div class="mb-3 d-none" id="messengerGroupNameWrap">
+            <label class="form-label" for="messengerGroupNameInput">그룹방 이름</label>
+            <input class="form-control" id="messengerGroupNameInput" type="text" maxlength="80" placeholder="예: 서비스기획 TF">
+          </div>
+
+          <div class="mb-3 d-none" id="messengerGroupTopicWrap">
+            <label class="form-label" for="messengerGroupTopicInput">방 설명</label>
+            <input class="form-control" id="messengerGroupTopicInput" type="text" maxlength="120" placeholder="대화 목적이나 주제를 간단히 적어주세요.">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="messengerContactSearch">대화 상대 선택</label>
+            <input class="form-control" id="messengerContactSearch" type="search" placeholder="이름, 닉네임, 부서로 찾기">
+          </div>
+
+          <div class="messenger-contact-picker" id="messengerContactPicker">
+            <div class="messenger-empty-inline">구성원을 불러오는 중입니다.</div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button>
+        <button type="button" class="btn btn-primary" id="messengerCreateRoomSubmitBtn">대화 시작</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="messenger-context-menu" id="messengerContextMenu" aria-hidden="true"></div>

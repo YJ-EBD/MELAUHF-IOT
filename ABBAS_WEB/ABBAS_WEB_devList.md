@@ -460,3 +460,28 @@
 - 간단한 설명
   - 동일 계정의 Redis 세션이 남아 있어도 실제 browser presence가 없으면 기존 세션을 자동 회수한 뒤 새 로그인을 허용하도록 로그인 정책을 바꿨다.
   - 실제 presence가 살아 있는 경우에는 로그인 화면에서 `기존 세션 끊고 로그인` 확인을 띄워 강제 로그인할 수 있게 했고, 이전 세션의 presence heartbeat와 WebSocket도 더 이상 살아나지 않도록 정리했다.
+
+## 49. ABBAS Talk 팝업 메신저 및 실시간 협업 기능 추가
+- 수정코드
+  - `DB/chat_repo.py`
+  - `main.py`
+  - `router/pages.py`
+  - `templates/base.html`
+  - `templates/messenger_popup.html`
+  - `static/css/messenger.css`
+  - `static/css/cleanpay_theme.css`
+  - `static/js/messenger.js`
+  - `static/img/messenger-room-presets/*`
+- 간단한 설명
+  - Kakao Work/Channel 스타일을 참고한 전역 팝업형 사내 메신저를 추가하고, 채널·그룹방·DM·안읽음·멘션·읽음 처리·참여자 관리·방 프로필 이미지·우클릭 메뉴·프로필 모달·SweetAlert 기반 편집 흐름을 연결했다.
+  - 실시간 WebSocket 이벤트, 상단 메신저 배지/알림 드롭다운, 다크모드 보정, 팝업 드래그 이동, 메시지 수정/삭제 권한 분리, 토스트/모달 레이어 정리까지 이번 채팅 기준으로 함께 반영했다.
+
+## 50. NAS 업로드 계정 닉네임 동기화 및 브라우저 메시지 알림 보강
+- 수정코드
+  - `DB/nas_repo.py`
+  - `router/pages.py`
+  - `static/js/messenger.js`
+  - 루트 `.gitignore`
+- 간단한 설명
+  - 프로필에서 닉네임을 바꿔도 `/nas`의 `업로드 계정`이 예전 닉네임을 보여주던 문제를 수정하고, 프로필 저장 시 NAS 업로더 메타데이터도 함께 갱신되도록 정리했다.
+  - 메신저는 브라우저 최소화/백그라운드 상태에서도 새 메시지를 시스템 알림으로 띄울 수 있게 보강했고, 런타임 업로드 파일과 참고용 캡처 이미지는 Source Control 기본 범위에서 제외되도록 정리했다.
