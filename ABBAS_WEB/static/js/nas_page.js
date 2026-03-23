@@ -9,6 +9,7 @@
     uploadFiles: [],
     uploadDirectories: [],
     uploadInFlight: false,
+    pendingDownloadPaths: [],
     pendingTrashPaths: [],
     pendingTrashItems: [],
     parentPath: null,
@@ -40,6 +41,9 @@
     dragMoveCrumbButton: null,
     markEditorPaths: [],
     markEditorColor: "yellow",
+    mobileTapPath: "",
+    mobileTapType: "",
+    mobileTapAt: 0,
   };
 
   const el = {
@@ -124,6 +128,10 @@
     emptyFolderModal: document.getElementById("nasEmptyFolderModal"),
     emptyFolderMessage: document.getElementById("nasEmptyFolderMessage"),
     emptyFolderMeta: document.getElementById("nasEmptyFolderMeta"),
+    downloadConfirmModal: document.getElementById("nasDownloadConfirmModal"),
+    downloadConfirmMessage: document.getElementById("nasDownloadConfirmMessage"),
+    downloadConfirmMeta: document.getElementById("nasDownloadConfirmMeta"),
+    downloadConfirmBtn: document.getElementById("nasDownloadConfirmBtn"),
     trashConfirmModal: document.getElementById("nasTrashConfirmModal"),
     trashConfirmMessage: document.getElementById("nasTrashConfirmMessage"),
     trashConfirmMeta: document.getElementById("nasTrashConfirmMeta"),
@@ -149,6 +157,9 @@
   const emptyFolderModal = (el.emptyFolderModal && window.bootstrap)
     ? bootstrap.Modal.getOrCreateInstance(el.emptyFolderModal)
     : null;
+  const downloadConfirmModal = (el.downloadConfirmModal && window.bootstrap)
+    ? bootstrap.Modal.getOrCreateInstance(el.downloadConfirmModal)
+    : null;
   const trashConfirmModal = (el.trashConfirmModal && window.bootstrap)
     ? bootstrap.Modal.getOrCreateInstance(el.trashConfirmModal)
     : null;
@@ -161,8 +172,12 @@
   const desktopHeightQuery = window.matchMedia
     ? window.matchMedia("(min-width: 1200px)")
     : null;
+  const mobileInteractionQuery = window.matchMedia
+    ? window.matchMedia("(hover: none) and (pointer: coarse)")
+    : null;
   let shellSyncFrame = 0;
   const INTERNAL_NAS_DRAG_TYPE = "application/x-abbas-nas-paths";
+  const MOBILE_DOUBLE_TAP_WINDOW_MS = 360;
   const MARK_COLOR_OPTIONS = {
     red: {
       label: "레드",
@@ -296,6 +311,20 @@
       next.push(path);
     });
     return next;
+  }
+
+  function isMobileNasInteraction() {
+    if (mobileInteractionQuery) {
+      return mobileInteractionQuery.matches;
+    }
+    const userAgent = String((window.navigator && window.navigator.userAgent) || "");
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent);
+  }
+
+  function resetMobileTapState() {
+    state.mobileTapPath = "";
+    state.mobileTapType = "";
+    state.mobileTapAt = 0;
   }
 
   function downloadFilenameFromDisposition(value) {
@@ -2097,6 +2126,106 @@
     }
   }
 
+  function resetDownloadConfirmState() {
+    state.pendingDownloadPaths = [];
+    if (el.downloadConfirmMessage) {
+      el.downloadConfirmMessage.textContent = "다운로드할까요?";
+    }
+    if (el.downloadConfirmMeta) {
+      el.downloadConfirmMeta.textContent = "확인을 누르면 다운로드를 시작합니다.";
+    }
+  }
+
+  function openDownloadConfirm(target) {
+    if (el.downloadConfirmModal && el.downloadConfirmModal.classList.contains("show")) return;
+    const paths = normalizePathList(Array.isArray(target) ? target : [target]);
+    const items = paths.map((path) => findItem(path)).filter(Boolean);
+    if (!paths.length || !items.length) {
+      setAlert("warning", "다운로드할 파일을 찾지 못했습니다.");
+      return;
+    }
+
+    const confirmText = items.length === 1
+      ? `${items[0].type === "directory" ? "폴더" : "파일"} "${items[0].name}" 을(를) 다운로드할까요?`
+      : `선택한 항목 ${items.length}개를 다운로드할까요?`;
+    const confirmMeta = items.length === 1
+      ? `확인을 누르면 ${items[0].type === "directory" ? "폴더" : "파일"} "${items[0].name}" 다운로드를 시작합니다.`
+      : `확인을 누르면 선택한 ${items.length}개 항목 다운로드를 시작합니다.`;
+
+    state.pendingDownloadPaths = paths.slice();
+    if (el.downloadConfirmMessage) {
+      el.downloadConfirmMessage.textContent = confirmText;
+    }
+    if (el.downloadConfirmMeta) {
+      el.downloadConfirmMeta.textContent = confirmMeta;
+    }
+    hideContextMenu();
+
+    if (downloadConfirmModal) {
+      downloadConfirmModal.show();
+      return;
+    }
+
+    if (!window.confirm(confirmText)) {
+      resetDownloadConfirmState();
+      return;
+    }
+    void submitDownloadConfirm();
+  }
+
+  async function submitDownloadConfirm() {
+    const paths = state.pendingDownloadPaths.slice();
+    if (!paths.length) {
+      if (downloadConfirmModal) downloadConfirmModal.hide();
+      resetDownloadConfirmState();
+      return;
+    }
+
+    if (downloadConfirmModal) {
+      downloadConfirmModal.hide();
+    }
+    resetDownloadConfirmState();
+    await downloadItems(paths);
+  }
+
+  function handleMobileRowActivation(path, type) {
+    if (!isMobileNasInteraction()) {
+      resetMobileTapState();
+      return false;
+    }
+
+    const rowPath = String(path || "").trim();
+    const rowType = String(type || "").trim();
+    if (!rowPath || !rowType) {
+      resetMobileTapState();
+      return false;
+    }
+
+    const now = Date.now();
+    const isDoubleTap = state.mobileTapPath === rowPath
+      && state.mobileTapType === rowType
+      && (now - Number(state.mobileTapAt || 0) <= MOBILE_DOUBLE_TAP_WINDOW_MS);
+
+    state.mobileTapPath = rowPath;
+    state.mobileTapType = rowType;
+    state.mobileTapAt = now;
+
+    if (!isDoubleTap) {
+      return false;
+    }
+
+    resetMobileTapState();
+    if (rowType === "directory") {
+      loadFolder(rowPath);
+      return true;
+    }
+    if (rowType === "file") {
+      openDownloadConfirm(rowPath);
+      return true;
+    }
+    return false;
+  }
+
   function renameItem(path, type) {
     const item = findItem(path);
     if (!item) {
@@ -2796,6 +2925,12 @@
     });
   }
 
+  if (el.downloadConfirmBtn) {
+    el.downloadConfirmBtn.addEventListener("click", () => {
+      submitDownloadConfirm();
+    });
+  }
+
   if (el.trashRefreshBtn) {
     el.trashRefreshBtn.addEventListener("click", () => loadTrash());
   }
@@ -2885,6 +3020,17 @@
     });
     el.uploadProgressModal.addEventListener("hidden.bs.modal", () => {
       forceHideUploadProgressModal();
+    });
+  }
+
+  if (el.downloadConfirmModal) {
+    el.downloadConfirmModal.addEventListener("shown.bs.modal", () => {
+      if (el.downloadConfirmBtn) {
+        el.downloadConfirmBtn.focus();
+      }
+    });
+    el.downloadConfirmModal.addEventListener("hidden.bs.modal", () => {
+      resetDownloadConfirmState();
     });
   }
 
@@ -3057,10 +3203,12 @@
           return;
         }
         setSelectedItem(rowPath, rowType);
+        handleMobileRowActivation(rowPath, rowType);
       }
     });
 
     el.tableBody.addEventListener("dblclick", (event) => {
+      if (isMobileNasInteraction()) return;
       if (state.suppressRowClick) return;
       if (isToggleModifier(event)) return;
       const row = event.target.closest("tr[data-row-path]");

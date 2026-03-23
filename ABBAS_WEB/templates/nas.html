@@ -1653,6 +1653,27 @@
   </div>
 </div>
 
+<div class="modal fade" id="nasDownloadConfirmModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5"><i class="bi bi-download me-2"></i>다운로드 확인</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+      </div>
+      <div class="modal-body">
+        <div class="fw-semibold mb-2" id="nasDownloadConfirmMessage">다운로드할까요?</div>
+        <div class="small text-secondary" id="nasDownloadConfirmMeta">확인을 누르면 다운로드를 시작합니다.</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">취소</button>
+        <button class="btn btn-primary" type="button" id="nasDownloadConfirmBtn">
+          <i class="bi bi-download me-1"></i>다운로드
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="nasTrashModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content">
