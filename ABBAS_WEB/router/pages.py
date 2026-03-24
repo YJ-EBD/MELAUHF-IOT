@@ -1074,6 +1074,72 @@ def _messenger_preview_text(value: Any, limit: int = 100) -> str:
     return preview[: max(limit - 1, 0)].rstrip() + "…"
 
 
+def _messenger_duration_text(value: Any) -> str:
+    try:
+        total_seconds = max(int(value or 0), 0)
+    except Exception:
+        total_seconds = 0
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}시간 {minutes}분"
+    if minutes > 0:
+        return f"{minutes}분 {seconds}초"
+    return f"{seconds}초"
+
+
+def _messenger_call_log_view(
+    call_log: dict[str, Any] | None,
+    user_directory: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    call_log = call_log or {}
+    call_id = str(call_log.get("call_id") or "").strip()
+    if not call_id:
+        return None
+
+    started_by_user_id = str(call_log.get("started_by_user_id") or "").strip()
+    starter_profile = user_directory.get(started_by_user_id) or {}
+    started_by_display_name = (
+        str(starter_profile.get("display_name") or "").strip()
+        or str(call_log.get("started_by_nickname") or "").strip()
+        or str(call_log.get("started_by_name") or "").strip()
+        or started_by_user_id
+        or "알 수 없음"
+    )
+    status = str(call_log.get("status") or "").strip().lower() or "ended"
+    if status not in {"active", "ended", "missed"}:
+        status = "ended"
+    participant_peak = max(int(call_log.get("max_participant_count") or 0), 1)
+    duration_sec = max(int(call_log.get("duration_sec") or 0), 0)
+    duration_text = _messenger_duration_text(duration_sec)
+    time_anchor = str(call_log.get("ended_at") or call_log.get("updated_at") or call_log.get("started_at") or "").strip()
+    if status == "missed":
+        status_label = "부재중"
+        summary = f"{started_by_display_name}님이 {duration_text} 동안 연결을 시도했습니다."
+    elif status == "active":
+        status_label = "진행 중"
+        summary = f"현재 진행 중 · {participant_peak}명 연결"
+    else:
+        status_label = "통화 종료"
+        summary = f"{duration_text} · 최대 {participant_peak}명 연결"
+    return {
+        "id": int(call_log.get("id") or 0),
+        "call_id": call_id,
+        "status": status,
+        "status_label": status_label,
+        "summary": summary,
+        "started_by_user_id": started_by_user_id,
+        "started_by_display_name": started_by_display_name,
+        "initiated_mode": str(call_log.get("initiated_mode") or "audio").strip().lower() or "audio",
+        "participant_peak": participant_peak,
+        "duration_sec": duration_sec,
+        "duration_text": duration_text,
+        "started_at": str(call_log.get("started_at") or "").strip(),
+        "ended_at": str(call_log.get("ended_at") or "").strip(),
+        "time_text": _messenger_time_text(time_anchor),
+    }
+
+
 def _messenger_attachment_from_content(message_type: Any, content: Any) -> dict[str, Any]:
     normalized_type = str(message_type or "").strip().lower()
     if normalized_type not in {"file", "image"}:
@@ -1096,6 +1162,9 @@ def _messenger_attachment_from_content(message_type: Any, content: Any) -> dict[
 
 
 def _messenger_message_preview_for_view(message_type: Any, content: Any) -> str:
+    normalized_type = str(message_type or "").strip().lower()
+    if normalized_type == "system":
+        return _messenger_preview_text(content, limit=100)
     attachment = _messenger_attachment_from_content(message_type, content)
     if attachment:
         label = "[이미지]" if attachment.get("kind") == "image" else "[파일]"
@@ -1183,6 +1252,140 @@ def _messenger_is_system_room(room: dict[str, Any] | None) -> bool:
     return created_by in {"", "system"}
 
 
+def _messenger_member_role(value: Any) -> str:
+    role = str(value or "").strip().lower()
+    if role in {"owner", "admin", "member"}:
+        return role
+    return "member"
+
+
+def _messenger_member_role_rank(value: Any) -> int:
+    role = _messenger_member_role(value)
+    if role == "owner":
+        return 30
+    if role == "admin":
+        return 20
+    if role == "member":
+        return 10
+    return 0
+
+
+def _messenger_call_permission_level(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"member", "admin", "owner", "none"}:
+        return normalized
+    if normalized in {"all", "everyone"}:
+        return "member"
+    if normalized in {"deny", "disabled", "nobody", "off"}:
+        return "none"
+    return "member"
+
+
+def _messenger_call_permission_rank(value: Any) -> int:
+    level = _messenger_call_permission_level(value)
+    if level == "owner":
+        return _messenger_member_role_rank("owner")
+    if level == "admin":
+        return _messenger_member_role_rank("admin")
+    if level == "member":
+        return _messenger_member_role_rank("member")
+    return 1000
+
+
+def _messenger_channel_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "stage":
+        return "stage"
+    return "voice"
+
+
+def _messenger_channel_mode_label(value: Any) -> str:
+    return "STAGE" if _messenger_channel_mode(value) == "stage" else "VOICE"
+
+
+def _messenger_is_stage_room(room: dict[str, Any] | None) -> bool:
+    room = room or {}
+    return _messenger_channel_mode(room.get("channel_mode")) == "stage"
+
+
+def _messenger_room_channel_category(room: dict[str, Any] | None) -> str:
+    room = room or {}
+    return str(room.get("channel_category") or "").strip()
+
+
+def _messenger_call_participant_stage_role(participant: dict[str, Any] | None) -> str:
+    participant = participant or {}
+    return "speaker" if str(participant.get("stage_role") or "").strip().lower() == "speaker" else "audience"
+
+
+def _messenger_participant_can_speak_live(
+    room: dict[str, Any] | None,
+    participant: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    if _messenger_is_stage_room(room) and participant:
+        return _messenger_call_participant_stage_role(participant) == "speaker"
+    return _messenger_can_speak_in_call(room, current_user_id, current_user_role)
+
+
+def _messenger_participant_can_use_video_live(
+    room: dict[str, Any] | None,
+    participant: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    if _messenger_is_stage_room(room) and participant and _messenger_call_participant_stage_role(participant) != "speaker":
+        return False
+    return _messenger_can_use_video_in_call(room, current_user_id, current_user_role)
+
+
+def _messenger_participant_can_share_screen_live(
+    room: dict[str, Any] | None,
+    participant: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    if _messenger_is_stage_room(room) and participant and _messenger_call_participant_stage_role(participant) != "speaker":
+        return False
+    return _messenger_can_share_screen_in_call(room, current_user_id, current_user_role)
+
+
+def _messenger_room_call_permissions(room: dict[str, Any] | None) -> dict[str, str]:
+    room = room or {}
+    return chat_repo.normalize_call_permissions(
+        room.get("room_type"),
+        room.get("call_permissions"),
+        channel_mode=room.get("channel_mode"),
+    )
+
+
+def _messenger_room_member_role(room: dict[str, Any] | None, user_id: str) -> str:
+    room = room or {}
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return "member"
+    direct_member_role = str(room.get("member_role") or "").strip()
+    if direct_member_role:
+        return _messenger_member_role(direct_member_role)
+    for member in list(room.get("members") or []):
+        if str((member or {}).get("user_id") or "").strip() != normalized_user_id:
+            continue
+        return _messenger_member_role((member or {}).get("member_role"))
+    return "member"
+
+
+def _messenger_room_has_member(room: dict[str, Any] | None, user_id: str) -> bool:
+    room = room or {}
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return False
+    for member in list(room.get("members") or []):
+        if str((member or {}).get("user_id") or "").strip() == normalized_user_id:
+            return True
+    return False
+
+
 def _messenger_can_manage_room(
     room: dict[str, Any] | None,
     current_user_id: str,
@@ -1197,6 +1400,239 @@ def _messenger_can_manage_room(
     if _messenger_is_system_room(room):
         return False
     return str(room.get("created_by") or "").strip() == str(current_user_id or "").strip()
+
+
+def _messenger_effective_member_rank(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> int:
+    if _normalize_role(current_user_role) == "superuser":
+        return 100
+    if _messenger_can_manage_room(room, current_user_id, current_user_role):
+        return _messenger_member_role_rank("owner")
+    return _messenger_member_role_rank(_messenger_room_member_role(room, current_user_id))
+
+
+def _messenger_has_call_permission(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    permission_key: str,
+    current_user_role: str = "",
+) -> bool:
+    permissions = _messenger_room_call_permissions(room)
+    required_level = _messenger_call_permission_level(permissions.get(permission_key))
+    if _normalize_role(current_user_role) == "superuser":
+        return True
+    if required_level == "none":
+        return False
+    actor_rank = _messenger_effective_member_rank(room, current_user_id, current_user_role)
+    return actor_rank >= _messenger_call_permission_rank(required_level)
+
+
+def _messenger_can_join_call(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    return _messenger_has_call_permission(room, current_user_id, "connect", current_user_role)
+
+
+def _messenger_can_speak_in_call(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    return _messenger_has_call_permission(room, current_user_id, "speak", current_user_role)
+
+
+def _messenger_can_use_video_in_call(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    return _messenger_has_call_permission(room, current_user_id, "video", current_user_role)
+
+
+def _messenger_can_share_screen_in_call(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    return _messenger_has_call_permission(room, current_user_id, "screen_share", current_user_role)
+
+
+def _messenger_can_invite_room_members(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    room = room or {}
+    room_type = str(room.get("room_type") or "").strip().lower()
+    if room_type == "dm":
+        return False
+    normalized_role = _normalize_role(current_user_role)
+    if normalized_role == "superuser":
+        return True
+    if _messenger_is_system_room(room):
+        return False
+    return _messenger_has_call_permission(room, current_user_id, "invite_members", current_user_role)
+
+
+def _messenger_can_start_call(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    return _messenger_has_call_permission(room, current_user_id, "start_call", current_user_role)
+
+
+def _messenger_can_moderate_call(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    room = room or {}
+    room_type = str(room.get("room_type") or "").strip().lower()
+    if room_type == "dm":
+        return False
+    return _messenger_has_call_permission(room, current_user_id, "moderate", current_user_role)
+
+
+def _messenger_can_manage_room_members(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    room = room or {}
+    room_type = str(room.get("room_type") or "").strip().lower()
+    if room_type == "dm":
+        return False
+    if _normalize_role(current_user_role) == "superuser":
+        return True
+    if _messenger_is_system_room(room):
+        return False
+    return _messenger_effective_member_rank(room, current_user_id, current_user_role) >= _messenger_member_role_rank("admin")
+
+
+def _messenger_can_manage_member_roles(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    room = room or {}
+    room_type = str(room.get("room_type") or "").strip().lower()
+    if room_type == "dm":
+        return False
+    if _normalize_role(current_user_role) == "superuser":
+        return True
+    if _messenger_is_system_room(room):
+        return False
+    return _messenger_effective_member_rank(room, current_user_id, current_user_role) >= _messenger_member_role_rank("owner")
+
+
+def _messenger_can_change_room_member_role(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    target_user_id: str,
+    next_member_role: str,
+    current_user_role: str = "",
+) -> bool:
+    room = room or {}
+    normalized_target_user_id = str(target_user_id or "").strip()
+    normalized_next_member_role = _messenger_member_role(next_member_role)
+    if not normalized_target_user_id or normalized_target_user_id == str(current_user_id or "").strip():
+        return False
+    if normalized_next_member_role not in {"admin", "member"}:
+        return False
+    if not _messenger_room_has_member(room, normalized_target_user_id):
+        return False
+    if not _messenger_can_manage_member_roles(room, current_user_id, current_user_role):
+        return False
+    actor_rank = _messenger_effective_member_rank(room, current_user_id, current_user_role)
+    target_rank = _messenger_member_role_rank(_messenger_room_member_role(room, normalized_target_user_id))
+    if target_rank >= actor_rank:
+        return False
+    if target_rank >= _messenger_member_role_rank("owner"):
+        return False
+    return True
+
+
+def _messenger_can_remove_room_member(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    target_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    room = room or {}
+    normalized_target_user_id = str(target_user_id or "").strip()
+    if not normalized_target_user_id or normalized_target_user_id == str(current_user_id or "").strip():
+        return False
+    if not _messenger_room_has_member(room, normalized_target_user_id):
+        return False
+    if not _messenger_can_manage_room_members(room, current_user_id, current_user_role):
+        return False
+    actor_rank = _messenger_effective_member_rank(room, current_user_id, current_user_role)
+    target_rank = _messenger_member_role_rank(_messenger_room_member_role(room, normalized_target_user_id))
+    if target_rank >= actor_rank:
+        return False
+    if target_rank >= _messenger_member_role_rank("owner"):
+        return False
+    return True
+
+
+def _messenger_can_transfer_room_owner(
+    room: dict[str, Any] | None,
+    current_user_id: str,
+    target_user_id: str,
+    current_user_role: str = "",
+) -> bool:
+    room = room or {}
+    normalized_target_user_id = str(target_user_id or "").strip()
+    room_type = str(room.get("room_type") or "").strip().lower()
+    if room_type == "dm":
+        return False
+    if not normalized_target_user_id or normalized_target_user_id == str(current_user_id or "").strip():
+        return False
+    if _messenger_is_system_room(room):
+        return False
+    actor_is_superuser = _normalize_role(current_user_role) == "superuser"
+    actor_is_owner = str(room.get("created_by") or "").strip() == str(current_user_id or "").strip()
+    if not actor_is_superuser and not actor_is_owner:
+        return False
+    if not _messenger_room_has_member(room, normalized_target_user_id):
+        return False
+    if _messenger_room_member_role(room, normalized_target_user_id) == "owner":
+        return False
+    return True
+
+
+def _messenger_member_display_name(
+    room: dict[str, Any] | None,
+    user_id: str,
+    user_directory: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return ""
+    user_directory = user_directory or {}
+    member = next(
+        (
+            member_row
+            for member_row in list((room or {}).get("members") or [])
+            if str((member_row or {}).get("user_id") or "").strip() == normalized_user_id
+        ),
+        None,
+    ) or {}
+    directory_item = user_directory.get(normalized_user_id) or {}
+    display_name = (
+        str(directory_item.get("display_name") or "").strip()
+        or str(member.get("display_name") or "").strip()
+        or str(member.get("nickname") or "").strip()
+        or str(member.get("name") or "").strip()
+        or normalized_user_id
+    )
+    return display_name
 
 
 def _messenger_can_edit_message(
@@ -1221,6 +1657,8 @@ def _messenger_can_delete_message(
 ) -> bool:
     message = message or {}
     if str(message.get("deleted_at") or "").strip():
+        return False
+    if str(message.get("message_type") or "text").strip().lower() == "system":
         return False
     if room_can_manage or _normalize_role(current_user_role) == "superuser":
         return True
@@ -1294,13 +1732,33 @@ def _messenger_room_view(
     room_type = str(room.get("room_type") or "group").strip().lower() or "group"
     current_user_role = _messenger_current_user_role(current_user_id, user_directory)
     can_manage_room = _messenger_can_manage_room(room, current_user_id, current_user_role)
+    can_invite_members = _messenger_can_invite_room_members(room, current_user_id, current_user_role)
+    can_join_call = _messenger_can_join_call(room, current_user_id, current_user_role)
+    can_start_call = _messenger_can_start_call(room, current_user_id, current_user_role)
+    can_speak_in_call = _messenger_can_speak_in_call(room, current_user_id, current_user_role)
+    can_use_video_in_call = _messenger_can_use_video_in_call(room, current_user_id, current_user_role)
+    can_share_screen_in_call = _messenger_can_share_screen_in_call(room, current_user_id, current_user_role)
+    can_moderate_call = _messenger_can_moderate_call(room, current_user_id, current_user_role)
+    can_manage_members = _messenger_can_manage_room_members(room, current_user_id, current_user_role)
+    can_manage_member_roles = _messenger_can_manage_member_roles(room, current_user_id, current_user_role)
+    call_permissions = _messenger_room_call_permissions(room)
+    channel_mode = _messenger_channel_mode(room.get("channel_mode"))
+    channel_category = _messenger_room_channel_category(room)
+    recent_call_views = [
+        call_view
+        for call_view in (
+            _messenger_call_log_view(item, user_directory)
+            for item in list(room.get("recent_calls") or [])
+        )
+        if call_view
+    ]
     created_by = str(room.get("created_by") or "").strip()
     other_member = next((member for member in member_views if member.get("user_id") != current_user_id), None)
     last_sender_user_id = str(room.get("last_sender_user_id") or "").strip()
     last_sender = user_directory.get(last_sender_user_id) or {}
     preview = str(room.get("last_message_preview") or "").strip()
     if room_type in {"channel", "group"} and preview and last_sender_user_id:
-        sender_name = "나" if last_sender_user_id == current_user_id else str(last_sender.get("display_name") or last_sender_user_id)
+        sender_name = "ASCORD" if last_sender_user_id == "system" else ("나" if last_sender_user_id == current_user_id else str(last_sender.get("display_name") or last_sender_user_id))
         preview = f"{sender_name}: {preview}"
     elif not preview:
         preview = str(room.get("topic") or "").strip() or "대화를 시작해보세요."
@@ -1334,6 +1792,9 @@ def _messenger_room_view(
         "title": title,
         "subtitle": subtitle,
         "topic": str(room.get("topic") or "").strip(),
+        "channel_category": channel_category,
+        "channel_mode": channel_mode,
+        "channel_mode_label": _messenger_channel_mode_label(channel_mode),
         "avatar_initial": avatar_initial,
         "avatar_url": avatar_url,
         "avatar_path": str(room.get("avatar_path") or "").strip(),
@@ -1360,6 +1821,18 @@ def _messenger_room_view(
         "can_edit_room": can_manage_room,
         "can_delete_room": can_manage_room,
         "can_edit_avatar": can_manage_room,
+        "can_invite_members": can_invite_members,
+        "can_join_call": can_join_call,
+        "can_start_call": can_start_call,
+        "can_speak_in_call": can_speak_in_call,
+        "can_use_video_in_call": can_use_video_in_call,
+        "can_share_screen_in_call": can_share_screen_in_call,
+        "can_moderate_call": can_moderate_call,
+        "can_manage_members": can_manage_members,
+        "can_manage_member_roles": can_manage_member_roles,
+        "call_permissions": call_permissions,
+        "recent_calls": recent_call_views,
+        "missed_call_total": sum(1 for item in recent_call_views if item.get("status") == "missed"),
         "is_direct": room_type == "dm",
         "is_channel": room_type == "channel",
         "is_group": room_type == "group",
@@ -1394,18 +1867,20 @@ def _messenger_message_view(
     ))
     created_at = str(message.get("created_at") or "").strip()
     message_type = str(message.get("message_type") or "text").strip().lower() or "text"
+    is_system_message = message_type == "system" or sender_user_id == "system"
     attachment = _messenger_attachment_from_content(message_type, message.get("content"))
+    sender_display_name = "ASCORD" if is_system_message else str(sender_view.get("display_name") or sender_user_id)
     return {
         "id": message_id,
         "room_id": int(message.get("room_id") or 0),
         "sender_user_id": sender_user_id,
-        "sender_display_name": str(sender_view.get("display_name") or sender_user_id),
+        "sender_display_name": sender_display_name,
         "sender_nickname": str(sender_view.get("nickname") or ""),
         "sender_name": str(sender_view.get("name") or ""),
-        "sender_avatar_initial": str(sender_view.get("avatar_initial") or _profile_avatar_initial(sender_user_id, "U")),
-        "sender_avatar_url": str(sender_view.get("profile_image_url") or ""),
-        "sender_department": str(sender_view.get("department") or ""),
-        "sender_role_label": str(sender_view.get("role_label") or _role_label(sender_view.get("role") or "")),
+        "sender_avatar_initial": "A" if is_system_message else str(sender_view.get("avatar_initial") or _profile_avatar_initial(sender_user_id, "U")),
+        "sender_avatar_url": "" if is_system_message else str(sender_view.get("profile_image_url") or ""),
+        "sender_department": "" if is_system_message else str(sender_view.get("department") or ""),
+        "sender_role_label": "SYSTEM" if is_system_message else str(sender_view.get("role_label") or _role_label(sender_view.get("role") or "")),
         "sender_presence_tone": str(sender_view.get("presence_tone") or "offline"),
         "sender_presence_label": str(sender_view.get("presence_label") or ""),
         "sender_presence_page_text": str(sender_view.get("presence_page_text") or ""),
@@ -1416,7 +1891,7 @@ def _messenger_message_view(
         "created_at": created_at,
         "created_date": created_at[:10] if len(created_at) >= 10 else "",
         "time_text": _messenger_time_text(created_at),
-        "is_mine": sender_user_id == current_user_id,
+        "is_mine": (sender_user_id == current_user_id) and not is_system_message,
         "edited": bool(str(message.get("edited_at") or "").strip()),
         "can_edit": _messenger_can_edit_message(message, current_user_id, current_user_role),
         "can_delete": _messenger_can_delete_message(
@@ -1544,6 +2019,12 @@ def _build_messenger_bootstrap_payload(current_user_id: str, *, requested_room_i
         selected_room_id = int(requested_room_id)
     elif room_views:
         selected_room_id = int(room_views[0].get("id") or 0)
+    if selected_room_id > 0:
+        selected_recent_calls = chat_repo.list_call_logs_for_room(selected_room_id, limit=6)
+        room_views = [
+            dict(room, recent_calls=selected_recent_calls) if int(room.get("id") or 0) == selected_room_id else room
+            for room in room_views
+        ]
 
     current_user = user_directory.get(current_user_id) or _messenger_user_view_from_row(
         read_user(current_user_id) or {"user_id": current_user_id},
@@ -1584,6 +2065,8 @@ def _build_messenger_room_messages_payload(
     room = chat_repo.get_room_for_user(room_id, current_user_id)
     if not room:
         return None
+    room = dict(room)
+    room["recent_calls"] = chat_repo.list_call_logs_for_room(room_id, limit=6)
 
     room_view = _messenger_room_view(room, current_user_id, user_directory)
     if not room_view:
@@ -1615,6 +2098,8 @@ def _build_single_messenger_room_payload(current_user_id: str, room_id: int) -> 
     room = chat_repo.get_room_for_user(room_id, current_user_id)
     if not room:
         return None
+    room = dict(room)
+    room["recent_calls"] = chat_repo.list_call_logs_for_room(room_id, limit=6)
     return _messenger_room_view(room, current_user_id, user_directory)
 
 
@@ -1754,6 +2239,10 @@ class _MessengerCallHub:
         return "camera"
 
     @staticmethod
+    def _normalize_stage_role(value: Any) -> str:
+        return "speaker" if str(value or "").strip().lower() == "speaker" else "audience"
+
+    @staticmethod
     def _participant_view(row: dict[str, Any]) -> dict[str, Any]:
         return {
             "user_id": str(row.get("user_id") or ""),
@@ -1764,6 +2253,9 @@ class _MessengerCallHub:
             "video_enabled": bool(row.get("video_enabled")),
             "sharing_screen": bool(row.get("sharing_screen")),
             "source": str(row.get("source") or "camera"),
+            "server_muted": bool(row.get("server_muted")),
+            "stage_role": "speaker" if str(row.get("stage_role") or "").strip().lower() == "speaker" else "audience",
+            "speaker_requested": bool(row.get("speaker_requested")),
         }
 
     def _call_view_locked(self, room_id: int) -> dict[str, Any] | None:
@@ -1772,7 +2264,11 @@ class _MessengerCallHub:
             return None
         participants = sorted(
             [self._participant_view(item) for item in (call.get("participants") or {}).values()],
-            key=lambda item: (float(item.get("joined_at") or 0.0), str(item.get("user_id") or "")),
+            key=lambda item: (
+                0 if str(item.get("stage_role") or "") == "speaker" else (1 if bool(item.get("speaker_requested")) else 2),
+                float(item.get("joined_at") or 0.0),
+                str(item.get("user_id") or ""),
+            ),
         )
         return {
             "room_id": int(call.get("room_id") or 0),
@@ -1780,6 +2276,9 @@ class _MessengerCallHub:
             "started_at": float(call.get("started_at") or 0.0),
             "updated_at": float(call.get("updated_at") or 0.0),
             "participant_count": len(participants),
+            "speaker_count": sum(1 for item in participants if str(item.get("stage_role") or "") == "speaker"),
+            "audience_count": sum(1 for item in participants if str(item.get("stage_role") or "") != "speaker"),
+            "speaker_request_count": sum(1 for item in participants if bool(item.get("speaker_requested"))),
             "participants": participants,
         }
 
@@ -1798,6 +2297,7 @@ class _MessengerCallHub:
         video_enabled: bool = False,
         sharing_screen: bool = False,
         source: Any = "camera",
+        stage_role: Any = "speaker",
     ) -> dict[str, Any] | None:
         target_room_id = int(room_id or 0)
         normalized_user_id = str(user_id or "").strip()
@@ -1819,15 +2319,19 @@ class _MessengerCallHub:
 
             participants = call["participants"]
             previous = dict(participants.get(normalized_user_id) or {})
+            resolved_stage_role = self._normalize_stage_role(previous.get("stage_role") or stage_role)
             participants[normalized_user_id] = {
                 "user_id": normalized_user_id,
                 "display_name": str(display_name or previous.get("display_name") or normalized_user_id),
                 "joined_at": float(previous.get("joined_at") or now_ts),
                 "media_mode": self._normalize_mode(media_mode),
-                "audio_enabled": bool(audio_enabled),
+                "audio_enabled": False if bool(previous.get("server_muted")) else bool(audio_enabled),
                 "video_enabled": bool(video_enabled),
                 "sharing_screen": bool(sharing_screen),
                 "source": self._normalize_source(source),
+                "server_muted": bool(previous.get("server_muted")),
+                "stage_role": resolved_stage_role,
+                "speaker_requested": False if resolved_stage_role == "speaker" else bool(previous.get("speaker_requested")),
             }
             call["updated_at"] = now_ts
             return self._call_view_locked(target_room_id)
@@ -1857,7 +2361,7 @@ class _MessengerCallHub:
             if not participant:
                 return None
             if audio_enabled is not None:
-                participant["audio_enabled"] = bool(audio_enabled)
+                participant["audio_enabled"] = False if bool(participant.get("server_muted")) else bool(audio_enabled)
             if video_enabled is not None:
                 participant["video_enabled"] = bool(video_enabled)
             if sharing_screen is not None:
@@ -1866,6 +2370,79 @@ class _MessengerCallHub:
                 participant["media_mode"] = self._normalize_mode(media_mode)
             if source is not None:
                 participant["source"] = self._normalize_source(source)
+            call["updated_at"] = time.time()
+            return self._call_view_locked(target_room_id)
+
+    async def set_stage_role(self, room_id: int, user_id: str, stage_role: Any) -> dict[str, Any] | None:
+        target_room_id = int(room_id or 0)
+        normalized_user_id = str(user_id or "").strip()
+        if target_room_id <= 0 or not normalized_user_id:
+            return None
+        async with self._lock:
+            call = self._calls_by_room.get(target_room_id)
+            if not call:
+                return None
+            participant = (call.get("participants") or {}).get(normalized_user_id)
+            if not participant:
+                return None
+            resolved_stage_role = self._normalize_stage_role(stage_role)
+            participant["stage_role"] = resolved_stage_role
+            participant["speaker_requested"] = False
+            if resolved_stage_role != "speaker":
+                participant["audio_enabled"] = False
+                participant["video_enabled"] = False
+                participant["sharing_screen"] = False
+                participant["media_mode"] = "audio"
+                participant["source"] = "camera"
+            call["updated_at"] = time.time()
+            return self._call_view_locked(target_room_id)
+
+    async def set_stage_request(self, room_id: int, user_id: str, requested: bool) -> dict[str, Any] | None:
+        target_room_id = int(room_id or 0)
+        normalized_user_id = str(user_id or "").strip()
+        if target_room_id <= 0 or not normalized_user_id:
+            return None
+        async with self._lock:
+            call = self._calls_by_room.get(target_room_id)
+            if not call:
+                return None
+            participant = (call.get("participants") or {}).get(normalized_user_id)
+            if not participant:
+                return None
+            if self._normalize_stage_role(participant.get("stage_role")) == "speaker":
+                participant["speaker_requested"] = False
+            else:
+                participant["speaker_requested"] = bool(requested)
+            call["updated_at"] = time.time()
+            return self._call_view_locked(target_room_id)
+
+    async def get_participant(self, room_id: int, user_id: str) -> dict[str, Any] | None:
+        target_room_id = int(room_id or 0)
+        normalized_user_id = str(user_id or "").strip()
+        if target_room_id <= 0 or not normalized_user_id:
+            return None
+        async with self._lock:
+            call = self._calls_by_room.get(target_room_id)
+            if not call:
+                return None
+            participant = (call.get("participants") or {}).get(normalized_user_id)
+            return self._participant_view(participant) if participant else None
+
+    async def set_server_muted(self, room_id: int, user_id: str, muted: bool) -> dict[str, Any] | None:
+        target_room_id = int(room_id or 0)
+        normalized_user_id = str(user_id or "").strip()
+        if target_room_id <= 0 or not normalized_user_id:
+            return None
+        async with self._lock:
+            call = self._calls_by_room.get(target_room_id)
+            if not call:
+                return None
+            participant = (call.get("participants") or {}).get(normalized_user_id)
+            if not participant:
+                return None
+            participant["server_muted"] = bool(muted)
+            if participant["server_muted"]:
+                participant["audio_enabled"] = False
             call["updated_at"] = time.time()
             return self._call_view_locked(target_room_id)
 
@@ -1899,11 +2476,11 @@ class _MessengerCallHub:
             participants = call.get("participants") or {}
             return normalized_user_id in participants
 
-    async def leave_all(self, user_id: str) -> list[int]:
+    async def leave_all(self, user_id: str) -> list[dict[str, Any]]:
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
             return []
-        affected_room_ids: list[int] = []
+        affected_calls: list[dict[str, Any]] = []
         async with self._lock:
             for room_id in list(self._calls_by_room):
                 call = self._calls_by_room.get(room_id)
@@ -1912,16 +2489,123 @@ class _MessengerCallHub:
                 participants = call.get("participants") or {}
                 if normalized_user_id not in participants:
                     continue
+                previous_call = self._call_view_locked(int(room_id) or 0)
                 participants.pop(normalized_user_id, None)
-                affected_room_ids.append(int(room_id))
                 if not participants:
                     self._calls_by_room.pop(room_id, None)
+                    affected_calls.append(
+                        {
+                            "room_id": int(room_id),
+                            "previous_call": previous_call,
+                            "call_cleared": True,
+                        }
+                    )
                 else:
                     call["updated_at"] = time.time()
-        return affected_room_ids
+                    affected_calls.append(
+                        {
+                            "room_id": int(room_id),
+                            "previous_call": previous_call,
+                            "call_cleared": False,
+                        }
+                    )
+        return affected_calls
 
 
 _MESSENGER_CALL_HUB = _MessengerCallHub()
+
+
+def _messenger_call_log_system_text(call_log: dict[str, Any] | None) -> str:
+    call_log = call_log or {}
+    status = str(call_log.get("status") or "").strip().lower() or "ended"
+    duration_text = _messenger_duration_text(call_log.get("duration_sec"))
+    starter_name = (
+        str(call_log.get("started_by_display_name") or "").strip()
+        or str(call_log.get("started_by_nickname") or "").strip()
+        or str(call_log.get("started_by_name") or "").strip()
+        or str(call_log.get("started_by_user_id") or "").strip()
+        or "알 수 없음"
+    )
+    participant_peak = max(int(call_log.get("max_participant_count") or 0), 1)
+    if status == "missed":
+        return f"부재중 통화 · {starter_name}님이 {duration_text} 동안 연결을 시도했습니다."
+    return f"ASCORD 통화 종료 · {duration_text} · 최대 {participant_peak}명 연결"
+
+
+async def _messenger_record_call_started(
+    room_id: int,
+    room_call: dict[str, Any] | None,
+    *,
+    actor_user_id: str,
+    media_mode: str = "audio",
+) -> dict[str, Any] | None:
+    room_call = room_call or {}
+    call_id = str(room_call.get("call_id") or "").strip()
+    if int(room_id or 0) <= 0 or not call_id:
+        return None
+    participant_count = max(int(room_call.get("participant_count") or 0), 1)
+    return await asyncio.to_thread(
+        chat_repo.create_call_log,
+        room_id,
+        call_id,
+        actor_user_id,
+        initiated_mode=media_mode,
+        participant_count=participant_count,
+    )
+
+
+async def _messenger_update_call_activity(room_call: dict[str, Any] | None) -> dict[str, Any] | None:
+    room_call = room_call or {}
+    call_id = str(room_call.get("call_id") or "").strip()
+    if not call_id:
+        return None
+    participant_count = max(int(room_call.get("participant_count") or 0), 1)
+    return await asyncio.to_thread(
+        chat_repo.update_call_log_activity,
+        call_id,
+        participant_count=participant_count,
+    )
+
+
+async def _messenger_finalize_call_log(
+    room_id: int,
+    previous_room_call: dict[str, Any] | None,
+    *,
+    notify_user_ids: list[str] | None = None,
+) -> dict[str, Any] | None:
+    previous_room_call = previous_room_call or {}
+    target_room_id = int(room_id or previous_room_call.get("room_id") or 0)
+    call_id = str(previous_room_call.get("call_id") or "").strip()
+    if target_room_id <= 0 or not call_id:
+        return None
+
+    existing_log = await asyncio.to_thread(chat_repo.get_call_log_by_call_id, call_id)
+    participant_peak = max(
+        int((existing_log or {}).get("max_participant_count") or 0),
+        int(previous_room_call.get("participant_count") or 0),
+        1,
+    )
+    completed_log = await asyncio.to_thread(
+        chat_repo.finish_call_log,
+        call_id,
+        status="missed" if participant_peak <= 1 else "ended",
+        participant_count=participant_peak,
+    )
+    if not completed_log or not completed_log.get("just_completed"):
+        return completed_log
+
+    system_message = await asyncio.to_thread(
+        chat_repo.insert_system_message,
+        target_room_id,
+        _messenger_call_log_system_text(completed_log),
+    )
+    target_user_ids = [str(user_id or "").strip() for user_id in list(notify_user_ids or []) if str(user_id or "").strip()]
+    if not target_user_ids:
+        target_user_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, target_room_id)
+    if target_user_ids:
+        await _messenger_emit_message_created(target_user_ids, system_message)
+        await _messenger_emit_room_updates(target_user_ids, target_room_id)
+    return completed_log
 
 
 async def _messenger_emit_call_state(user_ids: list[str], room_id: int) -> None:
@@ -1947,6 +2631,48 @@ async def _messenger_emit_call_state_to_user(user_id: str, room_id: int) -> None
         user_id,
         {"type": "call_state", "call": room_call} if room_call else {"type": "call_cleared", "room_id": target_room_id},
     )
+
+
+async def _messenger_emit_call_admin_control(
+    user_id: str,
+    *,
+    room_id: int,
+    action: str,
+    actor_user_id: str = "",
+) -> None:
+    target_room_id = int(room_id or 0)
+    normalized_user_id = str(user_id or "").strip()
+    if target_room_id <= 0 or not normalized_user_id:
+        return
+    await _MESSENGER_HUB.send_to_user(
+        normalized_user_id,
+        {
+            "type": "call_admin_control",
+            "room_id": target_room_id,
+            "action": str(action or "").strip().lower(),
+            "actor_user_id": str(actor_user_id or "").strip(),
+            "target_user_id": normalized_user_id,
+        },
+    )
+
+
+async def _messenger_emit_system_message(
+    user_ids: list[str],
+    room_id: int,
+    content: str,
+) -> dict[str, Any] | None:
+    target_room_id = int(room_id or 0)
+    normalized_content = str(content or "").strip()
+    if target_room_id <= 0 or not normalized_content:
+        return None
+    system_message = await asyncio.to_thread(
+        chat_repo.insert_system_message,
+        target_room_id,
+        normalized_content,
+    )
+    if system_message:
+        await _messenger_emit_message_created(user_ids, system_message)
+    return system_message
 
 
 async def _messenger_emit_notifications_update(user_ids: list[str]) -> None:
@@ -5898,14 +6624,22 @@ def api_live_presence_disconnect(request: Request, client_id: str = ""):
     return Response(status_code=204)
 
 
+async def _reject_websocket_with_code(websocket: WebSocket, code: int) -> None:
+    try:
+        await websocket.accept()
+    except Exception:
+        pass
+    try:
+        await websocket.close(code=code)
+    except Exception:
+        pass
+
+
 @router.websocket("/ws/live-presence")
 async def ws_live_presence(websocket: WebSocket):
     client_id = str(websocket.query_params.get("client_id") or "").strip()
     if not re.match(r"^[A-Za-z0-9._:-]{8,128}$", client_id):
-        try:
-            await websocket.close(code=4400)
-        except Exception:
-            pass
+        await _reject_websocket_with_code(websocket, 4400)
         return
 
     sid = ""
@@ -5916,10 +6650,7 @@ async def ws_live_presence(websocket: WebSocket):
 
     user_id = read_session_user(sid)
     if not user_id:
-        try:
-            await websocket.close(code=4401)
-        except Exception:
-            pass
+        await _reject_websocket_with_code(websocket, 4401)
         return
 
     await websocket.accept()
@@ -5977,18 +6708,12 @@ async def ws_integrated_admin_system(websocket: WebSocket):
 
     user_id = read_session_user(sid)
     if not user_id:
-        try:
-            await websocket.close(code=4401)
-        except Exception:
-            pass
+        await _reject_websocket_with_code(websocket, 4401)
         return
 
     row = read_user(user_id) or {}
     if _normalize_role(row.get("ROLE") or "") != "superuser":
-        try:
-            await websocket.close(code=4403)
-        except Exception:
-            pass
+        await _reject_websocket_with_code(websocket, 4403)
         return
 
     await websocket.accept()
@@ -6017,10 +6742,7 @@ async def ws_messenger(websocket: WebSocket):
 
     user_id = read_session_user(sid)
     if not user_id:
-        try:
-            await websocket.close(code=4401)
-        except Exception:
-            pass
+        await _reject_websocket_with_code(websocket, 4401)
         return
 
     await _MESSENGER_HUB.connect(user_id, websocket)
@@ -6081,18 +6803,50 @@ async def ws_messenger(websocket: WebSocket):
                 room_id = _payload_int(payload.get("room_id"), 0)
                 if room_id <= 0:
                     continue
-                has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
-                if not has_access:
+                room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, user_id)
+                if not room:
                     continue
+                current_user_role = _normalize_role((read_user(user_id) or {}).get("ROLE") or "")
+                if not _messenger_can_join_call(room, user_id, current_user_role):
+                    continue
+                room_is_stage = _messenger_is_stage_room(room)
+                existing_room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+                if (not existing_room_call) and (not _messenger_can_start_call(room, user_id, current_user_role)):
+                    continue
+                can_speak = _messenger_can_speak_in_call(room, user_id, current_user_role)
+                can_use_video = _messenger_can_use_video_in_call(room, user_id, current_user_role)
+                can_share_screen = _messenger_can_share_screen_in_call(room, user_id, current_user_role)
+                stage_role = "speaker" if (can_speak or not room_is_stage) else "audience"
+                requested_mode = str(payload.get("media_mode") or payload.get("mode") or "").strip().lower()
+                sanitized_audio_enabled = _payload_bool(payload.get("audio_enabled"), True) and can_speak
+                sanitized_video_enabled = _payload_bool(payload.get("video_enabled"), False) and can_use_video
+                sanitized_sharing_screen = _payload_bool(payload.get("sharing_screen"), False) and can_share_screen
+                sanitized_media_mode = "video" if (
+                    sanitized_video_enabled
+                    or sanitized_sharing_screen
+                    or (requested_mode == "video" and can_use_video)
+                ) else "audio"
+                sanitized_source = "screen" if sanitized_sharing_screen else "camera"
                 room_call = await _MESSENGER_CALL_HUB.join_room(
                     room_id,
                     user_id,
-                    media_mode=payload.get("media_mode") or payload.get("mode"),
-                    audio_enabled=_payload_bool(payload.get("audio_enabled"), True),
-                    video_enabled=_payload_bool(payload.get("video_enabled"), False),
-                    sharing_screen=_payload_bool(payload.get("sharing_screen"), False),
-                    source=payload.get("source"),
+                    media_mode=sanitized_media_mode,
+                    audio_enabled=sanitized_audio_enabled,
+                    video_enabled=sanitized_video_enabled,
+                    sharing_screen=sanitized_sharing_screen,
+                    source=sanitized_source,
+                    stage_role=stage_role,
                 )
+                if room_call:
+                    if existing_room_call:
+                        await _messenger_update_call_activity(room_call)
+                    else:
+                        await _messenger_record_call_started(
+                            room_id,
+                            room_call,
+                            actor_user_id=user_id,
+                            media_mode=sanitized_media_mode,
+                        )
                 participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
                 await _messenger_emit_call_state(participant_ids, room_id)
                 if room_call:
@@ -6109,7 +6863,10 @@ async def ws_messenger(websocket: WebSocket):
                 has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
                 if not has_access:
                     continue
-                await _MESSENGER_CALL_HUB.leave_room(room_id, user_id)
+                previous_room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+                room_call = await _MESSENGER_CALL_HUB.leave_room(room_id, user_id)
+                if (not room_call) and previous_room_call:
+                    await _messenger_finalize_call_log(room_id, previous_room_call)
                 participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
                 await _messenger_emit_call_state(participant_ids, room_id)
                 continue
@@ -6118,20 +6875,49 @@ async def ws_messenger(websocket: WebSocket):
                 room_id = _payload_int(payload.get("room_id"), 0)
                 if room_id <= 0:
                     continue
-                has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
-                if not has_access:
+                room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, user_id)
+                if not room:
                     continue
                 is_participant = await _MESSENGER_CALL_HUB.room_has_participant(room_id, user_id)
                 if not is_participant:
                     continue
+                current_user_role = _normalize_role((read_user(user_id) or {}).get("ROLE") or "")
+                current_participant = await _MESSENGER_CALL_HUB.get_participant(room_id, user_id)
+                if not current_participant:
+                    continue
+                can_speak = _messenger_participant_can_speak_live(room, current_participant, user_id, current_user_role)
+                can_use_video = _messenger_participant_can_use_video_live(room, current_participant, user_id, current_user_role)
+                can_share_screen = _messenger_participant_can_share_screen_live(room, current_participant, user_id, current_user_role)
+                next_audio_enabled = None
+                next_video_enabled = None
+                next_sharing_screen = None
+                if "audio_enabled" in payload:
+                    next_audio_enabled = _payload_bool(payload.get("audio_enabled"), False) and can_speak
+                if "video_enabled" in payload:
+                    next_video_enabled = _payload_bool(payload.get("video_enabled"), False) and can_use_video
+                if "sharing_screen" in payload:
+                    next_sharing_screen = _payload_bool(payload.get("sharing_screen"), False) and can_share_screen
+                resolved_video_enabled = bool(current_participant.get("video_enabled")) if next_video_enabled is None else bool(next_video_enabled)
+                resolved_sharing_screen = bool(current_participant.get("sharing_screen")) if next_sharing_screen is None else bool(next_sharing_screen)
+                next_media_mode = None
+                if ("media_mode" in payload) or ("mode" in payload) or (next_video_enabled is not None) or (next_sharing_screen is not None):
+                    requested_mode = str(payload.get("media_mode") or payload.get("mode") or current_participant.get("media_mode") or "").strip().lower()
+                    next_media_mode = "video" if (
+                        resolved_video_enabled
+                        or resolved_sharing_screen
+                        or (requested_mode == "video" and can_use_video)
+                    ) else "audio"
+                next_source = None
+                if ("source" in payload) or (next_sharing_screen is not None):
+                    next_source = "screen" if resolved_sharing_screen else "camera"
                 await _MESSENGER_CALL_HUB.update_media_state(
                     room_id,
                     user_id,
-                    audio_enabled=payload.get("audio_enabled"),
-                    video_enabled=payload.get("video_enabled"),
-                    sharing_screen=payload.get("sharing_screen"),
-                    media_mode=payload.get("media_mode") or payload.get("mode"),
-                    source=payload.get("source"),
+                    audio_enabled=next_audio_enabled,
+                    video_enabled=next_video_enabled,
+                    sharing_screen=next_sharing_screen,
+                    media_mode=next_media_mode,
+                    source=next_source,
                 )
                 participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
                 await _messenger_emit_call_state(participant_ids, room_id)
@@ -6171,8 +6957,14 @@ async def ws_messenger(websocket: WebSocket):
     finally:
         await _MESSENGER_HUB.disconnect(user_id, websocket)
         if user_id and not await _MESSENGER_HUB.has_connection(user_id):
-            affected_room_ids = await _MESSENGER_CALL_HUB.leave_all(user_id)
-            for room_id in affected_room_ids:
+            affected_calls = await _MESSENGER_CALL_HUB.leave_all(user_id)
+            for affected in affected_calls:
+                room_id = int((affected or {}).get("room_id") or 0)
+                previous_call = (affected or {}).get("previous_call") if isinstance(affected, dict) else None
+                if room_id <= 0:
+                    continue
+                if isinstance(affected, dict) and bool(affected.get("call_cleared")):
+                    await _messenger_finalize_call_log(room_id, previous_call)
                 participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
                 await _messenger_emit_call_state(participant_ids, room_id)
         return
@@ -6332,6 +7124,12 @@ async def api_messenger_room_call_session(
     room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
     if not room:
         return JSONResponse({"ok": False, "detail": "대화방에 접근할 수 없습니다."}, status_code=404)
+    current_user_role = _request_user_role(request)
+    existing_room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+    if not _messenger_can_join_call(room, current_user_id, current_user_role):
+        return JSONResponse({"ok": False, "detail": "이 채널 통화에 참여할 권한이 없습니다."}, status_code=403)
+    if (not existing_room_call) and (not _messenger_can_start_call(room, current_user_id, current_user_role)):
+        return JSONResponse({"ok": False, "detail": "이 채널에서 새 통화를 시작할 권한이 없습니다."}, status_code=403)
 
     if not _livekit_enabled():
         detail = "LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET 설정이 필요합니다."
@@ -6341,7 +7139,15 @@ async def api_messenger_room_call_session(
 
     client_id_raw = str(payload.get("client_id") or "").strip()
     client_id = _livekit_identity_token(client_id_raw) or secrets.token_hex(6)
-    preferred_mode = "video" if str(payload.get("preferred_mode") or "").strip().lower() == "video" else "audio"
+    requested_mode = "video" if str(payload.get("preferred_mode") or "").strip().lower() == "video" else "audio"
+    current_participant = await _MESSENGER_CALL_HUB.get_participant(room_id, current_user_id)
+    can_use_video = _messenger_participant_can_use_video_live(
+        room,
+        current_participant,
+        current_user_id,
+        current_user_role,
+    )
+    preferred_mode = "video" if requested_mode == "video" and can_use_video else "audio"
 
     current_user = _request_user_row(request)
     display_name = _display_user_name(current_user) or current_user_id
@@ -6379,6 +7185,159 @@ async def api_messenger_room_call_session(
             },
         }
     )
+
+
+@router.post("/api/messenger/rooms/{room_id}/call/moderate")
+async def api_messenger_room_call_moderate(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방에 접근할 수 없습니다."}, status_code=404)
+
+    current_user_role = _request_user_role(request)
+    if not _messenger_can_moderate_call(room, current_user_id, current_user_role):
+        return JSONResponse({"ok": False, "detail": "이 채널의 통화를 제어할 권한이 없습니다."}, status_code=403)
+
+    action = str(payload.get("action") or "").strip().lower()
+    target_user_id = str(payload.get("target_user_id") or "").strip()
+    if not target_user_id:
+        return JSONResponse({"ok": False, "detail": "대상 사용자를 선택해주세요."}, status_code=400)
+    if target_user_id == current_user_id:
+        return JSONResponse({"ok": False, "detail": "자기 자신에게는 이 작업을 적용할 수 없습니다."}, status_code=400)
+
+    participant = await _MESSENGER_CALL_HUB.get_participant(room_id, target_user_id)
+    if not participant:
+        return JSONResponse({"ok": False, "detail": "현재 통화에 연결된 참여자가 아닙니다."}, status_code=404)
+
+    if action not in {
+        "server_mute",
+        "server_unmute",
+        "disable_camera",
+        "disable_screen_share",
+        "disconnect",
+        "grant_speaker",
+        "move_to_audience",
+    }:
+        return JSONResponse({"ok": False, "detail": "지원하지 않는 통화 제어 작업입니다."}, status_code=400)
+
+    room_call: dict[str, Any] | None = None
+    if action == "server_mute":
+        room_call = await _MESSENGER_CALL_HUB.set_server_muted(room_id, target_user_id, True)
+    elif action == "server_unmute":
+        room_call = await _MESSENGER_CALL_HUB.set_server_muted(room_id, target_user_id, False)
+    elif action == "disable_camera":
+        next_mode = "video" if bool(participant.get("sharing_screen")) else "audio"
+        room_call = await _MESSENGER_CALL_HUB.update_media_state(
+            room_id,
+            target_user_id,
+            video_enabled=False,
+            media_mode=next_mode,
+        )
+    elif action == "disable_screen_share":
+        next_mode = "video" if bool(participant.get("video_enabled")) else "audio"
+        room_call = await _MESSENGER_CALL_HUB.update_media_state(
+            room_id,
+            target_user_id,
+            sharing_screen=False,
+            media_mode=next_mode,
+            source="camera",
+        )
+    elif action == "disconnect":
+        previous_room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+        room_call = await _MESSENGER_CALL_HUB.leave_room(room_id, target_user_id)
+        if (not room_call) and previous_room_call:
+            await _messenger_finalize_call_log(room_id, previous_room_call)
+    elif action == "grant_speaker":
+        if not _messenger_is_stage_room(room):
+            return JSONResponse({"ok": False, "detail": "STAGE 채널에서만 발표자 승격을 사용할 수 있습니다."}, status_code=400)
+        room_call = await _MESSENGER_CALL_HUB.set_stage_role(room_id, target_user_id, "speaker")
+    elif action == "move_to_audience":
+        if not _messenger_is_stage_room(room):
+            return JSONResponse({"ok": False, "detail": "STAGE 채널에서만 청중 강등을 사용할 수 있습니다."}, status_code=400)
+        room_call = await _MESSENGER_CALL_HUB.set_stage_role(room_id, target_user_id, "audience")
+
+    if action in {"server_mute", "server_unmute", "disable_camera", "disable_screen_share", "grant_speaker", "move_to_audience"} and not room_call:
+        return JSONResponse({"ok": False, "detail": "통화 상태를 갱신하지 못했습니다."}, status_code=409)
+
+    await _messenger_emit_call_admin_control(
+        target_user_id,
+        room_id=room_id,
+        action=action,
+        actor_user_id=current_user_id,
+    )
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    if _messenger_is_stage_room(room) and action in {"grant_speaker", "move_to_audience"}:
+        user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+        actor_name = _messenger_member_display_name(room, current_user_id, user_directory)
+        target_name = _messenger_member_display_name(room, target_user_id, user_directory)
+        log_text = (
+            f"{actor_name}님이 {target_name}님을 발표자로 승격했습니다."
+            if action == "grant_speaker"
+            else f"{actor_name}님이 {target_name}님을 청중으로 전환했습니다."
+        )
+        await _messenger_emit_system_message(participant_ids, room_id, log_text)
+    await _messenger_emit_call_state(participant_ids, room_id)
+    return JSONResponse({"ok": True, "call": room_call, "room_id": int(room_id), "target_user_id": target_user_id, "action": action})
+
+
+@router.post("/api/messenger/rooms/{room_id}/call/stage")
+async def api_messenger_room_call_stage(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방에 접근할 수 없습니다."}, status_code=404)
+    if not _messenger_is_stage_room(room):
+        return JSONResponse({"ok": False, "detail": "STAGE 채널에서만 사용할 수 있는 요청입니다."}, status_code=400)
+
+    participant = await _MESSENGER_CALL_HUB.get_participant(room_id, current_user_id)
+    if not participant:
+        return JSONResponse({"ok": False, "detail": "먼저 이 STAGE 채널 통화에 참여해주세요."}, status_code=409)
+
+    action = str(payload.get("action") or "").strip().lower()
+    if action not in {"request_speaker", "withdraw_request", "move_self_to_audience"}:
+        return JSONResponse({"ok": False, "detail": "지원하지 않는 STAGE 작업입니다."}, status_code=400)
+
+    room_call: dict[str, Any] | None = None
+    if action == "request_speaker":
+        if _messenger_call_participant_stage_role(participant) == "speaker":
+            return JSONResponse({"ok": False, "detail": "이미 발표자 권한으로 연결되어 있습니다."}, status_code=409)
+        room_call = await _MESSENGER_CALL_HUB.set_stage_request(room_id, current_user_id, True)
+    elif action == "withdraw_request":
+        room_call = await _MESSENGER_CALL_HUB.set_stage_request(room_id, current_user_id, False)
+    elif action == "move_self_to_audience":
+        room_call = await _MESSENGER_CALL_HUB.set_stage_role(room_id, current_user_id, "audience")
+
+    if not room_call:
+        return JSONResponse({"ok": False, "detail": "STAGE 상태를 갱신하지 못했습니다."}, status_code=409)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+    actor_name = _messenger_member_display_name(room, current_user_id, user_directory)
+    log_text = ""
+    if action == "request_speaker":
+        log_text = f"{actor_name}님이 발언 요청을 보냈습니다."
+    elif action == "withdraw_request":
+        log_text = f"{actor_name}님이 발언 요청을 취소했습니다."
+    elif action == "move_self_to_audience":
+        log_text = f"{actor_name}님이 스스로 청중으로 전환했습니다."
+    if log_text:
+        await _messenger_emit_system_message(participant_ids, room_id, log_text)
+    await _messenger_emit_call_state(participant_ids, room_id)
+    return JSONResponse({"ok": True, "call": room_call, "room_id": int(room_id), "action": action})
 
 
 @router.get("/api/messenger/bootstrap")
@@ -6430,12 +7389,24 @@ async def api_messenger_create_room(request: Request, payload: dict[str, Any] = 
         else:
             room_name = str(payload.get("name") or "").strip()
             topic = str(payload.get("topic") or "").strip()
+            channel_category = str(payload.get("channel_category") or "").strip()
+            channel_mode = _messenger_channel_mode(payload.get("channel_mode"))
+            call_permissions = payload.get("call_permissions")
             member_ids = [
                 str(user_id or "").strip()
                 for user_id in (payload.get("member_ids") or [])
                 if str(user_id or "").strip() in approved_user_ids
             ]
-            room_id = await asyncio.to_thread(chat_repo.create_group_room, room_name, current_user_id, member_ids, topic)
+            room_id = await asyncio.to_thread(
+                chat_repo.create_group_room,
+                room_name,
+                current_user_id,
+                member_ids,
+                topic,
+                channel_category=channel_category,
+                channel_mode=channel_mode,
+                call_permissions=call_permissions,
+            )
     except ValueError as exc:
         return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
     except Exception as exc:
@@ -6472,6 +7443,17 @@ async def api_messenger_update_room(
             room_id,
             name=str(payload.get("name") or room.get("name") or "").strip(),
             topic=str(payload.get("topic") or "").strip(),
+            channel_category=(
+                str(payload.get("channel_category") or "").strip()
+                if "channel_category" in payload
+                else str(room.get("channel_category") or "").strip()
+            ),
+            channel_mode=(
+                _messenger_channel_mode(payload.get("channel_mode"))
+                if "channel_mode" in payload
+                else _messenger_channel_mode(room.get("channel_mode"))
+            ),
+            call_permissions=payload.get("call_permissions") if "call_permissions" in payload else room.get("call_permissions"),
         )
     except ValueError as exc:
         return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
@@ -6529,7 +7511,7 @@ async def api_messenger_invite_room_members(
         return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
     if str(room.get("room_type") or "").strip().lower() == "dm":
         return JSONResponse({"ok": False, "detail": "1:1 대화방에는 멤버를 초대할 수 없습니다."}, status_code=400)
-    if not _messenger_can_manage_room(room, current_user_id, _request_user_role(request)):
+    if not _messenger_can_invite_room_members(room, current_user_id, _request_user_role(request)):
         return JSONResponse({"ok": False, "detail": "멤버 초대 권한이 없습니다."}, status_code=403)
 
     user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
@@ -6570,6 +7552,263 @@ async def api_messenger_invite_room_members(
     await _messenger_emit_notifications_update(participant_ids)
     room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
     return JSONResponse({"ok": True, "room": room_payload, "member_ids": added_member_ids})
+
+
+@router.patch("/api/messenger/rooms/{room_id}/members/{target_user_id}")
+async def api_messenger_update_room_member_role(
+    request: Request,
+    room_id: int,
+    target_user_id: str,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    if str(room.get("room_type") or "").strip().lower() == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방에서는 멤버 역할을 변경할 수 없습니다."}, status_code=400)
+
+    normalized_target_user_id = str(target_user_id or "").strip()
+    if not normalized_target_user_id:
+        return JSONResponse({"ok": False, "detail": "대상 사용자를 선택해주세요."}, status_code=400)
+    if not _messenger_room_has_member(room, normalized_target_user_id):
+        return JSONResponse({"ok": False, "detail": "현재 이 대화방에 참여 중인 구성원이 아닙니다."}, status_code=404)
+
+    next_member_role = _messenger_member_role(payload.get("member_role") or payload.get("role"))
+    if next_member_role not in {"admin", "member"}:
+        return JSONResponse({"ok": False, "detail": "지원하지 않는 멤버 역할입니다."}, status_code=400)
+    if not _messenger_can_change_room_member_role(
+        room,
+        current_user_id,
+        normalized_target_user_id,
+        next_member_role,
+        _request_user_role(request),
+    ):
+        return JSONResponse({"ok": False, "detail": "이 구성원의 역할을 변경할 권한이 없습니다."}, status_code=403)
+
+    current_member_role = _messenger_room_member_role(room, normalized_target_user_id)
+    if current_member_role == next_member_role:
+        room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+        return JSONResponse(
+            {
+                "ok": True,
+                "room": room_payload,
+                "room_id": int(room_id),
+                "target_user_id": normalized_target_user_id,
+                "member_role": next_member_role,
+            }
+        )
+
+    try:
+        updated = await asyncio.to_thread(chat_repo.update_room_member_role, room_id, normalized_target_user_id, next_member_role)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"멤버 역할 변경 실패: {exc}"}, status_code=500)
+
+    if not updated:
+        return JSONResponse({"ok": False, "detail": "멤버 역할을 변경하지 못했습니다."}, status_code=500)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+    actor_name = _messenger_member_display_name(room, current_user_id, user_directory)
+    target_name = _messenger_member_display_name(room, normalized_target_user_id, user_directory)
+    system_message = await asyncio.to_thread(
+        chat_repo.insert_system_message,
+        room_id,
+        f"{actor_name}님이 {target_name}님을 {'ADMIN' if next_member_role == 'admin' else '일반 멤버'}로 변경했습니다.",
+    )
+    await _messenger_emit_message_created(participant_ids, system_message)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "room": room_payload,
+            "room_id": int(room_id),
+            "target_user_id": normalized_target_user_id,
+            "member_role": next_member_role,
+        }
+    )
+
+
+@router.delete("/api/messenger/rooms/{room_id}/members/{target_user_id}")
+async def api_messenger_remove_room_member(
+    request: Request,
+    room_id: int,
+    target_user_id: str,
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    if str(room.get("room_type") or "").strip().lower() == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방에서는 구성원을 제거할 수 없습니다."}, status_code=400)
+
+    normalized_target_user_id = str(target_user_id or "").strip()
+    if not normalized_target_user_id:
+        return JSONResponse({"ok": False, "detail": "대상 사용자를 선택해주세요."}, status_code=400)
+    if not _messenger_room_has_member(room, normalized_target_user_id):
+        return JSONResponse({"ok": False, "detail": "현재 이 대화방에 참여 중인 구성원이 아닙니다."}, status_code=404)
+    if not _messenger_can_remove_room_member(room, current_user_id, normalized_target_user_id, _request_user_role(request)):
+        return JSONResponse({"ok": False, "detail": "이 구성원을 제거할 권한이 없습니다."}, status_code=403)
+
+    previous_participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    remaining_participant_ids = [user_id for user_id in previous_participant_ids if user_id != normalized_target_user_id]
+    removed_call_participant = await _MESSENGER_CALL_HUB.get_participant(room_id, normalized_target_user_id)
+    previous_room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id) if removed_call_participant else None
+    if removed_call_participant:
+        next_room_call = await _MESSENGER_CALL_HUB.leave_room(room_id, normalized_target_user_id)
+        if (not next_room_call) and previous_room_call:
+            await _messenger_finalize_call_log(room_id, previous_room_call, notify_user_ids=remaining_participant_ids)
+
+    try:
+        removed = await asyncio.to_thread(chat_repo.remove_room_member, room_id, normalized_target_user_id)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"멤버 제거 실패: {exc}"}, status_code=500)
+
+    if not removed:
+        return JSONResponse({"ok": False, "detail": "구성원을 제거하지 못했습니다."}, status_code=500)
+
+    if removed_call_participant:
+        await _messenger_emit_call_admin_control(
+            normalized_target_user_id,
+            room_id=room_id,
+            action="disconnect",
+            actor_user_id=current_user_id,
+        )
+    user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+    actor_name = _messenger_member_display_name(room, current_user_id, user_directory)
+    target_name = _messenger_member_display_name(room, normalized_target_user_id, user_directory)
+    if remaining_participant_ids:
+        system_message = await asyncio.to_thread(
+            chat_repo.insert_system_message,
+            room_id,
+            f"{actor_name}님이 {target_name}님을 채널에서 제거했습니다.",
+        )
+        await _messenger_emit_message_created(remaining_participant_ids, system_message)
+    await _messenger_emit_room_updates(previous_participant_ids, room_id)
+    await _messenger_emit_notifications_update(previous_participant_ids)
+    await _messenger_emit_call_state(remaining_participant_ids, room_id)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "room": room_payload,
+            "room_id": int(room_id),
+            "target_user_id": normalized_target_user_id,
+        }
+    )
+
+
+@router.post("/api/messenger/rooms/{room_id}/members/{target_user_id}/transfer-owner")
+async def api_messenger_transfer_room_owner(
+    request: Request,
+    room_id: int,
+    target_user_id: str,
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    if str(room.get("room_type") or "").strip().lower() == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방에서는 owner를 이전할 수 없습니다."}, status_code=400)
+
+    normalized_target_user_id = str(target_user_id or "").strip()
+    if not normalized_target_user_id:
+        return JSONResponse({"ok": False, "detail": "대상 사용자를 선택해주세요."}, status_code=400)
+    if not _messenger_can_transfer_room_owner(room, current_user_id, normalized_target_user_id, _request_user_role(request)):
+        return JSONResponse({"ok": False, "detail": "이 구성원에게 owner를 이전할 권한이 없습니다."}, status_code=403)
+
+    try:
+        transferred = await asyncio.to_thread(chat_repo.transfer_room_owner, room_id, normalized_target_user_id)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"owner 이전 실패: {exc}"}, status_code=500)
+
+    if not transferred:
+        return JSONResponse({"ok": False, "detail": "owner를 이전하지 못했습니다."}, status_code=500)
+
+    participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+    actor_name = _messenger_member_display_name(room, current_user_id, user_directory)
+    target_name = _messenger_member_display_name(room, normalized_target_user_id, user_directory)
+    system_message = await asyncio.to_thread(
+        chat_repo.insert_system_message,
+        room_id,
+        f"{actor_name}님이 {target_name}님에게 OWNER 권한을 이전했습니다.",
+    )
+    await _messenger_emit_message_created(participant_ids, system_message)
+    await _messenger_emit_room_updates(participant_ids, room_id)
+    room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "room": room_payload,
+            "room_id": int(room_id),
+            "target_user_id": normalized_target_user_id,
+        }
+    )
+
+
+@router.post("/api/messenger/rooms/{room_id}/leave")
+async def api_messenger_leave_room(
+    request: Request,
+    room_id: int,
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방을 찾을 수 없습니다."}, status_code=404)
+    room_type = str(room.get("room_type") or "").strip().lower()
+    if room_type == "dm":
+        return JSONResponse({"ok": False, "detail": "1:1 대화방에서는 나가기 대신 대화를 닫아주세요."}, status_code=400)
+    if _messenger_is_system_room(room):
+        return JSONResponse({"ok": False, "detail": "기본 채널에서는 나갈 수 없습니다."}, status_code=400)
+
+    my_role = _messenger_room_member_role(room, current_user_id)
+    if my_role == "owner":
+        return JSONResponse({"ok": False, "detail": "owner는 먼저 다른 구성원에게 권한을 이전한 뒤 나갈 수 있습니다."}, status_code=400)
+
+    previous_participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+    remaining_participant_ids = [user_id for user_id in previous_participant_ids if user_id != current_user_id]
+    self_call_participant = await _MESSENGER_CALL_HUB.get_participant(room_id, current_user_id)
+    previous_room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id) if self_call_participant else None
+    if self_call_participant:
+        next_room_call = await _MESSENGER_CALL_HUB.leave_room(room_id, current_user_id)
+        if (not next_room_call) and previous_room_call:
+            await _messenger_finalize_call_log(room_id, previous_room_call, notify_user_ids=remaining_participant_ids)
+
+    try:
+        removed = await asyncio.to_thread(chat_repo.remove_room_member, room_id, current_user_id)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"채널 나가기 실패: {exc}"}, status_code=500)
+
+    if not removed:
+        return JSONResponse({"ok": False, "detail": "채널에서 나가지 못했습니다."}, status_code=500)
+
+    user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+    actor_name = _messenger_member_display_name(room, current_user_id, user_directory)
+    if remaining_participant_ids:
+        system_message = await asyncio.to_thread(
+            chat_repo.insert_system_message,
+            room_id,
+            f"{actor_name}님이 채널을 나갔습니다.",
+        )
+        await _messenger_emit_message_created(remaining_participant_ids, system_message)
+    await _messenger_emit_room_updates(previous_participant_ids, room_id)
+    await _messenger_emit_notifications_update(previous_participant_ids)
+    await _messenger_emit_call_state(remaining_participant_ids, room_id)
+    return JSONResponse({"ok": True, "room_id": int(room_id)})
 
 
 @router.post("/api/messenger/rooms/{room_id}/messages")

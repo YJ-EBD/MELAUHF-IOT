@@ -5,6 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETTINGS_FILE="$PROJECT_DIR/settings.env"
 BIN_DIR="$PROJECT_DIR/bin"
 LIVEKIT_BIN="$BIN_DIR/livekit-server"
+CONFIG_FILE="$PROJECT_DIR/deploy/livekit/livekit.yml"
 LOG_FILE="$PROJECT_DIR/livekit.log"
 PID_FILE="$PROJECT_DIR/livekit.pid"
 SYSTEMD_SERVICE="abbas-livekit.service"
@@ -77,16 +78,22 @@ start_server() {
   fi
 
   local bind_ip="${LIVEKIT_BIND_IP:-0.0.0.0}"
-  local node_ip="${LIVEKIT_NODE_IP:-$(detect_host_ip)}"
+  local livekit_api_key="${LIVEKIT_API_KEY:-}"
+  local livekit_api_secret="${LIVEKIT_API_SECRET:-}"
 
-  if [[ -z "$node_ip" ]]; then
-    echo "Could not determine LIVEKIT_NODE_IP" >&2
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "LiveKit config file is missing: $CONFIG_FILE" >&2
+    exit 1
+  fi
+
+  if [[ -z "$livekit_api_key" || -z "$livekit_api_secret" ]]; then
+    echo "LIVEKIT_API_KEY / LIVEKIT_API_SECRET are required" >&2
     exit 1
   fi
 
   cd "$PROJECT_DIR"
   nohup env -u REDIS_HOST -u REDIS_PASSWORD -u REDIS_DB -u REDIS_TIMEOUT_SEC \
-    "$LIVEKIT_BIN" --dev --bind "$bind_ip" --node-ip "$node_ip" > "$LOG_FILE" 2>&1 &
+    "$LIVEKIT_BIN" --bind "$bind_ip" --config "$CONFIG_FILE" --keys "${livekit_api_key}: ${livekit_api_secret}" > "$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
   sleep 2
 
@@ -98,7 +105,7 @@ start_server() {
 
   echo "LiveKit started"
   echo "PID: $(read_pid)"
-  echo "URL: ${LIVEKIT_URL:-ws://$node_ip:7880}"
+  echo "URL: ${LIVEKIT_URL:-}"
 }
 
 stop_server() {

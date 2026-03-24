@@ -17,6 +17,7 @@
       showTyping: true,
       enterToSend: true,
     },
+    viewMode: "talk",
     activeRoomId: Number(config.requestedRoomId || 0),
     activeRoom: null,
     isOpen: false,
@@ -43,6 +44,8 @@
     popupOffsetX: 0,
     popupOffsetY: 0,
     popupPersistTimer: 0,
+    initPromise: null,
+    authLost: false,
     dragActive: false,
     dragStartX: 0,
     dragStartY: 0,
@@ -57,6 +60,7 @@
       joinedRoomId: 0,
       joining: false,
       requestedMode: "",
+      requestedAudioEnabled: true,
       audioEnabled: true,
       cameraEnabled: false,
       sharingScreen: false,
@@ -67,6 +71,28 @@
       cameraStream: null,
       screenStream: null,
       localStream: null,
+      deafened: false,
+      pushToTalk: false,
+      pushToTalkPressed: false,
+      layoutMode: "grid",
+      pinnedTrackId: "",
+      participantVolumes: {},
+      callSnapshotsByRoomId: {},
+      incomingInvitesByRoomId: {},
+      serverMutedRoomIds: {},
+      devices: {
+        audioinput: [],
+        audiooutput: [],
+        videoinput: [],
+      },
+      selectedDevices: {
+        audioinput: "",
+        audiooutput: "",
+        videoinput: "",
+      },
+      audioOutputSupported: false,
+      seenLiveCallIdsByRoomId: {},
+      micBeforeDeafen: true,
       peersByUserId: {},
       remoteStreamsByUserId: {},
       pendingSignalsByUserId: {},
@@ -85,6 +111,52 @@
       url: "/static/img/messenger-room-presets/preset-" + String(itemNo).padStart(2, "0") + ".svg",
     };
   });
+  const CALL_PERMISSION_OPTIONS = [
+    { value: "member", label: "모든 멤버" },
+    { value: "admin", label: "ADMIN 이상" },
+    { value: "owner", label: "OWNER만" },
+    { value: "none", label: "금지" },
+  ];
+  const CHANNEL_MODE_OPTIONS = [
+    { value: "voice", label: "VOICE", help: "일반 음성채널처럼 누구나 바로 입장해서 마이크, 카메라, 화면공유를 사용할 수 있습니다." },
+    { value: "stage", label: "STAGE", help: "스테이지 채널처럼 청중 중심으로 운영하고, 발언 권한은 운영자 위주로 제한할 수 있습니다." },
+  ];
+  const CALL_PERMISSION_FIELDS = [
+    { key: "connect", label: "통화 참여", help: "채널에 입장해서 음성 통화에 연결할 수 있습니다." },
+    { key: "start_call", label: "새 통화 열기", help: "아무도 연결되어 있지 않을 때 먼저 통화를 시작할 수 있습니다." },
+    { key: "speak", label: "마이크 송출", help: "마이크를 켜고 음성을 송출할 수 있습니다." },
+    { key: "video", label: "카메라 송출", help: "카메라 영상을 켜고 전체 그리드에 표시할 수 있습니다." },
+    { key: "screen_share", label: "화면공유", help: "브라우저 화면 또는 창을 공유할 수 있습니다." },
+    { key: "invite_members", label: "멤버 초대", help: "이 채널에 새로운 멤버를 초대할 수 있습니다." },
+    { key: "moderate", label: "통화 운영", help: "서버 음소거, 화면 중지, 연결 종료 같은 운영 제어를 사용할 수 있습니다." },
+  ];
+  const DEFAULT_ROOM_CALL_PERMISSIONS = {
+    connect: "member",
+    start_call: "member",
+    speak: "member",
+    video: "member",
+    screen_share: "member",
+    invite_members: "admin",
+    moderate: "admin",
+  };
+  const DEFAULT_DM_CALL_PERMISSIONS = {
+    connect: "member",
+    start_call: "member",
+    speak: "member",
+    video: "member",
+    screen_share: "member",
+    invite_members: "none",
+    moderate: "none",
+  };
+  const DEFAULT_STAGE_CALL_PERMISSIONS = {
+    connect: "member",
+    start_call: "admin",
+    speak: "admin",
+    video: "none",
+    screen_share: "none",
+    invite_members: "admin",
+    moderate: "admin",
+  };
 
   function $(id) {
     return document.getElementById(id);
@@ -105,6 +177,93 @@
 
   function clampNumber(value, min, max) {
     return Math.min(Math.max(value, min), max);
+  }
+
+  function delayMs(ms) {
+    return new Promise(function (resolve) {
+      window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+    });
+  }
+
+  function normalizeCallPermissionLevel(value, fallback) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (normalized === "member" || normalized === "admin" || normalized === "owner" || normalized === "none") {
+      return normalized;
+    }
+    if (normalized === "all" || normalized === "everyone") return "member";
+    if (normalized === "deny" || normalized === "disabled" || normalized === "nobody" || normalized === "off") return "none";
+    return normalizeText(fallback).toLowerCase() || "member";
+  }
+
+  function normalizeChannelMode(value, fallback) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (normalized === "stage") return "stage";
+    if (normalized === "voice") return "voice";
+    return normalizeText(fallback).toLowerCase() === "stage" ? "stage" : "voice";
+  }
+
+  function channelModeLabel(value) {
+    return normalizeChannelMode(value, "voice") === "stage" ? "STAGE" : "VOICE";
+  }
+
+  function roomChannelMode(room) {
+    const targetRoom = room || {};
+    if (targetRoom.is_direct) return "voice";
+    return normalizeChannelMode(targetRoom.channel_mode, "voice");
+  }
+
+  function isStageRoom(room) {
+    return roomChannelMode(room) === "stage";
+  }
+
+  function normalizeStageRole(value) {
+    return normalizeText(value).toLowerCase() === "speaker" ? "speaker" : "audience";
+  }
+
+  function callParticipantStageRole(participant) {
+    return normalizeStageRole(participant && participant.stage_role);
+  }
+
+  function callParticipantSpeakerRequested(participant) {
+    return !!(participant && participant.speaker_requested);
+  }
+
+  function currentUserCallParticipant(room) {
+    const targetRoom = room || state.activeRoom;
+    if (!targetRoom) return null;
+    return callParticipant(callForRoom(targetRoom.id), currentUserId());
+  }
+
+  function roomChannelCategory(room) {
+    const targetRoom = room || {};
+    return normalizeText(targetRoom.channel_category || "");
+  }
+
+  function defaultCallPermissionsForRoom(room) {
+    const targetRoom = room || {};
+    if (targetRoom && targetRoom.is_direct) return Object.assign({}, DEFAULT_DM_CALL_PERMISSIONS);
+    if (roomChannelMode(targetRoom) === "stage") return Object.assign({}, DEFAULT_STAGE_CALL_PERMISSIONS);
+    return Object.assign({}, DEFAULT_ROOM_CALL_PERMISSIONS);
+  }
+
+  function callPermissionLabel(value) {
+    const normalized = normalizeCallPermissionLevel(value, "member");
+    if (normalized === "admin") return "ADMIN 이상";
+    if (normalized === "owner") return "OWNER만";
+    if (normalized === "none") return "금지";
+    return "모든 멤버";
+  }
+
+  function roomCallPermissions(room) {
+    const targetRoom = room || {};
+    const result = defaultCallPermissionsForRoom(targetRoom);
+    const payload = targetRoom.call_permissions && typeof targetRoom.call_permissions === "object"
+      ? targetRoom.call_permissions
+      : {};
+    CALL_PERMISSION_FIELDS.forEach(function (field) {
+      result[field.key] = normalizeCallPermissionLevel(payload[field.key], result[field.key]);
+    });
+    return result;
   }
 
   function avatarInitialFor(displayName, fallback) {
@@ -140,6 +299,11 @@
       content_type: normalizeText(payload.content_type),
       icon: messageType === "image" ? "bi-image-fill" : (/\.pdf$/i.test(name) ? "bi-file-earmark-pdf-fill" : "bi-file-earmark-fill"),
     };
+  }
+
+  function isSystemMessage(message) {
+    const payload = message || {};
+    return normalizeText(payload.message_type).toLowerCase() === "system" || normalizeText(payload.sender_user_id).toLowerCase() === "system";
   }
 
   function formatRichText(text) {
@@ -290,6 +454,136 @@
 
   function canManageRoom(room) {
     return !!(room && room.can_manage_room);
+  }
+
+  function normalizeMemberRole(role) {
+    const value = normalizeText(role).toLowerCase();
+    if (value === "owner" || value === "admin" || value === "member") return value;
+    return "member";
+  }
+
+  function memberRoleRank(role) {
+    const value = normalizeMemberRole(role);
+    if (value === "owner") return 30;
+    if (value === "admin") return 20;
+    return 10;
+  }
+
+  function currentRoomMemberRole(room) {
+    return normalizeMemberRole(room && room.member_role);
+  }
+
+  function canInviteMembers(room) {
+    return !!(room && room.can_invite_members);
+  }
+
+  function canJoinCall(room) {
+    return !!(room && room.can_join_call !== false);
+  }
+
+  function canStartCall(room) {
+    if (!room) return false;
+    return room.can_start_call !== false;
+  }
+
+  function canSpeakInCall(room) {
+    if (!room) return false;
+    const participant = currentUserCallParticipant(room);
+    if (isStageRoom(room) && participant) {
+      return callParticipantStageRole(participant) === "speaker";
+    }
+    return room.can_speak_in_call !== false;
+  }
+
+  function canUseVideoInCall(room) {
+    if (!room) return false;
+    const participant = currentUserCallParticipant(room);
+    if (isStageRoom(room) && participant && callParticipantStageRole(participant) !== "speaker") {
+      return false;
+    }
+    return room.can_use_video_in_call !== false;
+  }
+
+  function canShareScreenInCall(room) {
+    if (!room) return false;
+    const participant = currentUserCallParticipant(room);
+    if (isStageRoom(room) && participant && callParticipantStageRole(participant) !== "speaker") {
+      return false;
+    }
+    return room.can_share_screen_in_call !== false;
+  }
+
+  function canModerateCall(room) {
+    return !!(room && room.can_moderate_call);
+  }
+
+  function canManageMembers(room) {
+    return !!(room && room.can_manage_members);
+  }
+
+  function canManageMemberRoles(room) {
+    return !!(room && room.can_manage_member_roles);
+  }
+
+  function canLeaveRoom(room) {
+    return !!(room && !room.is_direct && !room.is_system_room);
+  }
+
+  function effectiveActorMemberRank(room) {
+    if (!room) return 0;
+    if (room.can_manage_room) return memberRoleRank("owner");
+    return memberRoleRank(currentRoomMemberRole(room));
+  }
+
+  function canChangeTargetMemberRole(room, userId, nextRole) {
+    const targetRoom = room || state.activeRoom;
+    const targetUserId = normalizeText(userId);
+    const normalizedNextRole = normalizeMemberRole(nextRole);
+    if (!targetRoom || !targetUserId || !canManageMemberRoles(targetRoom)) return false;
+    if (targetUserId === currentUserId()) return false;
+    if (normalizedNextRole !== "admin" && normalizedNextRole !== "member") return false;
+    const member = findMemberByUserId(targetRoom, targetUserId);
+    if (!member) return false;
+    const currentRole = normalizeMemberRole(member.member_role);
+    const actorRank = effectiveActorMemberRank(targetRoom);
+    const targetRank = memberRoleRank(currentRole);
+    if (currentRole === "owner") return false;
+    if (targetRank >= actorRank) return false;
+    if (currentRole === normalizedNextRole) return false;
+    return true;
+  }
+
+  function canRemoveTargetMember(room, userId) {
+    const targetRoom = room || state.activeRoom;
+    const targetUserId = normalizeText(userId);
+    if (!targetRoom || !targetUserId || !canManageMembers(targetRoom)) return false;
+    if (targetUserId === currentUserId()) return false;
+    const member = findMemberByUserId(targetRoom, targetUserId);
+    if (!member) return false;
+    const targetRole = normalizeMemberRole(member.member_role);
+    const actorRank = effectiveActorMemberRank(targetRoom);
+    const targetRank = memberRoleRank(targetRole);
+    if (targetRole === "owner") return false;
+    if (targetRank >= actorRank) return false;
+    return true;
+  }
+
+  function canTransferOwnerToTarget(room, userId) {
+    const targetRoom = room || state.activeRoom;
+    const targetUserId = normalizeText(userId);
+    if (!targetRoom || !targetUserId) return false;
+    if (targetUserId === currentUserId()) return false;
+    if (targetRoom.is_direct || targetRoom.is_system_room) return false;
+    if (!(canManageRoom(targetRoom) || currentRoomMemberRole(targetRoom) === "owner")) return false;
+    const member = findMemberByUserId(targetRoom, targetUserId);
+    if (!member) return false;
+    return normalizeMemberRole(member.member_role) !== "owner";
+  }
+
+  function isServerMutedInRoom(roomId) {
+    const targetRoomId = Number(roomId || state.call.joinedRoomId || 0);
+    if (targetRoomId <= 0) return false;
+    return !!state.call.serverMutedRoomIds[targetRoomId];
   }
 
   function canEditMessage(message) {
@@ -448,8 +742,7 @@
     if (!notificationId || state.shownBrowserNotificationIds.has(notificationId)) return;
     if (!shouldShowBrowserNotification()) return;
     const roomId = Number(payload.room_id || 0);
-    const messageId = Number(payload.message_id || 0);
-    if (roomId <= 0 || messageId <= 0) return;
+    if (roomId <= 0) return;
 
     const title = normalizeText(payload.room_title || payload.sender_display_name || "새 메시지");
     const body = normalizeText(payload.summary || payload.preview || "새 메시지가 도착했습니다.");
@@ -475,7 +768,7 @@
       try {
         window.focus();
       } catch (_) {}
-      openRoom(roomId, messageId);
+      openNotificationItem(payload).catch(function () {});
       try {
         notification.close();
       } catch (_) {}
@@ -641,10 +934,47 @@
     return String(fallback || "");
   }
 
+  function roomPermissionSelectMarkup(field, currentValue) {
+    const fieldKey = normalizeText(field && field.key);
+    const fieldId = "swalMessengerPerm_" + fieldKey;
+    return [
+      '<label class="messenger-room-permission-field" for="' + escapeAttribute(fieldId) + '">',
+      '<span class="messenger-room-permission-field__label">' + escapeHtml((field && field.label) || fieldKey) + "</span>",
+      '<span class="messenger-room-permission-field__help">' + escapeHtml((field && field.help) || "") + "</span>",
+      '<select id="' + escapeAttribute(fieldId) + '" class="form-control app-swal-field messenger-room-permission-field__select" data-room-permission-key="' + escapeAttribute(fieldKey) + '">',
+      CALL_PERMISSION_OPTIONS.map(function (option) {
+        const optionValue = normalizeCallPermissionLevel(option.value, "member");
+        return '<option value="' + escapeAttribute(optionValue) + '"' + (normalizeCallPermissionLevel(currentValue, "member") === optionValue ? " selected" : "") + ">" + escapeHtml(option.label) + "</option>";
+      }).join(""),
+      "</select>",
+      "</label>",
+    ].join("");
+  }
+
+  function roomChannelModeSelectMarkup(currentValue) {
+    const currentMode = normalizeChannelMode(currentValue, "voice");
+    return [
+      '<label class="messenger-room-permission-field" for="swalMessengerRoomMode">',
+      '<span class="messenger-room-permission-field__label">ASCORD 채널 모드</span>',
+      '<span class="messenger-room-permission-field__help">VOICE는 일반 음성채널, STAGE는 청중 중심 발표 채널처럼 동작합니다.</span>',
+      '<select id="swalMessengerRoomMode" class="form-control app-swal-field messenger-room-permission-field__select">',
+      CHANNEL_MODE_OPTIONS.map(function (option) {
+        const optionValue = normalizeChannelMode(option.value, "voice");
+        return '<option value="' + escapeAttribute(optionValue) + '"' + (currentMode === optionValue ? " selected" : "") + ">" + escapeHtml(option.label) + "</option>";
+      }).join(""),
+      "</select>",
+      '<small class="messenger-room-permission-field__help" id="swalMessengerRoomModeHelp"></small>',
+      "</label>",
+    ].join("");
+  }
+
   async function promptRoomDetails(room) {
     const currentRoom = room || {};
     const currentName = normalizeText(currentRoom.title || currentRoom.name);
     const currentTopic = normalizeText(currentRoom.topic || "");
+    const currentCategory = roomChannelCategory(currentRoom);
+    const currentChannelMode = roomChannelMode(currentRoom);
+    const currentPermissions = roomCallPermissions(currentRoom);
     if (!hasSwal()) {
       const fallbackName = window.prompt("대화방 이름을 입력해주세요.", currentName);
       if (fallbackName === null) return null;
@@ -655,6 +985,9 @@
       return {
         name: normalizedName,
         topic: normalizeText(fallbackTopic),
+        channel_category: currentCategory,
+        channel_mode: currentChannelMode,
+        call_permissions: currentPermissions,
       };
     }
     const result = await fireDialog({
@@ -670,6 +1003,23 @@
         '<label class="form-label" for="swalMessengerRoomTopic">방 설명</label>',
         '<textarea id="swalMessengerRoomTopic" class="form-control app-swal-field app-swal-field--textarea" maxlength="120" placeholder="대화 목적이나 주제를 간단히 적어주세요."></textarea>',
         '</div>',
+        '<div class="app-swal-field-group">',
+        '<label class="form-label" for="swalMessengerRoomCategory">카테고리</label>',
+        '<input id="swalMessengerRoomCategory" class="form-control app-swal-field" maxlength="60" placeholder="예: PROJECT HUB, DESIGN, LIVE EVENTS">',
+        '<p class="messenger-room-permission-grid__foot">ASCORD 왼쪽 목록에서 같은 카테고리끼리 묶여 보입니다.</p>',
+        '</div>',
+        '<div class="app-swal-field-group">',
+        roomChannelModeSelectMarkup(currentChannelMode),
+        '</div>',
+        '<div class="app-swal-field-group">',
+        '<label class="form-label">ASCORD 통화 권한</label>',
+        '<div class="messenger-room-permission-grid">',
+        CALL_PERMISSION_FIELDS.map(function (field) {
+          return roomPermissionSelectMarkup(field, currentPermissions[field.key]);
+        }).join(""),
+        "</div>",
+        '<p class="messenger-room-permission-grid__foot">채널마다 통화 참여, 마이크, 카메라, 화면공유, 초대, 운영 권한을 따로 조정할 수 있습니다.</p>',
+        '</div>',
         '</div>',
       ].join(""),
       showCancelButton: true,
@@ -679,14 +1029,44 @@
       didOpen: function () {
         const nameInput = document.getElementById("swalMessengerRoomName");
         const topicInput = document.getElementById("swalMessengerRoomTopic");
+        const categoryInput = document.getElementById("swalMessengerRoomCategory");
+        const modeSelect = document.getElementById("swalMessengerRoomMode");
+        const modeHelp = document.getElementById("swalMessengerRoomModeHelp");
         if (nameInput) nameInput.value = currentName;
         if (topicInput) topicInput.value = currentTopic;
+        if (categoryInput) categoryInput.value = currentCategory;
+        function syncModePreset(shouldApplyPreset) {
+          const nextMode = normalizeChannelMode(modeSelect && modeSelect.value, currentChannelMode);
+          const nextDefaults = defaultCallPermissionsForRoom(Object.assign({}, currentRoom, { channel_mode: nextMode }));
+          if (modeHelp) {
+            const option = CHANNEL_MODE_OPTIONS.find(function (item) {
+              return normalizeChannelMode(item.value, "voice") === nextMode;
+            }) || CHANNEL_MODE_OPTIONS[0];
+            modeHelp.textContent = normalizeText(option && option.help);
+          }
+          if (!shouldApplyPreset) return;
+          CALL_PERMISSION_FIELDS.forEach(function (field) {
+            const select = document.getElementById("swalMessengerPerm_" + field.key);
+            if (select && nextDefaults[field.key]) select.value = nextDefaults[field.key];
+          });
+        }
+        if (modeSelect) {
+          modeSelect.value = currentChannelMode;
+          modeSelect.addEventListener("change", function () {
+            syncModePreset(true);
+          });
+        }
+        syncModePreset(false);
       },
       preConfirm: function () {
         const nameInput = document.getElementById("swalMessengerRoomName");
         const topicInput = document.getElementById("swalMessengerRoomTopic");
+        const categoryInput = document.getElementById("swalMessengerRoomCategory");
+        const modeSelect = document.getElementById("swalMessengerRoomMode");
         const nextName = normalizeText(nameInput && nameInput.value);
         const nextTopic = normalizeText(topicInput && topicInput.value);
+        const nextCategory = normalizeText(categoryInput && categoryInput.value);
+        const nextChannelMode = normalizeChannelMode(modeSelect && modeSelect.value, currentChannelMode);
         if (!nextName) {
           window.Swal.showValidationMessage("대화방 이름을 입력해주세요.");
           return false;
@@ -699,7 +1079,22 @@
           window.Swal.showValidationMessage("대화방 설명은 120자 이하만 입력할 수 있습니다.");
           return false;
         }
-        return { name: nextName, topic: nextTopic };
+        if (nextCategory.length > 60) {
+          window.Swal.showValidationMessage("카테고리 이름은 60자 이하만 입력할 수 있습니다.");
+          return false;
+        }
+        const nextPermissions = {};
+        CALL_PERMISSION_FIELDS.forEach(function (field) {
+          const select = document.getElementById("swalMessengerPerm_" + field.key);
+          nextPermissions[field.key] = normalizeCallPermissionLevel(select && select.value, currentPermissions[field.key]);
+        });
+        return {
+          name: nextName,
+          topic: nextTopic,
+          channel_category: nextCategory,
+          channel_mode: nextChannelMode,
+          call_permissions: nextPermissions,
+        };
       },
     });
     return result && result.isConfirmed ? result.value : null;
@@ -715,6 +1110,113 @@
 
   function preferencesStorageKey() {
     return "abbasMessengerPreferences";
+  }
+
+  function viewModeStorageKey() {
+    return "abbasMessengerViewMode";
+  }
+
+  function callSettingsStorageKey() {
+    return "abbasMessengerCallSettings";
+  }
+
+  function localNotificationsStorageKey() {
+    const userId = normalizeText((state.currentUser && state.currentUser.user_id) || "");
+    return userId ? ("abbasMessengerLocalNotifications:" + userId) : "";
+  }
+
+  function sanitizeViewMode(value) {
+    return normalizeText(value).toLowerCase() === "ascord" ? "ascord" : "talk";
+  }
+
+  function sanitizeCallLayout(value) {
+    return normalizeText(value).toLowerCase() === "speaker" ? "speaker" : "grid";
+  }
+
+  function sanitizeParticipantVolumes(values) {
+    const result = {};
+    const payload = values && typeof values === "object" ? values : {};
+    Object.keys(payload).forEach(function (key) {
+      const normalizedKey = normalizeText(key);
+      const normalizedValue = clampNumber(Number(payload[key]), 0, 1);
+      if (!normalizedKey || !Number.isFinite(normalizedValue)) return;
+      result[normalizedKey] = normalizedValue;
+    });
+    return result;
+  }
+
+  function sanitizeDeviceSelectionMap(values) {
+    const payload = values && typeof values === "object" ? values : {};
+    return {
+      audioinput: normalizeText(payload.audioinput),
+      audiooutput: normalizeText(payload.audiooutput),
+      videoinput: normalizeText(payload.videoinput),
+    };
+  }
+
+  function loadViewModePreference() {
+    let value = "talk";
+    try {
+      value = window.localStorage.getItem(viewModeStorageKey()) || "talk";
+    } catch (_) {
+      value = "talk";
+    }
+    state.viewMode = sanitizeViewMode(value);
+  }
+
+  function persistViewModePreference() {
+    try {
+      window.localStorage.setItem(viewModeStorageKey(), sanitizeViewMode(state.viewMode));
+    } catch (_) {}
+  }
+
+  function loadCallPreferences() {
+    let parsed = {};
+    try {
+      parsed = JSON.parse(window.localStorage.getItem(callSettingsStorageKey()) || "{}") || {};
+    } catch (_) {
+      parsed = {};
+    }
+    state.call.pushToTalk = !!parsed.pushToTalk;
+    state.call.layoutMode = sanitizeCallLayout(parsed.layoutMode);
+    state.call.participantVolumes = sanitizeParticipantVolumes(parsed.participantVolumes);
+    state.call.selectedDevices = sanitizeDeviceSelectionMap(parsed.selectedDevices);
+  }
+
+  function persistCallPreferences() {
+    try {
+      window.localStorage.setItem(callSettingsStorageKey(), JSON.stringify({
+        pushToTalk: !!state.call.pushToTalk,
+        layoutMode: sanitizeCallLayout(state.call.layoutMode),
+        participantVolumes: sanitizeParticipantVolumes(state.call.participantVolumes),
+        selectedDevices: sanitizeDeviceSelectionMap(state.call.selectedDevices),
+      }));
+    } catch (_) {}
+  }
+
+  function loadLocalNotifications() {
+    const storageKey = localNotificationsStorageKey();
+    if (!storageKey) return [];
+    let values = [];
+    try {
+      values = JSON.parse(window.localStorage.getItem(storageKey) || "[]") || [];
+    } catch (_) {
+      values = [];
+    }
+    return (Array.isArray(values) ? values : []).filter(function (item) {
+      return item && normalizeText(item.source) === "local_call";
+    });
+  }
+
+  function persistLocalNotifications() {
+    const storageKey = localNotificationsStorageKey();
+    if (!storageKey) return;
+    const values = (state.notifications || []).filter(function (item) {
+      return normalizeText((item || {}).source) === "local_call";
+    }).slice(0, 40);
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(values));
+    } catch (_) {}
   }
 
   function dismissedNotificationsStorageKey() {
@@ -948,6 +1450,9 @@
     const payload = await response.json().catch(function () {
       return {};
     });
+    if (response.status === 401) {
+      handleSocketAuthFailure();
+    }
     if (!response.ok || !payload.ok) {
       throw new Error(normalizeText(payload.detail) || ("HTTP " + response.status));
     }
@@ -959,6 +1464,8 @@
     const unreadTotal = Number((counts && counts.unread_total) || 0);
     const unreadNotificationTotal = Number((counts && counts.unread_notification_total) || (state.notificationCounts && state.notificationCounts.unread_total) || 0);
     const launcherUnreadTotal = Math.max(unreadTotal, unreadNotificationTotal);
+    const ascordLiveCount = unseenAscordLiveRoomCount(state.rooms);
+    const ascordPendingStageCount = ascordPendingStageRequestCount(state.rooms);
     if (dom.roomTotal) dom.roomTotal.textContent = String(roomTotal);
     if (dom.unreadTotal) dom.unreadTotal.textContent = String(unreadTotal);
     if (dom.onlineContacts) dom.onlineContacts.textContent = String((counts && counts.online_contacts) || 0);
@@ -966,8 +1473,9 @@
     if (dom.groupCount) dom.groupCount.textContent = String((counts && counts.group_total) || 0);
     if (dom.directCount) dom.directCount.textContent = String((counts && counts.direct_total) || 0);
     if (dom.railUnreadBadge) {
-      if (unreadTotal > 0) {
-        dom.railUnreadBadge.textContent = unreadTotal > 99 ? "99+" : String(unreadTotal);
+      const badgeValue = state.viewMode === "ascord" ? ascordPendingStageCount : unreadTotal;
+      if (badgeValue > 0) {
+        dom.railUnreadBadge.textContent = badgeValue > 99 ? "99+" : String(badgeValue);
         dom.railUnreadBadge.classList.remove("d-none");
       } else {
         dom.railUnreadBadge.textContent = "";
@@ -975,8 +1483,9 @@
       }
     }
     if (dom.railNotifyBadge) {
-      if (unreadNotificationTotal > 0) {
-        dom.railNotifyBadge.textContent = unreadNotificationTotal > 99 ? "99+" : String(unreadNotificationTotal);
+      const badgeValue = state.viewMode === "ascord" ? ascordLiveCount : unreadNotificationTotal;
+      if (badgeValue > 0) {
+        dom.railNotifyBadge.textContent = badgeValue > 99 ? "99+" : String(badgeValue);
         dom.railNotifyBadge.classList.remove("d-none");
       } else {
         dom.railNotifyBadge.textContent = "";
@@ -1064,6 +1573,7 @@
   function applyNotificationItems(items, counts) {
     state.notifications = Array.isArray(items) ? items.slice() : [];
     state.notificationCounts = notificationCountsFromItems(state.notifications);
+    persistLocalNotifications();
     if (counts) {
       setCounts(counts);
     } else {
@@ -1127,6 +1637,7 @@
   function buildNotificationItemFromMessage(message) {
     const payload = message || {};
     if (!payload || payload.is_mine) return null;
+    if (isSystemMessage(payload)) return null;
     const roomId = Number(payload.room_id || 0);
     if (roomId <= 0) return null;
     const room = findRoomById(roomId) || {};
@@ -1156,9 +1667,384 @@
     };
   }
 
+  function roomDisplayInfo(roomId) {
+    const room = findRoomById(roomId) || {};
+    return {
+      room: room,
+      title: normalizeText(room.title || "대화방"),
+      avatarInitial: normalizeText(room.avatar_initial || "C"),
+      avatarUrl: normalizeText(room.avatar_url),
+      roomType: normalizeText(room.room_type || (room.is_direct ? "direct" : (room.is_channel ? "channel" : "group"))),
+    };
+  }
+
+  function callPrimaryParticipant(roomCall) {
+    const participants = Array.isArray(roomCall && roomCall.participants) ? roomCall.participants : [];
+    return participants.length ? (participants[0] || {}) : {};
+  }
+
+  function callTimeText(timestampValue) {
+    const timestamp = Number(timestampValue || 0);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return "방금 전";
+    const diffSeconds = Math.max(0, Math.round((Date.now() - (timestamp * 1000)) / 1000));
+    if (diffSeconds < 60) return "방금 전";
+    if (diffSeconds < 3600) return Math.max(1, Math.floor(diffSeconds / 60)) + "분 전";
+    if (diffSeconds < 86400) return Math.max(1, Math.floor(diffSeconds / 3600)) + "시간 전";
+    return Math.max(1, Math.floor(diffSeconds / 86400)) + "일 전";
+  }
+
+  function callPreferredMode(roomCall) {
+    const participants = Array.isArray(roomCall && roomCall.participants) ? roomCall.participants : [];
+    const hasVideo = participants.some(function (participant) {
+      const mediaMode = normalizeText((participant || {}).media_mode).toLowerCase();
+      return !!((participant && participant.video_enabled) || (participant && participant.sharing_screen) || mediaMode === "video");
+    });
+    return hasVideo ? "video" : "audio";
+  }
+
+  function buildCallNotificationItem(roomCall, kind) {
+    const payload = roomCall || {};
+    const roomId = Number(payload.room_id || 0);
+    if (roomId <= 0) return null;
+    const kindValue = normalizeText(kind).toLowerCase() === "missed_call" ? "missed_call" : "call";
+    const info = roomDisplayInfo(roomId);
+    const primaryParticipant = callPrimaryParticipant(payload);
+    const callerName = normalizeText(primaryParticipant.display_name || info.title || "참여자");
+    const participantCount = Math.max(1, Number(payload.participant_count || (payload.participants && payload.participants.length) || 0));
+    const summary = kindValue === "missed_call"
+      ? callerName + " 외 " + participantCount + "명이 통화를 시작했지만 응답하지 않았습니다."
+      : callerName + " 외 " + participantCount + "명이 통화 중입니다.";
+    return {
+      id: "call-" + kindValue + "-" + normalizeText(payload.call_id || roomId + "-" + Date.now()),
+      source: "local_call",
+      call_id: normalizeText(payload.call_id || ""),
+      room_id: roomId,
+      message_id: 0,
+      kind: kindValue,
+      kind_label: kindValue === "missed_call" ? "부재중 통화" : "통화 초대",
+      is_unread: true,
+      room_title: info.title,
+      room_type: info.roomType,
+      room_avatar_initial: info.avatarInitial,
+      room_avatar_url: info.avatarUrl,
+      sender_display_name: callerName,
+      sender_avatar_initial: normalizeText(primaryParticipant.avatar_initial || avatarInitialFor(callerName, "C")),
+      sender_avatar_url: normalizeText(primaryParticipant.profile_image_url || ""),
+      sender_department: normalizeText(primaryParticipant.department || ""),
+      preview: kindValue === "missed_call" ? "통화 기록을 확인해보세요." : "지금 바로 참여할 수 있습니다.",
+      summary: summary,
+      created_at: new Date((Number(payload.updated_at || payload.started_at || 0) || (Date.now() / 1000)) * 1000).toISOString(),
+      time_text: callTimeText(Number(payload.updated_at || payload.started_at || 0)),
+      action_type: kindValue === "missed_call" ? "open-room" : "join-call",
+      preferred_mode: callPreferredMode(payload),
+    };
+  }
+
+  function buildStageRequestNotificationItem(room, roomCall, participant) {
+    const targetRoom = room || findRoomById(Number((roomCall && roomCall.room_id) || 0)) || {};
+    const payload = participant || {};
+    const roomId = Number((roomCall && roomCall.room_id) || (targetRoom && targetRoom.id) || 0);
+    const requesterUserId = normalizeText(payload.user_id);
+    if (roomId <= 0 || !requesterUserId) return null;
+    const info = roomDisplayInfo(roomId);
+    const profile = roomMemberProfile(targetRoom, requesterUserId, payload.display_name);
+    const requesterName = normalizeText(profile.display_name || payload.display_name || requesterUserId || "참여자");
+    return {
+      id: "stage-request-" + normalizeText((roomCall && roomCall.call_id) || String(roomId)) + "-" + requesterUserId,
+      source: "local_stage_request",
+      room_id: roomId,
+      message_id: 0,
+      kind: "stage_request",
+      kind_label: "발언 요청",
+      is_unread: true,
+      room_title: info.title,
+      room_type: info.roomType,
+      room_avatar_initial: info.avatarInitial,
+      room_avatar_url: info.avatarUrl,
+      user_id: requesterUserId,
+      sender_user_id: requesterUserId,
+      sender_display_name: requesterName,
+      sender_avatar_initial: normalizeText(profile.avatar_initial || avatarInitialFor(requesterName, "U")),
+      sender_avatar_url: normalizeText(profile.profile_image_url || ""),
+      sender_department: normalizeText(profile.department || "ASCORD STAGE"),
+      preview: requesterName + "님이 발표자로 발언 요청을 보냈습니다.",
+      summary: requesterName + "님이 STAGE 발언 요청을 보냈습니다.",
+      created_at: new Date().toISOString(),
+      time_text: "방금 전",
+      action_type: "open-ascord",
+    };
+  }
+
+  function notificationActionType(item) {
+    const explicit = normalizeText((item || {}).action_type);
+    if (explicit) return explicit;
+    const kind = normalizeText((item || {}).kind).toLowerCase();
+    if (kind === "call") return "join-call";
+    if (kind === "stage_request") return "open-ascord";
+    return "open-room";
+  }
+
+  async function openNotificationItem(item) {
+    const payload = item || {};
+    const roomId = Number(payload.room_id || 0);
+    const messageId = Number(payload.message_id || 0);
+    if (roomId <= 0) return;
+    const actionType = notificationActionType(payload);
+    if (actionType === "join-call") {
+      await acceptIncomingCall(roomId, normalizeText(payload.preferred_mode) === "video" ? "video" : "audio");
+      return;
+    }
+    if (actionType === "open-ascord") {
+      await openAscordRoom(roomId);
+      return;
+    }
+    await openRoom(roomId, messageId);
+  }
+
+  function removeLocalCallNotifications(callId, kinds) {
+    const targetCallId = normalizeText(callId);
+    if (!targetCallId) return;
+    const allowedKinds = (Array.isArray(kinds) ? kinds : [kinds]).map(function (value) {
+      return normalizeText(value).toLowerCase();
+    }).filter(Boolean);
+    let changed = false;
+    state.notifications = (state.notifications || []).filter(function (item) {
+      if (normalizeText((item || {}).source) !== "local_call") return true;
+      if (normalizeText((item || {}).call_id) !== targetCallId) return true;
+      if (allowedKinds.length && allowedKinds.indexOf(normalizeText((item || {}).kind).toLowerCase()) === -1) {
+        return true;
+      }
+      changed = true;
+      return false;
+    });
+    if (changed) {
+      applyNotificationItems(state.notifications, null);
+    }
+  }
+
+  function removeLocalStageRequestNotifications(roomId, userIds) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    const allowedUserIds = (Array.isArray(userIds) ? userIds : [userIds]).map(function (value) {
+      return normalizeText(value);
+    }).filter(Boolean);
+    let changed = false;
+    state.notifications = (state.notifications || []).filter(function (item) {
+      if (normalizeText((item || {}).source) !== "local_stage_request") return true;
+      if (Number((item && item.room_id) || 0) !== targetRoomId) return true;
+      if (allowedUserIds.length && allowedUserIds.indexOf(normalizeText((item && item.sender_user_id) || "").trim()) === -1 && allowedUserIds.indexOf(normalizeText((item && item.user_id) || "").trim()) === -1) {
+        return true;
+      }
+      changed = true;
+      return false;
+    });
+    if (changed) {
+      applyNotificationItems(state.notifications, null);
+    }
+  }
+
   function upsertNotificationItem(item) {
     const mergedItems = mergeNotificationItems(item ? [item] : []);
     applyNotificationItems(mergedItems, null);
+  }
+
+  function snapshotRoomCall(roomCall) {
+    const payload = roomCall || null;
+    const roomId = Number((payload && payload.room_id) || 0);
+    if (roomId <= 0) return null;
+    const participants = Array.isArray(payload && payload.participants) ? payload.participants : [];
+    return {
+      room_id: roomId,
+      call_id: normalizeText(payload.call_id || ""),
+      started_at: Number(payload.started_at || 0),
+      updated_at: Number(payload.updated_at || payload.started_at || 0),
+      participant_count: Math.max(0, Number(payload.participant_count || participants.length || 0)),
+      speaker_count: Math.max(0, Number(payload.speaker_count || 0)),
+      audience_count: Math.max(0, Number(payload.audience_count || 0)),
+      speaker_request_count: Math.max(0, Number(payload.speaker_request_count || 0)),
+      participants: participants.map(function (participant) {
+        return {
+          user_id: normalizeText((participant || {}).user_id),
+          display_name: normalizeText((participant || {}).display_name),
+          joined_at: Number((participant || {}).joined_at || 0),
+          media_mode: normalizeText((participant || {}).media_mode || "audio"),
+          audio_enabled: !!(participant && participant.audio_enabled),
+          video_enabled: !!(participant && participant.video_enabled),
+          sharing_screen: !!(participant && participant.sharing_screen),
+          server_muted: !!(participant && participant.server_muted),
+          source: normalizeText((participant || {}).source || "camera"),
+          stage_role: callParticipantStageRole(participant),
+          speaker_requested: callParticipantSpeakerRequested(participant),
+        };
+      }),
+    };
+  }
+
+  function currentUserInRoomCall(roomCall) {
+    return userInCall(roomCall, currentUserId());
+  }
+
+  function incomingInviteForRoom(roomId) {
+    return state.call.incomingInvitesByRoomId[Number(roomId || 0)] || null;
+  }
+
+  function removeIncomingCallInvite(roomId, options) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return null;
+    const invite = incomingInviteForRoom(targetRoomId);
+    if (!invite) return null;
+    const settings = options || {};
+    if (settings.dismiss) {
+      invite.dismissed = true;
+      invite.joined = false;
+      invite.dismissedAt = Date.now();
+      state.call.incomingInvitesByRoomId[targetRoomId] = invite;
+      removeLocalCallNotifications(invite.callId, "call");
+      return invite;
+    }
+    if (settings.joined) {
+      invite.joined = true;
+      invite.dismissed = true;
+      invite.joinedAt = Date.now();
+      state.call.incomingInvitesByRoomId[targetRoomId] = invite;
+      removeLocalCallNotifications(invite.callId, "call");
+      return invite;
+    }
+    delete state.call.incomingInvitesByRoomId[targetRoomId];
+    if (invite.callId) {
+      removeLocalCallNotifications(invite.callId, "call");
+    }
+    return invite;
+  }
+
+  function queueIncomingCallInvite(roomCall) {
+    const snapshot = snapshotRoomCall(roomCall);
+    const roomId = Number((snapshot && snapshot.room_id) || 0);
+    if (roomId <= 0) return null;
+    const room = findRoomById(roomId) || {};
+    if (room && room.is_muted) return null;
+    const callId = normalizeText((snapshot && snapshot.call_id) || ("room-" + roomId));
+    const existing = incomingInviteForRoom(roomId);
+    const nextInvite = existing && normalizeText(existing.callId) === callId
+      ? Object.assign({}, existing, { roomCall: snapshot, updatedAt: Date.now() })
+      : {
+          roomId: roomId,
+          callId: callId,
+          roomCall: snapshot,
+          dismissed: false,
+          joined: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+    state.call.incomingInvitesByRoomId[roomId] = nextInvite;
+    if (!nextInvite.dismissed && !nextInvite.joined) {
+      const notificationItem = buildCallNotificationItem(snapshot, "call");
+      if (notificationItem) {
+        upsertNotificationItem(notificationItem);
+        showBrowserNotification(notificationItem);
+      }
+    }
+    return nextInvite;
+  }
+
+  function renderIncomingCallInvites() {
+    if (!dom.callInviteStack) return;
+    const invites = Object.keys(state.call.incomingInvitesByRoomId || {}).map(function (key) {
+      return state.call.incomingInvitesByRoomId[key];
+    }).filter(function (invite) {
+      return invite && !invite.dismissed && !invite.joined && invite.roomCall;
+    }).sort(function (a, b) {
+      return Number((b && b.roomCall && b.roomCall.updated_at) || 0) - Number((a && a.roomCall && a.roomCall.updated_at) || 0);
+    });
+
+    if (!invites.length) {
+      dom.callInviteStack.innerHTML = "";
+      dom.callInviteStack.classList.remove("is-visible");
+      return;
+    }
+
+    dom.callInviteStack.classList.add("is-visible");
+    dom.callInviteStack.innerHTML = invites.map(function (invite) {
+      const roomCall = invite.roomCall || {};
+      const info = roomDisplayInfo(invite.roomId);
+      const primaryParticipant = callPrimaryParticipant(roomCall);
+      const callerName = normalizeText(primaryParticipant.display_name || info.title || "참여자");
+      const participantCount = Math.max(1, Number(roomCall.participant_count || (roomCall.participants && roomCall.participants.length) || 0));
+      const preferredMode = callPreferredMode(roomCall);
+      return [
+        '<section class="messenger-call-invite" data-call-invite-room-id="' + invite.roomId + '">',
+        '<div class="messenger-call-invite__copy">',
+        '<span class="messenger-call-invite__badge">' + escapeHtml(preferredMode === "video" ? "VIDEO CALL" : "VOICE CALL") + "</span>",
+        '<strong>' + escapeHtml(info.title) + "</strong>",
+        '<span>' + escapeHtml(callerName + " 외 " + participantCount + "명이 연결 중입니다. 지금 바로 합류할 수 있습니다.") + "</span>",
+        "</div>",
+        '<div class="messenger-call-invite__actions">',
+        '<button type="button" data-call-invite-action="join-audio" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-telephone-fill"></i><span>음성 참여</span></button>',
+        '<button type="button" data-call-invite-action="join-video" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-camera-video-fill"></i><span>영상 참여</span></button>',
+        '<button type="button" data-call-invite-action="open-talk" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-chat-dots-fill"></i><span>ABBAS Talk</span></button>',
+        '<button type="button" class="is-dismiss" data-call-invite-action="dismiss" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-x-lg"></i><span>거절</span></button>',
+        "</div>",
+        "</section>",
+      ].join("");
+    }).join("");
+  }
+
+  async function acceptIncomingCall(roomId, mode) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    const targetMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    if (!state.initialized) {
+      await init();
+    }
+    setNotificationMenuOpen(false);
+    setPopupOpen(true);
+    setViewMode("ascord");
+    await selectRoom(targetRoomId);
+    dismissNotificationsForRoom(targetRoomId);
+
+    const activeCall = callForRoom(targetRoomId) || (incomingInviteForRoom(targetRoomId) && incomingInviteForRoom(targetRoomId).roomCall) || null;
+    if (!activeCall || Number(activeCall.participant_count || 0) <= 0) {
+      removeIncomingCallInvite(targetRoomId);
+      renderIncomingCallInvites();
+      await showWarning("이미 종료된 통화입니다.", "통화 종료됨");
+      return;
+    }
+
+    if (Number(state.call.joinedRoomId || 0) === targetRoomId && !!currentLiveRoom()) {
+      if (targetMode === "video" && !state.call.cameraEnabled) {
+        await toggleCallCamera();
+      }
+      removeIncomingCallInvite(targetRoomId, { joined: true });
+      renderIncomingCallInvites();
+      return;
+    }
+
+    await startOrJoinCall(targetMode);
+    removeIncomingCallInvite(targetRoomId, { joined: true });
+    renderIncomingCallInvites();
+  }
+
+  function handleIncomingRoomCallTransition(previousCall, nextCall) {
+    const roomId = Number((nextCall && nextCall.room_id) || 0);
+    if (roomId <= 0 || !nextCall || Number(nextCall.participant_count || 0) <= 0) return;
+    if (currentUserInRoomCall(nextCall)) return;
+
+    const nextCallId = normalizeText(nextCall.call_id || "");
+    const previousCallId = normalizeText((previousCall && previousCall.call_id) || "");
+    const previousActive = !!previousCall && Number(previousCall.participant_count || 0) > 0;
+    const previousIncludedCurrentUser = currentUserInRoomCall(previousCall);
+    const isFreshCall = !previousActive || !previousCallId || previousCallId !== nextCallId;
+    if (!isFreshCall || previousIncludedCurrentUser) {
+      const existingInvite = incomingInviteForRoom(roomId);
+      if (existingInvite && normalizeText(existingInvite.callId) === nextCallId) {
+        existingInvite.roomCall = nextCall;
+        existingInvite.updatedAt = Date.now();
+        state.call.incomingInvitesByRoomId[roomId] = existingInvite;
+      }
+      return;
+    }
+
+    queueIncomingCallInvite(nextCall);
   }
 
   function recalcCounts() {
@@ -1217,10 +2103,16 @@
       const avatar = item.sender_avatar_url
         ? '<img src="' + escapeHtml(item.sender_avatar_url) + '" alt="' + escapeHtml(item.sender_display_name || item.room_title) + '">'
         : escapeHtml(item.sender_avatar_initial || item.room_avatar_initial || "A");
-      const kindClass = item.kind === "mention" ? " is-mention" : " is-message";
+      const kindClass = item.kind === "mention"
+        ? " is-mention"
+        : (item.kind === "call"
+          ? " is-call"
+          : (item.kind === "missed_call"
+            ? " is-missed"
+            : (item.kind === "stage_request" ? " is-stage" : " is-message")));
       const unreadClass = item.is_unread ? " is-unread" : "";
       return [
-        '<button class="topbar-notify-item' + unreadClass + '" type="button" data-notify-room-id="' + Number(item.room_id || 0) + '" data-notify-message-id="' + Number(item.message_id || 0) + '">',
+        '<button class="topbar-notify-item' + unreadClass + '" type="button" data-notify-room-id="' + Number(item.room_id || 0) + '" data-notify-message-id="' + Number(item.message_id || 0) + '" data-notify-action="' + escapeAttribute(notificationActionType(item)) + '" data-notify-mode="' + escapeAttribute(item.preferred_mode || "audio") + '">',
         '<span class="topbar-notify-item__avatar">' + avatar + "</span>",
         '<span class="topbar-notify-item__meta">',
         '<span class="topbar-notify-item__eyebrow">',
@@ -1240,17 +2132,19 @@
 
     Array.prototype.forEach.call(dom.notifyList.querySelectorAll("[data-notify-room-id]"), function (button) {
       button.addEventListener("click", function () {
-        const roomId = Number(button.getAttribute("data-notify-room-id") || 0);
-        const messageId = Number(button.getAttribute("data-notify-message-id") || 0);
-        if (roomId > 0) {
-          openRoom(roomId, messageId);
-        }
+        const item = {
+          room_id: Number(button.getAttribute("data-notify-room-id") || 0),
+          message_id: Number(button.getAttribute("data-notify-message-id") || 0),
+          action_type: normalizeText(button.getAttribute("data-notify-action")),
+          preferred_mode: normalizeText(button.getAttribute("data-notify-mode") || "audio"),
+        };
+        openNotificationItem(item).catch(function () {});
       });
     });
   }
 
   function updateNotificationState(payload, counts) {
-    const mergedItems = mergeNotificationItems(Array.isArray(payload && payload.items) ? payload.items : []);
+    const mergedItems = mergeNotificationItems(loadLocalNotifications().concat(Array.isArray(payload && payload.items) ? payload.items : []));
     applyNotificationItems(mergedItems, counts);
   }
 
@@ -1261,7 +2155,181 @@
     });
   }
 
+  function setRailButtonDisabled(button, disabled) {
+    if (!button) return;
+    button.disabled = !!disabled;
+    button.classList.toggle("is-disabled", !!disabled);
+  }
+
+  function setRailButtonVisible(button, visible) {
+    if (!button) return;
+    button.classList.toggle("d-none", !visible);
+  }
+
+  function setRailButtonIcon(button, iconClass) {
+    if (!button) return;
+    const icon = button.querySelector("i");
+    if (!icon) return;
+    icon.className = "bi " + normalizeText(iconClass || "bi-circle-fill");
+  }
+
+  function setRailButtonLabel(button, label) {
+    if (!button) return;
+    const text = normalizeText(label);
+    if (!text) return;
+    button.setAttribute("aria-label", text);
+    button.setAttribute("title", text);
+  }
+
+  function applyViewModeChrome() {
+    const isAscord = state.viewMode === "ascord";
+    if (dom.root) {
+      dom.root.classList.toggle("is-ascord", isAscord);
+      dom.root.classList.toggle("is-talk", !isAscord);
+    }
+    if (dom.talkModeBtn) dom.talkModeBtn.classList.toggle("is-active", !isAscord);
+    if (dom.ascordModeBtn) dom.ascordModeBtn.classList.toggle("is-active", isAscord);
+    if (dom.modePrimaryChip) dom.modePrimaryChip.textContent = isAscord ? "Voice Channels" : "Team Messenger";
+    if (dom.modeSecondaryChip) dom.modeSecondaryChip.textContent = isAscord ? "Discord Style Call Workspace" : "Realtime Collaboration";
+    if (dom.windowTitle) dom.windowTitle.textContent = isAscord ? "ASCORD" : "ABBAS Talk";
+    if (dom.newChatBtn) dom.newChatBtn.classList.remove("d-none");
+    if (dom.sidebarSearchBtn) dom.sidebarSearchBtn.setAttribute("aria-label", isAscord ? "채널 검색" : "검색");
+    if (dom.roomSearch) dom.roomSearch.setAttribute("placeholder", isAscord ? "ASCORD 채널 검색" : "채팅방 또는 메시지 검색");
+    setRailButtonVisible(dom.railRoomsBtn, true);
+    setRailButtonVisible(dom.railInboxBtn, true);
+    setRailButtonVisible(dom.railAlertsBtn, true);
+    setRailButtonVisible(dom.railComposeBtn, true);
+    setRailButtonVisible(dom.railRecentBtn, true);
+    setRailButtonVisible(dom.railGuideBtn, true);
+    setRailButtonVisible(dom.railSettingsBtn, true);
+    setRailButtonVisible(dom.railUnreadBtn, !isAscord);
+    setRailButtonVisible(dom.railStarredBtn, !isAscord);
+    setRailButtonDisabled(dom.railInboxBtn, false);
+    setRailButtonDisabled(dom.railAlertsBtn, false);
+    setRailButtonDisabled(dom.railComposeBtn, false);
+    setRailButtonDisabled(dom.railRecentBtn, false);
+    setRailButtonDisabled(dom.railGuideBtn, false);
+    setRailButtonDisabled(dom.railSettingsBtn, false);
+    if (isAscord) {
+      setRailButtonLabel(dom.railRoomsBtn, "ASCORD 채널");
+      setRailButtonLabel(dom.railInboxBtn, "LIVE 채널");
+      setRailButtonLabel(dom.railAlertsBtn, "발언 요청");
+      setRailButtonLabel(dom.railComposeBtn, "새 채널");
+      setRailButtonLabel(dom.railRecentBtn, "최근 채널");
+      setRailButtonLabel(dom.railGuideBtn, "ASCORD 가이드");
+      setRailButtonLabel(dom.railSettingsBtn, "ASCORD 설정");
+      setRailButtonIcon(dom.railRoomsBtn, "bi-volume-up-fill");
+      setRailButtonIcon(dom.railInboxBtn, "bi-broadcast");
+      setRailButtonIcon(dom.railAlertsBtn, "bi-megaphone-fill");
+      setRailButtonIcon(dom.railComposeBtn, "bi-plus-circle-fill");
+      setRailButtonIcon(dom.railRecentBtn, "bi-clock-history");
+      setRailButtonIcon(dom.railGuideBtn, "bi-broadcast-pin");
+      setRailButtonIcon(dom.railSettingsBtn, "bi-sliders");
+      return;
+    }
+    setRailButtonLabel(dom.railRoomsBtn, "팀 메신저");
+    setRailButtonLabel(dom.railInboxBtn, "수신함");
+    setRailButtonLabel(dom.railUnreadBtn, "안 읽은 대화");
+    setRailButtonLabel(dom.railStarredBtn, "즐겨찾기");
+    setRailButtonLabel(dom.railAlertsBtn, "멘션 및 알림");
+    setRailButtonLabel(dom.railComposeBtn, "빠른 새 대화");
+    setRailButtonLabel(dom.railRecentBtn, "최근 본 대화");
+    setRailButtonLabel(dom.railGuideBtn, "메신저 도움말");
+    setRailButtonLabel(dom.railSettingsBtn, "메신저 설정");
+    setRailButtonIcon(dom.railRoomsBtn, "bi-people-fill");
+    setRailButtonIcon(dom.railInboxBtn, "bi-briefcase-fill");
+    setRailButtonIcon(dom.railUnreadBtn, "bi-chat-left-dots");
+    setRailButtonIcon(dom.railStarredBtn, "bi-bookmark-check");
+    setRailButtonIcon(dom.railAlertsBtn, "bi-bell");
+    setRailButtonIcon(dom.railComposeBtn, "bi-send");
+    setRailButtonIcon(dom.railRecentBtn, "bi-clock-history");
+    setRailButtonIcon(dom.railGuideBtn, "bi-book");
+    setRailButtonIcon(dom.railSettingsBtn, "bi-gear");
+  }
+
+  function setViewMode(mode) {
+    state.viewMode = sanitizeViewMode(mode);
+    if (state.viewMode === "ascord") {
+      state.sidebarMode = "rooms";
+      state.filter = "all";
+      if (Number(state.activeRoomId || 0) <= 0) {
+        state.activeRoomId = Number(state.call.joinedRoomId || (state.rooms[0] && state.rooms[0].id) || 0);
+        state.activeRoom = currentRoom();
+      }
+    }
+    persistViewModePreference();
+    applyViewModeChrome();
+    recalcCounts();
+    updateSidebarChrome();
+    renderRoomList();
+    renderHeader();
+    renderInspector();
+    renderMessages();
+    renderCallUi();
+  }
+
   function sidebarModeConfig(mode) {
+    if (state.viewMode === "ascord") {
+      const visibleRooms = filteredRooms();
+      const liveRooms = ascordLiveRooms(visibleRooms);
+      const pendingStageRooms = ascordPendingStageRooms(visibleRooms);
+      const pendingStageRequestCount = ascordPendingStageRequestCount(visibleRooms);
+      const recentRooms = ascordRecentRooms();
+      if (mode === "rooms") {
+        return {
+          title: "ASCORD 채널",
+          metaHtml: "<span>LIVE <strong>" + liveRooms.length + "</strong></span><span>ROOMS <strong>" + visibleRooms.length + "</strong></span>",
+          hideFilters: true,
+          hideSummary: true,
+          hideQuick: true,
+        };
+      }
+      if (mode === "inbox") {
+        return {
+          title: "LIVE 채널",
+          metaHtml: "<span>CHANNELS <strong>" + liveRooms.length + "</strong></span><span>JOINED <strong>" + visibleRooms.filter(function (room) { return ascordRoomState(room).joinedHere; }).length + "</strong></span>",
+          hideFilters: true,
+          hideSummary: true,
+          hideQuick: true,
+        };
+      }
+      if (mode === "alerts") {
+        return {
+          title: "발언 요청",
+          metaHtml: "<span>QUEUES <strong>" + pendingStageRooms.length + "</strong></span><span>REQUESTS <strong>" + pendingStageRequestCount + "</strong></span>",
+          hideFilters: true,
+          hideSummary: true,
+          hideQuick: true,
+        };
+      }
+      if (mode === "recent") {
+        return {
+          title: "최근 채널",
+          metaHtml: "<span>RECENT <strong>" + recentRooms.length + "</strong></span>",
+          hideFilters: true,
+          hideSummary: true,
+          hideQuick: true,
+        };
+      }
+      if (mode === "guide") {
+        return {
+          title: "ASCORD 가이드",
+          metaHtml: "<span>VOICE · STAGE</span>",
+          hideFilters: true,
+          hideSummary: true,
+          hideQuick: true,
+        };
+      }
+      if (mode === "settings") {
+        return {
+          title: "ASCORD 설정",
+          metaHtml: "<span>LOCAL</span>",
+          hideFilters: true,
+          hideSummary: true,
+          hideQuick: true,
+        };
+      }
+    }
     const unreadAlertCount = Number((state.notificationCounts && state.notificationCounts.unread_total) || 0);
     const mentionCount = Number((state.notificationCounts && state.notificationCounts.unread_mention_total) || 0);
     const recentCount = (state.roomHistory || []).length;
@@ -1375,6 +2443,12 @@
     if (dom.railRecentBtn) dom.railRecentBtn.classList.toggle("is-active", state.sidebarMode === "recent");
     if (dom.railGuideBtn) dom.railGuideBtn.classList.toggle("is-active", state.sidebarMode === "guide");
     if (dom.railSettingsBtn) dom.railSettingsBtn.classList.toggle("is-active", state.sidebarMode === "settings");
+    if (state.viewMode === "ascord" && state.sidebarMode === "inbox") {
+      ascordLiveRooms(filteredRooms()).forEach(function (room) {
+        markLiveRoomSeen(room && room.id, callForRoom(room && room.id));
+      });
+      recalcCounts();
+    }
     updateSidebarChrome();
     renderRoomList();
   }
@@ -1453,7 +2527,14 @@
     Array.prototype.forEach.call(dom.roomList.querySelectorAll("[data-room-id]"), function (button) {
       button.addEventListener("click", function () {
         const roomId = Number(button.getAttribute("data-room-id") || 0);
-        if (roomId > 0) openRoom(roomId);
+        if (roomId <= 0) return;
+        if (state.viewMode === "ascord") {
+          openAscordRoom(roomId).catch(function (error) {
+            showError((error && error.message) || "ASCORD 채널을 열지 못했습니다.");
+          });
+          return;
+        }
+        openRoom(roomId);
       });
       button.addEventListener("contextmenu", function (event) {
         showRoomContextMenu(event, findRoomById(Number(button.getAttribute("data-room-id") || 0)));
@@ -1466,16 +2547,30 @@
         if (dom.newRoomModalInstance) dom.newRoomModalInstance.show();
       });
     });
+    Array.prototype.forEach.call(dom.roomList.querySelectorAll("[data-ascord-join-room-id]"), function (button) {
+      button.addEventListener("click", function (event) {
+        event.stopPropagation();
+        const roomId = Number(button.getAttribute("data-ascord-join-room-id") || 0);
+        if (roomId <= 0 || button.disabled) return;
+        joinAscordVoiceChannel(roomId).catch(function (error) {
+          showError((error && error.message) || "ASCORD 음성채널에 입장하지 못했습니다.");
+        });
+      });
+    });
     Array.prototype.forEach.call(dom.roomList.querySelectorAll("[data-guide-action]"), function (button) {
       button.addEventListener("click", function () {
         const action = normalizeText(button.getAttribute("data-guide-action"));
         if (action === "new-chat") {
-          setModalMode("dm");
+          setModalMode(defaultModalModeForCurrentView());
           if (dom.newRoomModalInstance) dom.newRoomModalInstance.show();
           return;
         }
         if (action === "open-inbox") {
           setSidebarMode("inbox");
+          return;
+        }
+        if (action === "open-alerts") {
+          setSidebarMode("alerts");
           return;
         }
         if (action === "focus-search" && dom.roomSearch) {
@@ -1610,6 +2705,36 @@
   function renderRoomList() {
     if (!dom.roomList) return;
     updateSidebarChrome();
+    if (state.viewMode === "ascord") {
+      if (state.sidebarMode === "inbox") {
+        renderAscordLiveRoomList();
+        bindRoomListInteractions();
+        return;
+      }
+      if (state.sidebarMode === "alerts") {
+        renderAscordStageRequestList();
+        bindRoomListInteractions();
+        return;
+      }
+      if (state.sidebarMode === "recent") {
+        renderAscordRecentRoomList();
+        bindRoomListInteractions();
+        return;
+      }
+      if (state.sidebarMode === "guide") {
+        renderAscordGuideList();
+        bindRoomListInteractions();
+        return;
+      }
+      if (state.sidebarMode === "settings") {
+        renderAscordSettingsList();
+        bindRoomListInteractions();
+        return;
+      }
+      renderAscordRoomList();
+      bindRoomListInteractions();
+      return;
+    }
     if (state.sidebarMode === "inbox") {
       renderInboxList(
         filteredNotifications(),
@@ -1719,6 +2844,375 @@
     bindRoomListInteractions();
   }
 
+  function roomTypeLabel(room) {
+    const targetRoom = room || {};
+    if (targetRoom.is_direct) return "DM";
+    if (targetRoom.is_channel) return "CHANNEL";
+    return "GROUP";
+  }
+
+  function ascordCategoryLabel(room) {
+    const targetRoom = room || {};
+    const explicitCategory = roomChannelCategory(targetRoom);
+    if (explicitCategory) return explicitCategory;
+    if (targetRoom.is_direct) return "DIRECT CALLS";
+    if (targetRoom.is_channel) return "WORKSPACE";
+    return "PRIVATE CHANNELS";
+  }
+
+  function ascordPrivacyLabel(room) {
+    const targetRoom = room || {};
+    if (targetRoom.is_direct) return "DM";
+    if (targetRoom.is_channel) return "PUBLIC";
+    return "PRIVATE";
+  }
+
+  function ascordModeLabel(room) {
+    const targetRoom = room || {};
+    if (targetRoom.is_direct) return "DM CALL";
+    return channelModeLabel(roomChannelMode(targetRoom));
+  }
+
+  function roomVoiceIcon(room) {
+    const targetRoom = room || {};
+    if (targetRoom.is_direct) return "bi-person-square";
+    if (roomChannelMode(targetRoom) === "stage") return "bi-broadcast-pin";
+    return "bi-volume-up-fill";
+  }
+
+  function ascordRoomState(room) {
+    const targetRoom = room || {};
+    const roomCall = callForRoom(targetRoom.id);
+    const participantCount = callParticipantCount(roomCall, targetRoom.id);
+    const joinedHere = Number(state.call.joinedRoomId || 0) === Number(targetRoom.id || 0) && !!currentLiveRoom();
+    return {
+      roomCall: roomCall,
+      participantCount: participantCount,
+      joinedHere: joinedHere,
+      live: joinedHere || participantCount > 0,
+    };
+  }
+
+  function sortAscordRooms(rooms) {
+    return (Array.isArray(rooms) ? rooms.slice() : []).sort(function (a, b) {
+      const stateA = ascordRoomState(a);
+      const stateB = ascordRoomState(b);
+      return Number(stateB.joinedHere) - Number(stateA.joinedHere)
+        || Number(stateB.live) - Number(stateA.live)
+        || roomSortScore(b) - roomSortScore(a)
+        || Number(b.id || 0) - Number(a.id || 0);
+    });
+  }
+
+  function ascordLiveRooms(rooms) {
+    return sortAscordRooms((Array.isArray(rooms) ? rooms : filteredRooms()).filter(function (room) {
+      return ascordRoomState(room).live;
+    }));
+  }
+
+  function liveCallAlertKey(roomCall) {
+    const payload = roomCall || null;
+    const roomId = Number((payload && payload.room_id) || 0);
+    if (roomId <= 0 || Number((payload && payload.participant_count) || 0) <= 0) return "";
+    const callId = normalizeText(payload && payload.call_id);
+    if (callId) return callId;
+    return "room-" + roomId + "-" + Number((payload && payload.updated_at) || (payload && payload.started_at) || 0);
+  }
+
+  function markLiveRoomSeen(roomId, roomCall) {
+    const targetRoomId = Number(roomId || (roomCall && roomCall.room_id) || 0);
+    if (targetRoomId <= 0) return;
+    const nextKey = liveCallAlertKey(roomCall || callForRoom(targetRoomId));
+    if (!nextKey) {
+      delete state.call.seenLiveCallIdsByRoomId[targetRoomId];
+      return;
+    }
+    state.call.seenLiveCallIdsByRoomId[targetRoomId] = nextKey;
+  }
+
+  function unseenAscordLiveRoomCount(rooms) {
+    return ascordLiveRooms(rooms).filter(function (room) {
+      const roomId = Number((room && room.id) || 0);
+      const roomCall = callForRoom(roomId);
+      const nextKey = liveCallAlertKey(roomCall);
+      if (!nextKey) return false;
+      return normalizeText(state.call.seenLiveCallIdsByRoomId[roomId]) !== nextKey;
+    }).length;
+  }
+
+  function roomPendingStageRequestCount(room) {
+    const roomCall = callForRoom(room && room.id);
+    if (!roomCall) return 0;
+    const explicitCount = Math.max(0, Number(roomCall.speaker_request_count || 0));
+    if (explicitCount > 0) return explicitCount;
+    return Array.isArray(roomCall.participants) ? roomCall.participants.filter(function (participant) {
+      return !!(participant && participant.speaker_requested);
+    }).length : 0;
+  }
+
+  function roomHasPendingStageRequests(room) {
+    const targetRoom = room || {};
+    if (!isStageRoom(targetRoom)) return false;
+    return roomPendingStageRequestCount(targetRoom) > 0;
+  }
+
+  function ascordPendingStageRooms(rooms) {
+    return sortAscordRooms((Array.isArray(rooms) ? rooms : filteredRooms()).filter(roomHasPendingStageRequests));
+  }
+
+  function ascordPendingStageRequestCount(rooms) {
+    return (Array.isArray(rooms) ? rooms : filteredRooms()).reduce(function (sum, room) {
+      if (!roomHasPendingStageRequests(room)) return sum;
+      return sum + roomPendingStageRequestCount(room);
+    }, 0);
+  }
+
+  function ascordRecentRooms() {
+    const roomMap = {};
+    const visibleRoomIds = new Set(filteredRooms().map(function (room) {
+      return Number(room.id || 0);
+    }));
+    state.rooms.forEach(function (room) {
+      roomMap[Number(room.id || 0)] = room;
+    });
+    return (state.roomHistory || []).map(function (roomId) {
+      return roomMap[Number(roomId || 0)] || null;
+    }).filter(function (room) {
+      return !!room && visibleRoomIds.has(Number(room.id || 0));
+    });
+  }
+
+  function renderAscordUtilityRoomList(rooms, emptyIcon, emptyTitle, emptyCopy, options) {
+    if (!dom.roomList) return;
+    const items = Array.isArray(rooms) ? rooms : [];
+    const settings = options || {};
+    const sections = [];
+    if (settings.introTitle || settings.introCopy) {
+      sections.push([
+        '<section class="messenger-side-card messenger-side-card--ascord-hero">',
+        settings.introTitle ? ('<strong>' + escapeHtml(settings.introTitle) + '</strong>') : "",
+        settings.introCopy ? ('<span>' + escapeHtml(settings.introCopy) + '</span>') : "",
+        settings.introActionsHtml ? ('<div class="messenger-side-card--actions">' + settings.introActionsHtml + "</div>") : "",
+        "</section>",
+      ].join(""));
+    }
+    if (!items.length) {
+      sections.push([
+        '<div class="messenger-empty-state">',
+        '<i class="bi ' + escapeAttribute(emptyIcon || "bi-broadcast") + '"></i>',
+        "<strong>" + escapeHtml(emptyTitle) + "</strong>",
+        "<span>" + escapeHtml(emptyCopy) + "</span>",
+        "</div>",
+      ].join(""));
+      dom.roomList.innerHTML = sections.join("");
+      return;
+    }
+    sections.push(items.map(ascordRoomCardMarkup).join(""));
+    dom.roomList.innerHTML = sections.join("");
+  }
+
+  function ascordRoomCardMarkup(room) {
+    const targetRoom = room || {};
+    const roomState = ascordRoomState(targetRoom);
+    const activeClass = Number(targetRoom.id || 0) === Number(state.activeRoomId || 0) ? " is-active" : "";
+    const joinedClass = roomState.joinedHere ? " is-joined" : "";
+    const liveClass = roomState.live ? " is-live" : "";
+    const joiningHere = !!state.call.joining && Number(state.activeRoomId || 0) === Number(targetRoom.id || 0);
+    const modeLabel = ascordModeLabel(targetRoom);
+    const privacyLabel = ascordPrivacyLabel(targetRoom);
+    const subtitle = normalizeText(targetRoom.topic || targetRoom.subtitle || (roomState.live ? "통화 진행 중" : "음성 채널 대기 중"));
+    const participantText = roomState.participantCount > 0
+      ? String(roomState.participantCount) + "명 연결"
+      : "아직 연결된 참여자 없음";
+    const stageRequestCount = roomPendingStageRequestCount(targetRoom);
+    const stageRequestText = isStageRoom(targetRoom) && stageRequestCount > 0
+      ? (" · 요청 " + String(stageRequestCount) + "건")
+      : "";
+    const joinLabel = roomState.joinedHere ? "참여 중" : (joiningHere ? "연결 중" : "음성 입장");
+    return [
+      '<article class="messenger-voice-room-card' + activeClass + joinedClass + liveClass + '">',
+      '<button class="messenger-voice-room-card__main" type="button" data-room-id="' + Number(targetRoom.id || 0) + '">',
+      '<span class="messenger-voice-room-card__icon"><i class="bi ' + escapeAttribute(roomVoiceIcon(targetRoom)) + '"></i></span>',
+      '<span class="messenger-voice-room-card__content">',
+      '<span class="messenger-voice-room-card__title-line">',
+      '<strong>' + escapeHtml(targetRoom.title || "채널") + "</strong>",
+      '<span class="messenger-voice-room-card__badge">' + escapeHtml(modeLabel) + "</span>",
+      "</span>",
+      '<span class="messenger-voice-room-card__subtitle">' + escapeHtml(subtitle) + "</span>",
+      '<span class="messenger-voice-room-card__meta">' + escapeHtml(privacyLabel + " · " + participantText + stageRequestText) + "</span>",
+      "</span>",
+      "</button>",
+      '<div class="messenger-voice-room-card__actions">',
+      '<span class="messenger-voice-room-card__aside">' + (roomState.joinedHere ? "연결됨" : (joiningHere ? "연결 중" : (roomState.live ? "참여 가능" : "대기 중"))) + "</span>",
+      '<button class="messenger-voice-room-card__join" type="button" data-ascord-join-room-id="' + Number(targetRoom.id || 0) + '"' + ((roomState.joinedHere || state.call.joining) ? ' disabled' : "") + '><i class="bi bi-telephone-fill"></i><span>' + escapeHtml(joinLabel) + "</span></button>",
+      "</div>",
+      "</article>",
+    ].join("");
+  }
+
+  function renderAscordRoomList() {
+    if (!dom.roomList) return;
+    const rooms = sortAscordRooms(filteredRooms());
+    if (!rooms.length) {
+      dom.roomList.innerHTML = [
+        '<div class="messenger-empty-state">',
+        '<i class="bi bi-broadcast-pin"></i>',
+        "<strong>표시할 ASCORD 채널이 없습니다.</strong>",
+        "<span>검색 조건을 바꾸거나 ABBAS Talk에서 새 대화를 만들어보세요.</span>",
+        "</div>",
+      ].join("");
+      return;
+    }
+
+    const liveRooms = [];
+    const groupedRooms = {};
+    rooms.forEach(function (room) {
+      const targetRoom = room || {};
+      const targetState = ascordRoomState(targetRoom);
+      if (targetState.live) {
+        liveRooms.push(targetRoom);
+        return;
+      }
+      const categoryKey = ascordCategoryLabel(targetRoom);
+      if (!groupedRooms[categoryKey]) groupedRooms[categoryKey] = [];
+      groupedRooms[categoryKey].push(targetRoom);
+    });
+
+    const sections = [];
+    sections.push([
+      '<section class="messenger-side-card messenger-side-card--ascord-hero">',
+      '<strong>ASCORD 음성채널</strong>',
+      '<span>채널 카드를 누르면 먼저 선택되고, 음성 입장 버튼을 누르면 실제 통화에 연결됩니다. 카메라와 화면공유는 오른쪽 컨트롤에서 이어서 켤 수 있습니다.</span>',
+      '<div class="messenger-side-card--actions">',
+      '<button type="button" data-room-create="group"><i class="bi bi-plus-circle"></i><span>새 채널 만들기</span></button>',
+      '<button type="button" data-room-create="dm"><i class="bi bi-person-plus"></i><span>빠른 1:1</span></button>',
+      '</div>',
+      '</section>',
+    ].join(""));
+
+    if (liveRooms.length) {
+      sections.push([
+        '<section class="messenger-room-group messenger-room-group--voice">',
+        '<div class="messenger-room-group__label"><span>LIVE NOW</span><div><strong>' + liveRooms.length + "</strong></div></div>",
+        liveRooms.map(ascordRoomCardMarkup).join(""),
+        "</section>",
+      ].join(""));
+    }
+
+    Object.keys(groupedRooms).sort(function (a, b) {
+      return a.localeCompare(b, "ko");
+    }).forEach(function (categoryName) {
+      const items = groupedRooms[categoryName] || [];
+      if (!items.length) return;
+      sections.push([
+        '<section class="messenger-room-group messenger-room-group--voice">',
+        '<div class="messenger-room-group__label"><span>' + escapeHtml(categoryName) + '</span><div><strong>' + items.length + "</strong></div></div>",
+        items.map(ascordRoomCardMarkup).join(""),
+        "</section>",
+      ].join(""));
+    });
+
+    dom.roomList.innerHTML = sections.join("");
+  }
+
+  function renderAscordLiveRoomList() {
+    renderAscordUtilityRoomList(
+      ascordLiveRooms(filteredRooms()),
+      "bi-broadcast",
+      "지금 연결된 LIVE 채널이 없습니다.",
+      "누군가 채널에 입장해 통화를 시작하면 여기에 바로 표시됩니다.",
+      {
+        introTitle: "LIVE 채널",
+        introCopy: "현재 통화가 열려 있는 ASCORD 채널만 빠르게 모아봅니다.",
+      }
+    );
+  }
+
+  function renderAscordStageRequestList() {
+    renderAscordUtilityRoomList(
+      ascordPendingStageRooms(filteredRooms()),
+      "bi-megaphone",
+      "대기 중인 발언 요청이 없습니다.",
+      "STAGE 채널에서 청중이 손들면 여기에 요청이 모입니다.",
+      {
+        introTitle: "발언 요청 큐",
+        introCopy: "운영자가 처리할 발표자 요청이 있는 STAGE 채널만 보여줍니다.",
+        introActionsHtml: '<button type="button" data-guide-action="focus-search"><i class="bi bi-search"></i><span>채널 검색</span></button>',
+      }
+    );
+  }
+
+  function renderAscordRecentRoomList() {
+    renderAscordUtilityRoomList(
+      ascordRecentRooms(),
+      "bi-clock-history",
+      "최근 열어본 ASCORD 채널이 없습니다.",
+      "채널에 입장하면 여기에 최근 기록으로 저장됩니다.",
+      {
+        introTitle: "최근 채널",
+        introCopy: "최근에 확인하거나 입장했던 ASCORD 채널을 다시 빠르게 열 수 있습니다.",
+      }
+    );
+  }
+
+  function renderAscordGuideList() {
+    if (!dom.roomList) return;
+    dom.roomList.innerHTML = [
+      '<div class="messenger-side-stack">',
+      '<section class="messenger-side-card messenger-side-card--ascord-hero">',
+      '<strong>ASCORD 사용 가이드</strong>',
+      '<span>VOICE 채널은 일반 음성채널, STAGE 채널은 청중 중심 운영형입니다. 채널 카드를 눌러 먼저 선택하고, 음성 입장 버튼으로 실제 연결을 시작합니다.</span>',
+      '<div class="messenger-side-card--actions">',
+      '<button type="button" data-guide-action="new-chat"><i class="bi bi-plus-circle"></i><span>새 채널 만들기</span></button>',
+      '<button type="button" data-guide-action="open-inbox"><i class="bi bi-broadcast"></i><span>LIVE 보기</span></button>',
+      '<button type="button" data-guide-action="open-alerts"><i class="bi bi-megaphone"></i><span>발언 요청 보기</span></button>',
+      '</div>',
+      '</section>',
+      '<section class="messenger-side-card">',
+      '<strong>VOICE 채널</strong>',
+      '<span>일반 음성채널처럼 누구나 입장해서 마이크, 카메라, 화면공유를 사용할 수 있습니다.</span>',
+      '</section>',
+      '<section class="messenger-side-card">',
+      '<strong>STAGE 채널</strong>',
+      '<span>청중은 듣기 중심으로 입장하고, 발표자는 발언 요청과 운영자 승격으로 관리할 수 있습니다.</span>',
+      '</section>',
+      '<section class="messenger-side-card">',
+      '<strong>채널 생성 팁</strong>',
+      '<span>새 채널을 만들 때 카테고리와 VOICE/STAGE 모드를 먼저 정해두면 ASCORD 목록이 더 깔끔하게 정리됩니다.</span>',
+      '</section>',
+      '</div>',
+    ].join("");
+  }
+
+  function renderAscordSettingsList() {
+    if (!dom.roomList) return;
+    const preferences = state.preferences || {};
+    const row = function (key, title, copy) {
+      return [
+        '<button class="messenger-setting-row" type="button" data-pref-key="' + escapeAttribute(key) + '">',
+        '<span class="messenger-setting-row__copy">',
+        '<strong>' + escapeHtml(title) + "</strong>",
+        '<span>' + escapeHtml(copy) + "</span>",
+        "</span>",
+        '<span class="messenger-setting-row__state' + (preferences[key] ? ' is-on' : '') + '">' + (preferences[key] ? 'ON' : 'OFF') + "</span>",
+        "</button>",
+      ].join("");
+    };
+    dom.roomList.innerHTML = [
+      '<div class="messenger-side-stack">',
+      '<section class="messenger-side-card">',
+      '<strong>ASCORD 로컬 설정</strong>',
+      '<span>현재 브라우저에서 음성채널 팝업과 입력 UX에만 적용되는 개인 설정입니다.</span>',
+      '</section>',
+      '<section class="messenger-side-card messenger-side-card--settings">',
+      row("rememberPosition", "팝업 위치 기억", "ASCORD 창을 다시 열어도 마지막 위치를 유지합니다."),
+      row("showTyping", "입력 중 표시", "ABBAS Talk와 전환해도 타이핑 표시를 유지합니다."),
+      row("enterToSend", "Enter로 전송", "텍스트채팅 입력 시 Enter 전송, Shift+Enter 줄바꿈으로 동작합니다."),
+      '</section>',
+      '</div>',
+    ].join("");
+  }
+
   function messageExists(roomId, messageId) {
     const messages = state.messagesByRoom[roomId] || [];
     return messages.some(function (message) {
@@ -1756,6 +3250,9 @@
 
   function renderMessageBubbleContent(message) {
     const content = String((message && message.content) || "");
+    if (isSystemMessage(message)) {
+      return '<div class="messenger-system-message__text">' + formatRichText(content) + "</div>";
+    }
     const structuredAttachment = parseAttachment(message);
     const attachment = structuredAttachment || detectMessageAttachment(content);
     const cleanText = attachment
@@ -1807,6 +3304,19 @@
       if (dateLabel && dateLabel !== lastDate) {
         lastDate = dateLabel;
         pieces.push('<div class="messenger-day-divider"><span>' + escapeHtml(dateLabel) + "</span></div>");
+      }
+
+      if (isSystemMessage(message)) {
+        pieces.push([
+          '<div class="messenger-system-message-row" data-message-id="' + Number(message.id || 0) + '">',
+          '<div class="messenger-system-message">',
+          '<span class="messenger-system-message__badge"><i class="bi bi-shield-check"></i><span>ASCORD LOG</span></span>',
+          '<div class="messenger-system-message__body">' + renderMessageBubbleContent(message) + "</div>",
+          '<div class="messenger-system-message__foot"><span>' + escapeHtml(message.time_text || "") + "</span></div>",
+          "</div>",
+          "</div>",
+        ].join(""));
+        return pieces.join("");
       }
 
       const mineClass = message.is_mine ? " is-mine" : "";
@@ -1937,26 +3447,387 @@
     }
   }
 
+  function callDeviceLabel(kind, device, index) {
+    const payload = device || {};
+    const fallbackIndex = Number(index || 0) + 1;
+    if (normalizeText(payload.label)) return normalizeText(payload.label);
+    if (kind === "audioinput") return "마이크 " + fallbackIndex;
+    if (kind === "audiooutput") return "스피커 " + fallbackIndex;
+    if (kind === "videoinput") return "카메라 " + fallbackIndex;
+    return "장치 " + fallbackIndex;
+  }
+
+  function renderCallDeviceControl(kind, label, icon) {
+    const selectedValue = normalizeText((state.call.selectedDevices || {})[kind]);
+    const devices = (state.call.devices && state.call.devices[kind]) || [];
+    const isAudioOutput = kind === "audiooutput";
+    const disabled = isAudioOutput && !state.call.audioOutputSupported;
+    const options = devices.length
+      ? devices.map(function (device, index) {
+        const deviceId = normalizeText(device.deviceId);
+        const selected = selectedValue && selectedValue === deviceId ? ' selected' : '';
+        return '<option value="' + escapeAttribute(deviceId) + '"' + selected + '>' + escapeHtml(callDeviceLabel(kind, device, index)) + "</option>";
+      }).join("")
+      : '<option value="">장치를 찾지 못했습니다.</option>';
+    return [
+      '<label class="messenger-device-control">',
+      '<span class="messenger-device-control__label"><i class="bi ' + escapeAttribute(icon) + '"></i><span>' + escapeHtml(label) + "</span></span>",
+      '<select data-call-device-kind="' + escapeAttribute(kind) + '"' + (disabled ? " disabled" : "") + ">" + options + "</select>",
+      "</label>",
+    ].join("");
+  }
+
+  function renderAscordParticipantCard(summary) {
+    const payload = summary || {};
+    const avatar = payload.profileImageUrl
+      ? '<img src="' + escapeAttribute(payload.profileImageUrl) + '" alt="' + escapeAttribute(payload.displayName || payload.userId || "참여자") + '">'
+      : escapeHtml(payload.avatarInitial || avatarInitialFor(payload.displayName, payload.userId));
+    const isStage = !!payload.isStage;
+    const stageRole = normalizeStageRole(payload.stageRole);
+    const speakerRequested = !!payload.speakerRequested;
+    const secondaryText = [normalizeText(payload.department), normalizeText(payload.statusText)].filter(function (value, index, items) {
+      return !!value && items.indexOf(value) === index;
+    }).join(" · ") || "대기 중";
+    const liveBadges = [];
+    if (payload.isLocal) liveBadges.push('<span class="messenger-voice-member__chip">LOCAL</span>');
+    if (isStage && stageRole === "speaker") liveBadges.push('<span class="messenger-voice-member__chip is-on">SPEAKER</span>');
+    if (isStage && stageRole !== "speaker") liveBadges.push('<span class="messenger-voice-member__chip">AUDIENCE</span>');
+    if (isStage && speakerRequested) liveBadges.push('<span class="messenger-voice-member__chip is-speaking">HAND RAISED</span>');
+    if (payload.isSpeaking) liveBadges.push('<span class="messenger-voice-member__chip is-speaking">SPEAKING</span>');
+    if (payload.serverMuted) liveBadges.push('<span class="messenger-voice-member__chip is-admin">SERVER MUTE</span>');
+    if (payload.audioEnabled) liveBadges.push('<span class="messenger-voice-member__chip is-on">MIC</span>');
+    if (payload.videoEnabled) liveBadges.push('<span class="messenger-voice-member__chip is-on">CAM</span>');
+    if (payload.sharingScreen) liveBadges.push('<span class="messenger-voice-member__chip is-screen">SCREEN</span>');
+    const volumeKey = normalizeText(payload.volumeKey || payload.identity || payload.userId);
+    const volumeValue = Math.round(participantVolume(volumeKey) * 100);
+    const canModerate = canModerateCall(state.activeRoom) && !payload.isLocal;
+    const canPromoteToAdmin = canChangeTargetMemberRole(state.activeRoom, payload.userId, "admin");
+    const canDemoteToMember = canChangeTargetMemberRole(state.activeRoom, payload.userId, "member");
+    const canRemoveMemberAction = canRemoveTargetMember(state.activeRoom, payload.userId);
+    const canTransferOwner = canTransferOwnerToTarget(state.activeRoom, payload.userId);
+    const canGrantSpeaker = canModerate && isStage && stageRole !== "speaker";
+    const canMoveToAudience = canModerate && isStage && stageRole === "speaker";
+    const moderationButtons = canModerate ? [
+      '<div class="messenger-voice-member__actions">',
+      (canGrantSpeaker ? '<button type="button" data-call-admin-action="grant_speaker" data-call-admin-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-megaphone"></i><span>' + escapeHtml(speakerRequested ? "발언 요청 승인" : "발표자로 승격") + '</span></button>' : ""),
+      (canMoveToAudience ? '<button type="button" data-call-admin-action="move_to_audience" data-call-admin-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-arrow-down-circle"></i><span>청중으로 내리기</span></button>' : ""),
+      '<button type="button" data-call-admin-action="' + escapeAttribute(payload.serverMuted ? "server_unmute" : "server_mute") + '" data-call-admin-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi ' + escapeAttribute(payload.serverMuted ? "bi-mic" : "bi-mic-mute") + '"></i><span>' + escapeHtml(payload.serverMuted ? "음소거 해제 허용" : "서버 음소거") + '</span></button>',
+      (payload.videoEnabled ? '<button type="button" data-call-admin-action="disable_camera" data-call-admin-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-camera-video-off"></i><span>카메라 중지</span></button>' : ""),
+      (payload.sharingScreen ? '<button type="button" data-call-admin-action="disable_screen_share" data-call-admin-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-display"></i><span>화면공유 중지</span></button>' : ""),
+      '<button type="button" class="is-danger" data-call-admin-action="disconnect" data-call-admin-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-person-x"></i><span>통화 내보내기</span></button>',
+      "</div>",
+    ].join("") : "";
+    const membershipButtons = (canTransferOwner || canPromoteToAdmin || canDemoteToMember || canRemoveMemberAction) ? [
+      '<div class="messenger-voice-member__actions">',
+      (canTransferOwner ? '<button type="button" data-room-member-transfer-owner="true" data-room-member-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-award"></i><span>OWNER 이전</span></button>' : ""),
+      (canPromoteToAdmin ? '<button type="button" data-room-member-role="admin" data-room-member-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-shield-check"></i><span>ADMIN 지정</span></button>' : ""),
+      (canDemoteToMember ? '<button type="button" data-room-member-role="member" data-room-member-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-person"></i><span>일반 멤버</span></button>' : ""),
+      (canRemoveMemberAction ? '<button type="button" class="is-danger" data-room-member-remove="true" data-room-member-user-id="' + escapeAttribute(payload.userId || "") + '"><i class="bi bi-person-dash"></i><span>채널에서 제거</span></button>' : ""),
+      "</div>",
+    ].join("") : "";
+    return [
+      '<div class="messenger-voice-member' + (payload.isSpeaking ? ' is-speaking' : '') + '" data-participant-user-id="' + escapeAttribute(payload.userId || "") + '">',
+      '<span class="messenger-contact-avatar messenger-contact-avatar--large">' + avatar + '<span class="messenger-contact-avatar__status is-' + escapeHtml((payload.isSpeaking || payload.audioEnabled || payload.videoEnabled || payload.sharingScreen) ? "online" : "offline") + '"></span></span>',
+      '<div class="messenger-voice-member__meta">',
+      '<div class="messenger-voice-member__title">',
+      '<strong>' + escapeHtml(payload.displayName || payload.userId || "참여자") + "</strong>",
+      '<span>' + escapeHtml(secondaryText) + "</span>",
+      "</div>",
+      '<div class="messenger-voice-member__chips">' + liveBadges.join("") + "</div>",
+      (!payload.isLocal ? [
+        '<label class="messenger-voice-member__volume">',
+        "<span>볼륨</span>",
+        '<input type="range" min="0" max="100" step="5" value="' + volumeValue + '" data-call-volume-id="' + escapeAttribute(volumeKey) + '">',
+        '<strong>' + volumeValue + "%</strong>",
+        "</label>",
+      ].join("") : '<div class="messenger-voice-member__volume messenger-voice-member__volume--self"><span>내 장치 설정은 아래에서 조정합니다.</span></div>'),
+      moderationButtons,
+      membershipButtons,
+      "</div>",
+      '<span class="messenger-participant-card__badge">' + escapeHtml(payload.memberRole || ascordModeLabel(state.activeRoom)) + "</span>",
+      "</div>",
+    ].join("");
+  }
+
+  function renderAscordRecentCalls(room) {
+    const targetRoom = room || {};
+    const items = Array.isArray(targetRoom.recent_calls) ? targetRoom.recent_calls.slice(0, 6) : [];
+    return [
+      '<div class="messenger-ascord-call-history">',
+      '<div class="messenger-ascord-call-history__head">',
+      "<strong>최근 통화</strong>",
+      '<span>' + escapeHtml(Number(targetRoom.missed_call_total || 0) > 0 ? ("부재중 " + Number(targetRoom.missed_call_total || 0) + "건") : "ASCORD LOG") + "</span>",
+      "</div>",
+      items.length ? items.map(function (item) {
+        const status = normalizeText(item && item.status).toLowerCase() || "ended";
+        const starterName = normalizeText(item && item.started_by_display_name) || "알 수 없음";
+        const modeLabel = normalizeText(item && item.initiated_mode).toLowerCase() === "video" ? "VIDEO" : "VOICE";
+        return [
+          '<article class="messenger-ascord-call-history__item">',
+          '<span class="messenger-ascord-call-history__status is-' + escapeAttribute(status) + '">' + escapeHtml(item.status_label || "통화") + "</span>",
+          '<div class="messenger-ascord-call-history__body">',
+          "<strong>" + escapeHtml(starterName) + "</strong>",
+          "<span>" + escapeHtml(item.summary || "통화 기록") + "</span>",
+          "</div>",
+          '<div class="messenger-ascord-call-history__meta">',
+          "<span>" + escapeHtml(item.time_text || "") + "</span>",
+          "<span>" + escapeHtml(modeLabel) + "</span>",
+          "</div>",
+          "</article>",
+        ].join("");
+      }).join("") : '<div class="messenger-empty-inline">아직 이 채널의 통화 기록이 없습니다.</div>',
+      "</div>",
+    ].join("");
+  }
+
+  function renderAscordStageControls(room, roomCall, participantSummaries, joinedHere) {
+    const targetRoom = room || state.activeRoom;
+    if (!isStageRoom(targetRoom)) return "";
+    const myParticipant = callParticipant(roomCall, currentUserId());
+    const myStageRole = myParticipant ? callParticipantStageRole(myParticipant) : "audience";
+    const mySpeakerRequested = callParticipantSpeakerRequested(myParticipant);
+    const moderator = canModerateCall(targetRoom);
+    const pendingRequests = (participantSummaries || []).filter(function (summary) {
+      return !summary.isLocal && !!summary.speakerRequested;
+    });
+    const overviewText = roomCall
+      ? ("발표자 " + String(Number(roomCall.speaker_count || 0)) + "명 · 청중 " + String(Number(roomCall.audience_count || 0)) + "명 · 요청 대기 " + String(Number(roomCall.speaker_request_count || 0)) + "건")
+      : "아직 연결된 발표자와 청중이 없습니다.";
+    let selfMessage = "이 채널에 입장하면 발언 요청과 발표자 전환을 사용할 수 있습니다.";
+    const selfButtons = [];
+    if (joinedHere) {
+      if (myStageRole === "speaker") {
+        selfMessage = "현재 발표자 권한으로 연결되어 있습니다. 필요하면 직접 청중으로 내려갈 수 있습니다.";
+        selfButtons.push('<button type="button" data-ascord-action="move_self_to_audience"><i class="bi bi-arrow-down-circle"></i><span>청중으로 이동</span></button>');
+      } else if (mySpeakerRequested) {
+        selfMessage = "운영자가 발표자 승격을 승인하면 마이크가 다시 열립니다.";
+        selfButtons.push('<button type="button" data-ascord-action="withdraw_request"><i class="bi bi-x-circle"></i><span>발언 요청 취소</span></button>');
+      } else {
+        selfMessage = "현재 청중으로 연결되어 있습니다. 손들기처럼 발언 요청을 보낼 수 있습니다.";
+        selfButtons.push('<button type="button" data-ascord-action="request_speaker"><i class="bi bi-broadcast-pin"></i><span>발언 요청</span></button>');
+      }
+    }
+    const requestQueueMarkup = moderator ? [
+      '<section class="messenger-side-card">',
+      '<strong>발언 요청 대기</strong>',
+      '<span>' + escapeHtml(pendingRequests.length ? (String(pendingRequests.length) + "명이 발표 승격을 기다리고 있습니다.") : "현재 대기 중인 발언 요청이 없습니다.") + "</span>",
+      pendingRequests.length ? '<div class="messenger-side-card--actions">' + pendingRequests.map(function (summary) {
+        return '<button type="button" data-ascord-action="grant_speaker" data-stage-user-id="' + escapeAttribute(summary.userId || "") + '"><i class="bi bi-megaphone"></i><span>' + escapeHtml((summary.displayName || summary.userId || "참여자") + " 승인") + "</span></button>";
+      }).join("") + "</div>" : "",
+      '</section>',
+    ].join("") : "";
+    return [
+      '<section class="messenger-side-card">',
+      '<strong>STAGE 컨트롤</strong>',
+      '<span>' + escapeHtml(overviewText) + "</span>",
+      '<span>' + escapeHtml(selfMessage) + "</span>",
+      selfButtons.length ? '<div class="messenger-side-card--actions">' + selfButtons.join("") + "</div>" : "",
+      '</section>',
+      requestQueueMarkup,
+    ].join("");
+  }
+
+  function bindAscordInspectorInteractions() {
+    if (dom.resourceList) {
+      Array.prototype.forEach.call(dom.resourceList.querySelectorAll("[data-call-device-kind]"), function (select) {
+        select.addEventListener("change", function () {
+          const kind = normalizeText(select.getAttribute("data-call-device-kind"));
+          switchCallDevice(kind, select.value).catch(function (error) {
+            showError((error && error.message) || "장치를 전환하지 못했습니다.");
+            refreshCallDevices().catch(function () {});
+          });
+        });
+      });
+      Array.prototype.forEach.call(dom.resourceList.querySelectorAll("[data-ascord-action]"), function (button) {
+        button.addEventListener("click", function () {
+          const action = normalizeText(button.getAttribute("data-ascord-action"));
+          if (action === "refresh-devices") {
+            refreshCallDevices().catch(function () {
+              showWarning("장치 목록을 새로 가져오지 못했습니다.");
+            });
+            return;
+          }
+          const targetUserId = normalizeText(button.getAttribute("data-stage-user-id"));
+          if (action === "request_speaker" || action === "withdraw_request" || action === "move_self_to_audience") {
+            sendStageRequestAction(action, state.activeRoom).catch(function (error) {
+              showError((error && error.message) || "STAGE 요청을 처리하지 못했습니다.");
+            });
+            return;
+          }
+          if ((action === "grant_speaker" || action === "move_to_audience") && targetUserId) {
+            sendCallModerationAction(action, targetUserId, state.activeRoom).catch(function (error) {
+              showError((error && error.message) || "STAGE 운영 작업을 적용하지 못했습니다.");
+            });
+          }
+        });
+      });
+    }
+    if (dom.participantList) {
+      Array.prototype.forEach.call(dom.participantList.querySelectorAll("[data-call-volume-id]"), function (input) {
+        input.addEventListener("input", function () {
+          const identity = normalizeText(input.getAttribute("data-call-volume-id"));
+          setParticipantVolume(identity, Number(input.value || 100) / 100);
+        });
+      });
+      Array.prototype.forEach.call(dom.participantList.querySelectorAll("[data-call-admin-action]"), function (button) {
+        button.addEventListener("click", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          const action = normalizeText(button.getAttribute("data-call-admin-action")).toLowerCase();
+          const userId = normalizeText(button.getAttribute("data-call-admin-user-id"));
+          sendCallModerationAction(action, userId, state.activeRoom).catch(function (error) {
+            showError((error && error.message) || "통화 운영 작업을 적용하지 못했습니다.");
+          });
+        });
+      });
+      Array.prototype.forEach.call(dom.participantList.querySelectorAll("[data-room-member-role]"), function (button) {
+        button.addEventListener("click", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          const nextRole = normalizeText(button.getAttribute("data-room-member-role")).toLowerCase();
+          const userId = normalizeText(button.getAttribute("data-room-member-user-id"));
+          updateRoomMemberRole(userId, nextRole, state.activeRoom).catch(function (error) {
+            showError((error && error.message) || "멤버 역할을 변경하지 못했습니다.");
+          });
+        });
+      });
+      Array.prototype.forEach.call(dom.participantList.querySelectorAll("[data-room-member-remove]"), function (button) {
+        button.addEventListener("click", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          const userId = normalizeText(button.getAttribute("data-room-member-user-id"));
+          removeMemberFromRoom(userId, state.activeRoom).catch(function (error) {
+            showError((error && error.message) || "구성원을 제거하지 못했습니다.");
+          });
+        });
+      });
+      Array.prototype.forEach.call(dom.participantList.querySelectorAll("[data-room-member-transfer-owner]"), function (button) {
+        button.addEventListener("click", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          const userId = normalizeText(button.getAttribute("data-room-member-user-id"));
+          transferRoomOwner(userId, state.activeRoom).catch(function (error) {
+            showError((error && error.message) || "OWNER를 이전하지 못했습니다.");
+          });
+        });
+      });
+      Array.prototype.forEach.call(dom.participantList.querySelectorAll("[data-participant-user-id]"), function (card) {
+        card.addEventListener("contextmenu", function (event) {
+          showParticipantContextMenu(event, normalizeText(card.getAttribute("data-participant-user-id")));
+        });
+      });
+    }
+  }
+
   function renderInspector() {
     if (!dom.roomInfo || !dom.participantList || !dom.participantCount || !dom.inspectorBadge) return;
     const room = state.activeRoom;
+    const isAscord = state.viewMode === "ascord";
     if (!room) {
       dom.roomInfo.innerHTML = '<div class="messenger-empty-inline">대화방을 선택하면 상세 정보가 표시됩니다.</div>';
       dom.participantList.innerHTML = '<div class="messenger-empty-inline">참여자 목록이 여기에 표시됩니다.</div>';
       dom.participantCount.textContent = "0명";
       dom.inspectorBadge.textContent = "-";
+      if (dom.participantPanelLabel) dom.participantPanelLabel.textContent = "참여자";
+      if (dom.infoPanelLabel) dom.infoPanelLabel.textContent = isAscord ? "채널 상태" : "대화방 설명";
+      if (dom.infoPanelCode) dom.infoPanelCode.textContent = isAscord ? "VOICE" : "INFO";
+      if (dom.resourcePanelLabel) dom.resourcePanelLabel.textContent = isAscord ? "장치 및 컨트롤" : "파일, 링크 모아보기";
+      if (dom.resourcePanelCode) dom.resourcePanelCode.textContent = isAscord ? "DEVICE" : "RECENT";
       if (dom.inviteMemberBtn) {
         dom.inviteMemberBtn.classList.add("d-none");
         dom.inviteMemberBtn.disabled = true;
       }
-      renderResourceList();
+      if (isAscord) {
+        dom.resourceList.innerHTML = '<div class="messenger-empty-inline">ASCORD 채널을 선택하면 장치 설정과 통화 컨트롤이 표시됩니다.</div>';
+      } else {
+        renderResourceList();
+      }
+      return;
+    }
+
+    if (isAscord) {
+      const roomCall = callForRoom(room.id);
+      const participantSummaries = currentCallParticipantSummaries(room, roomCall);
+      const liveCount = participantSummaries.length || callParticipantCount(roomCall);
+      const joinedHere = Number(state.call.joinedRoomId || 0) === Number(room.id || 0) && !!currentLiveRoom();
+      const channelMode = roomChannelMode(room);
+      const channelCategory = ascordCategoryLabel(room);
+      const canInvite = canInviteMembers(room) && !room.is_direct;
+      const canModerate = canModerateCall(room);
+      const canManageMembership = canManageMembers(room);
+      const canManageRoles = canManageMemberRoles(room);
+      const inviteCandidates = canInvite ? inviteCandidateContacts(room) : [];
+      dom.inspectorBadge.textContent = joinedHere ? (channelMode === "stage" ? "STAGE LIVE" : "VOICE LIVE") : "ASCORD";
+      dom.participantCount.textContent = String(liveCount || Number(room.member_count || 0)) + "명";
+      if (dom.participantPanelLabel) dom.participantPanelLabel.textContent = "라이브 참여자";
+      if (dom.infoPanelLabel) dom.infoPanelLabel.textContent = "채널 상태";
+      if (dom.infoPanelCode) dom.infoPanelCode.textContent = channelMode === "stage" ? "STAGE" : "VOICE";
+      if (dom.resourcePanelLabel) dom.resourcePanelLabel.textContent = "장치 및 컨트롤";
+      if (dom.resourcePanelCode) dom.resourcePanelCode.textContent = "DEVICE";
+      if (dom.inviteMemberBtn) {
+        dom.inviteMemberBtn.classList.toggle("d-none", !canInvite);
+        dom.inviteMemberBtn.disabled = !canInvite || !inviteCandidates.length;
+        dom.inviteMemberBtn.setAttribute("title", inviteCandidates.length ? "구성원 초대" : "추가로 초대할 수 있는 구성원이 없습니다.");
+      }
+
+      dom.roomInfo.innerHTML = [
+        '<div class="messenger-ascord-room-hero">',
+        '<span class="messenger-ascord-room-hero__avatar">' + roomAvatarHtml(room) + "</span>",
+        '<div class="messenger-ascord-room-hero__copy">',
+        "<strong>" + escapeHtml(room.title || "채널") + "</strong>",
+        "<span>" + escapeHtml(room.topic || room.subtitle || "ASCORD 음성채널에서 음성, 영상, 화면공유를 운영할 수 있습니다.") + "</span>",
+        "</div>",
+        "</div>",
+        '<div class="messenger-room-info__meta">',
+        '<div class="messenger-room-info__chip"><span>모드</span><strong>' + escapeHtml(channelModeLabel(channelMode)) + "</strong></div>",
+        '<div class="messenger-room-info__chip"><span>카테고리</span><strong>' + escapeHtml(channelCategory) + "</strong></div>",
+        '<div class="messenger-room-info__chip"><span>연결 상태</span><strong>' + escapeHtml(joinedHere ? "현재 참여 중" : (liveCount > 0 ? "통화 진행 중" : "대기")) + "</strong></div>",
+        '<div class="messenger-room-info__chip"><span>라이브 인원</span><strong>' + escapeHtml(String(liveCount || 0) + "명") + "</strong></div>",
+        (channelMode === "stage" ? '<div class="messenger-room-info__chip"><span>발표자</span><strong>' + escapeHtml(String(Number((roomCall && roomCall.speaker_count) || 0)) + "명") + "</strong></div>" : ""),
+        (channelMode === "stage" ? '<div class="messenger-room-info__chip"><span>발언 요청</span><strong>' + escapeHtml(String(Number((roomCall && roomCall.speaker_request_count) || 0)) + "건") + "</strong></div>" : ""),
+        '<div class="messenger-room-info__chip"><span>레이아웃</span><strong>' + escapeHtml(state.call.layoutMode === "speaker" ? "Speaker View" : "Grid View") + "</strong></div>",
+        "</div>",
+        '<div class="messenger-ascord-room-notes">',
+        '<div class="messenger-ascord-room-notes__item"><strong>채널 모드</strong><span>' + escapeHtml(channelMode === "stage" ? "STAGE 채널입니다. 일반 멤버는 청중으로 입장하고, 발언 권한은 운영자 중심으로 제한할 수 있습니다." : "VOICE 채널입니다. 권한이 허용된 멤버는 입장 후 바로 마이크, 카메라, 화면공유를 사용할 수 있습니다.") + "</span></div>",
+        '<div class="messenger-ascord-room-notes__item"><strong>Push To Talk</strong><span>' + escapeHtml(state.call.pushToTalk ? "활성화됨 · ASCORD 화면에서 Space를 누르는 동안만 마이크가 열립니다." : "현재 비활성화됨 · 필요하면 상단 PTT 버튼으로 전환하세요.") + "</span></div>",
+        '<div class="messenger-ascord-room-notes__item"><strong>고정 / 스피커뷰</strong><span>영상 타일을 클릭하면 고정되고, 레이아웃 버튼으로 그리드와 스피커뷰를 오갈 수 있습니다.</span></div>',
+        '<div class="messenger-ascord-room-notes__item"><strong>권한</strong><span>' + escapeHtml(canManageRoles ? "owner 권한으로 멤버를 ADMIN으로 승격하거나 일반 멤버로 되돌리고, 통화 운영 제어도 함께 사용할 수 있습니다." : (canManageMembership ? "운영자 권한으로 일반 멤버를 채널에서 제거하고 통화 운영 제어를 사용할 수 있습니다." : (canModerate ? "운영자 권한으로 서버 음소거, 카메라/화면공유 중지, 통화 내보내기가 가능합니다." : (canInvite ? "이 채널에서 참여자 초대를 관리할 수 있습니다." : "진행 중인 통화에는 참여할 수 있지만 새 통화 시작은 제한될 수 있습니다.")))) + "</span></div>",
+        "</div>",
+        renderAscordRecentCalls(room),
+      ].join("");
+
+      dom.participantList.innerHTML = participantSummaries.length
+        ? participantSummaries.map(renderAscordParticipantCard).join("")
+        : '<div class="messenger-empty-inline">아직 이 채널에 연결된 참여자가 없습니다.</div>';
+
+      dom.resourceList.innerHTML = [
+        renderAscordStageControls(room, roomCall, participantSummaries, joinedHere),
+        '<div class="messenger-device-stack">',
+        renderCallDeviceControl("audioinput", "마이크", "bi-mic"),
+        renderCallDeviceControl("audiooutput", "스피커", "bi-volume-up"),
+        renderCallDeviceControl("videoinput", "카메라", "bi-camera-video"),
+        '<div class="messenger-device-actions">',
+        '<button class="messenger-panel__action" type="button" data-ascord-action="refresh-devices"><i class="bi bi-arrow-repeat"></i><span>장치 새로고침</span></button>',
+        "</div>",
+        '<div class="messenger-device-hint">',
+        "<strong>팁</strong>",
+        '<span>' + escapeHtml(state.call.audioOutputSupported ? "오디오 출력 장치도 이 패널에서 바로 전환할 수 있습니다." : "이 브라우저는 출력 장치 전환을 제한할 수 있습니다. 이 경우 시스템 기본 출력이 사용됩니다.") + "</span>",
+        "</div>",
+        "</div>",
+      ].join("");
+      bindAscordInspectorInteractions();
       return;
     }
 
     dom.inspectorBadge.textContent = room.is_direct ? "DM" : (room.is_channel ? "CHANNEL" : "GROUP");
     dom.participantCount.textContent = String(Number(room.member_count || 0)) + "명";
+    if (dom.participantPanelLabel) dom.participantPanelLabel.textContent = "참여자";
+    if (dom.infoPanelLabel) dom.infoPanelLabel.textContent = "대화방 설명";
+    if (dom.infoPanelCode) dom.infoPanelCode.textContent = "INFO";
+    if (dom.resourcePanelLabel) dom.resourcePanelLabel.textContent = "파일, 링크 모아보기";
+    if (dom.resourcePanelCode) dom.resourcePanelCode.textContent = "RECENT";
     if (dom.inviteMemberBtn) {
-      const canInvite = canManageRoom(room) && !room.is_direct;
+      const canInvite = canInviteMembers(room) && !room.is_direct;
       const inviteCandidates = canInvite ? inviteCandidateContacts(room) : [];
       dom.inviteMemberBtn.classList.toggle("d-none", !canInvite);
       dom.inviteMemberBtn.disabled = !canInvite || !inviteCandidates.length;
@@ -2192,6 +4063,7 @@
       '<button type="button" data-room-menu-action="toggle-star"><i class="bi ' + (room.is_starred ? 'bi-star-fill' : 'bi-star') + '"></i><span>' + (room.is_starred ? '즐겨찾기 해제' : '즐겨찾기 추가') + '</span></button>',
       room.can_edit_room ? '<button type="button" data-room-menu-action="edit-room"><i class="bi bi-pencil-square"></i><span>대화방 정보 수정</span></button>' : '',
       room.can_delete_room ? '<button type="button" data-room-menu-action="delete-room"><i class="bi bi-trash3"></i><span>대화방 삭제</span></button>' : '',
+      canLeaveRoom(room) ? '<button type="button" data-room-menu-action="leave-room"><i class="bi bi-box-arrow-right"></i><span>채널 나가기</span></button>' : '',
       '<button type="button" data-room-menu-action="refresh-room"><i class="bi bi-arrow-repeat"></i><span>대화 새로고침</span></button>',
     ].join("");
   }
@@ -2266,12 +4138,34 @@
 
   function renderHeader() {
     const room = state.activeRoom;
+    const roomCall = room ? callForRoom(room.id) : null;
+    const joinedHere = !!room && Number(state.call.joinedRoomId || 0) === Number(room.id || 0) && !!currentLiveRoom();
+    const participantCount = callParticipantCount(roomCall, room && room.id);
+    const isAscord = state.viewMode === "ascord";
     const avatar = room && room.avatar_url
       ? '<img src="' + escapeHtml(room.avatar_url) + '" alt="' + escapeHtml(room.title) + '">'
       : escapeHtml((room && room.avatar_initial) || "A");
     if (dom.activeRoomAvatar) dom.activeRoomAvatar.innerHTML = avatar;
-    if (dom.activeRoomTitle) dom.activeRoomTitle.textContent = room ? normalizeText(room.title) : "대화방 선택";
-    if (dom.activeRoomSubtitle) dom.activeRoomSubtitle.textContent = room ? normalizeText(room.subtitle || room.topic || "") : "왼쪽 목록에서 대화방을 선택하면 메시지를 볼 수 있습니다.";
+    if (dom.activeRoomTitle) dom.activeRoomTitle.textContent = room
+      ? normalizeText(room.title)
+      : (isAscord ? "ASCORD 채널 선택" : "대화방 선택");
+    if (dom.activeRoomSubtitle) {
+      if (!room) {
+        dom.activeRoomSubtitle.textContent = isAscord
+          ? "왼쪽 목록에서 ASCORD 음성채널을 선택하면 전체 화면으로 통화 상태를 볼 수 있습니다."
+          : "왼쪽 목록에서 대화방을 선택하면 메시지를 볼 수 있습니다.";
+      } else if (isAscord) {
+        const baseParts = [
+          channelModeLabel(roomChannelMode(room)),
+          ascordCategoryLabel(room),
+          participantCount > 0 ? (String(participantCount) + "명 연결") : "대기 중",
+          joinedHere ? "현재 이 채널에 참여 중" : "채널 선택 후 음성 입장 버튼으로 연결",
+        ];
+        dom.activeRoomSubtitle.textContent = baseParts.join(" · ");
+      } else {
+        dom.activeRoomSubtitle.textContent = normalizeText(room.subtitle || room.topic || "");
+      }
+    }
 
     const enabled = !!room;
     if (dom.starToggleBtn) {
@@ -2293,13 +4187,13 @@
       dom.roomMuteBtn.setAttribute("aria-label", room && room.is_muted ? "알림 켜기" : "알림 끄기");
     }
     if (dom.roomMoreBtn) dom.roomMoreBtn.disabled = !enabled;
-    if (dom.composerInput) dom.composerInput.disabled = !enabled;
-    if (dom.sendBtn) dom.sendBtn.disabled = !enabled;
-    if (dom.attachBtn) dom.attachBtn.disabled = !enabled;
-    if (dom.emojiBtn) dom.emojiBtn.disabled = !enabled;
-    if (dom.mentionBtn) dom.mentionBtn.disabled = !enabled;
-    if (dom.linkInsertBtn) dom.linkInsertBtn.disabled = !enabled;
-    if (dom.formatBtn) dom.formatBtn.disabled = !enabled;
+    if (dom.composerInput) dom.composerInput.disabled = !enabled || isAscord;
+    if (dom.sendBtn) dom.sendBtn.disabled = !enabled || isAscord;
+    if (dom.attachBtn) dom.attachBtn.disabled = !enabled || isAscord;
+    if (dom.emojiBtn) dom.emojiBtn.disabled = !enabled || isAscord;
+    if (dom.mentionBtn) dom.mentionBtn.disabled = !enabled || isAscord;
+    if (dom.linkInsertBtn) dom.linkInsertBtn.disabled = !enabled || isAscord;
+    if (dom.formatBtn) dom.formatBtn.disabled = !enabled || isAscord;
     renderRoomMoreMenu();
     renderCallUi();
   }
@@ -2414,6 +4308,7 @@
     }
     sortRooms();
     state.activeRoom = currentRoom();
+    enforceJoinedRoomPermissions(findRoomById(state.call.joinedRoomId) || room).catch(function () {});
     recalcCounts();
     renderRoomList();
     renderHeader();
@@ -2421,15 +4316,23 @@
   }
 
   function removeRoom(roomId) {
-    delete state.call.roomCallsById[Number(roomId || 0)];
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    if (Number(state.call.joinedRoomId || 0) === targetRoomId) {
+      disconnectLiveKitRoom(false).catch(function () {});
+    }
+    delete state.call.roomCallsById[targetRoomId];
+    delete state.call.callSnapshotsByRoomId[targetRoomId];
+    delete state.call.incomingInvitesByRoomId[targetRoomId];
+    delete state.call.serverMutedRoomIds[targetRoomId];
     state.rooms = state.rooms.filter(function (room) {
-      return Number(room.id || 0) !== Number(roomId || 0);
+      return Number(room.id || 0) !== targetRoomId;
     });
     state.roomHistory = (state.roomHistory || []).filter(function (value) {
-      return Number(value || 0) !== Number(roomId || 0);
+      return Number(value || 0) !== targetRoomId;
     });
     persistRecentRooms();
-    if (Number(state.activeRoomId || 0) === Number(roomId || 0)) {
+    if (Number(state.activeRoomId || 0) === targetRoomId) {
       state.activeRoomId = state.rooms.length ? Number(state.rooms[0].id || 0) : 0;
       state.activeRoom = currentRoom();
       if (state.activeRoom) {
@@ -2442,6 +4345,7 @@
     }
     recalcCounts();
     renderRoomList();
+    renderIncomingCallInvites();
   }
 
   async function loadBootstrap(roomId) {
@@ -2462,6 +4366,7 @@
     const nextRoomId = Number(data.active_room_id || state.activeRoomId || 0);
     state.activeRoomId = nextRoomId;
     state.activeRoom = currentRoom();
+    enforceJoinedRoomPermissions(findRoomById(state.call.joinedRoomId)).catch(function () {});
     renderHeader();
     renderInspector();
     renderMessages();
@@ -2534,6 +4439,10 @@
     const targetRoomId = Number(roomId || 0);
     if (targetRoomId <= 0 || Number(state.activeRoomId || 0) === targetRoomId) {
       state.activeRoom = currentRoom();
+      if (state.viewMode === "ascord") {
+        markLiveRoomSeen(targetRoomId, callForRoom(targetRoomId));
+        recalcCounts();
+      }
       renderRoomList();
       renderHeader();
       renderInspector();
@@ -2544,6 +4453,10 @@
     }
     state.activeRoomId = targetRoomId;
     state.activeRoom = currentRoom();
+    if (state.viewMode === "ascord") {
+      markLiveRoomSeen(targetRoomId, callForRoom(targetRoomId));
+      recalcCounts();
+    }
     renderRoomList();
     renderHeader();
     renderInspector();
@@ -2566,8 +4479,409 @@
     dismissNotificationsForRoom(targetRoomId);
   }
 
+  async function openAscordRoom(roomId) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    setNotificationMenuOpen(false);
+    if (!state.initialized) {
+      await init();
+    }
+    setPopupOpen(true);
+    setViewMode("ascord");
+    await selectRoom(targetRoomId);
+    markLiveRoomSeen(targetRoomId, callForRoom(targetRoomId));
+    recalcCounts();
+  }
+
+  function stageRequestQueueItems(room, roomCall) {
+    const targetRoom = room || state.activeRoom;
+    const targetCall = roomCall || activeRoomCall();
+    return currentCallParticipantSummaries(targetRoom, targetCall).filter(function (summary) {
+      return !!summary && !summary.isLocal && !!summary.speakerRequested;
+    });
+  }
+
+  function stageQueueApprovalMarkup(summary) {
+    const payload = summary || {};
+    const avatar = payload.profileImageUrl
+      ? '<img src="' + escapeAttribute(payload.profileImageUrl) + '" alt="' + escapeAttribute(payload.displayName || payload.userId || "참여자") + '">'
+      : escapeHtml(payload.avatarInitial || avatarInitialFor(payload.displayName, payload.userId));
+    return [
+      '<div class="messenger-contact-picker__item" data-stage-queue-user-id="' + escapeAttribute(payload.userId || "") + '">',
+      '<span class="messenger-contact-picker__avatar">' + avatar + "</span>",
+      '<span class="messenger-contact-picker__meta">',
+      '<strong>' + escapeHtml(payload.displayName || payload.userId || "참여자") + "</strong>",
+      '<span>' + escapeHtml(payload.department || "ASCORD STAGE") + "</span>",
+      "</span>",
+      '<button type="button" class="btn btn-primary btn-sm" data-stage-queue-approve="' + escapeAttribute(payload.userId || "") + '">승인</button>',
+      "</div>",
+    ].join("");
+  }
+
+  async function openStageRequestQueue(room) {
+    const targetRoom = room || state.activeRoom;
+    const roomCall = activeRoomCall();
+    if (!targetRoom || !isStageRoom(targetRoom) || !canModerateCall(targetRoom)) return;
+    const pending = stageRequestQueueItems(targetRoom, roomCall);
+    if (!hasSwal()) {
+      if (!pending.length) {
+        await showWarning("현재 대기 중인 발언 요청이 없습니다.");
+        return;
+      }
+      await showWarning("이 브라우저에서는 요청 관리 팝업을 열 수 없습니다.");
+      return;
+    }
+    await fireDialog({
+      title: "발언 요청 관리",
+      width: "40rem",
+      html: [
+        '<div class="app-swal-form">',
+        '<div class="app-swal-field-group">',
+        '<label class="form-label">대기 중인 요청</label>',
+        '<div class="messenger-contact-picker app-swal-contact-picker" id="swalMessengerStageQueueList">',
+        pending.length
+          ? pending.map(stageQueueApprovalMarkup).join("")
+          : '<div class="messenger-empty-inline">현재 대기 중인 발언 요청이 없습니다.</div>',
+        "</div>",
+        '</div>',
+        '</div>',
+      ].join(""),
+      showConfirmButton: false,
+      showCancelButton: true,
+      cancelButtonText: "닫기",
+      didOpen: function () {
+        const list = document.getElementById("swalMessengerStageQueueList");
+        if (!list) return;
+        list.addEventListener("click", function (event) {
+          const button = event.target instanceof Element ? event.target.closest("[data-stage-queue-approve]") : null;
+          if (!button) return;
+          const userId = normalizeText(button.getAttribute("data-stage-queue-approve"));
+          if (!userId) return;
+          button.setAttribute("disabled", "disabled");
+          sendCallModerationAction("grant_speaker", userId, targetRoom).then(function () {
+            const item = button.closest("[data-stage-queue-user-id]");
+            if (item && item.parentNode) {
+              item.parentNode.removeChild(item);
+            }
+            if (!list.querySelector("[data-stage-queue-user-id]")) {
+              list.innerHTML = '<div class="messenger-empty-inline">현재 대기 중인 발언 요청이 없습니다.</div>';
+            }
+          }).catch(function (error) {
+            button.removeAttribute("disabled");
+            showError((error && error.message) || "발언 요청을 승인하지 못했습니다.");
+          });
+        });
+      },
+    });
+  }
+
+  async function joinAscordVoiceChannel(roomId) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    if (!state.initialized) {
+      await init();
+    }
+    setPopupOpen(true);
+    setViewMode("ascord");
+    await selectRoom(targetRoomId);
+    markLiveRoomSeen(targetRoomId, callForRoom(targetRoomId));
+    recalcCounts();
+    if (Number(state.call.joinedRoomId || 0) === targetRoomId && !!currentLiveRoom()) {
+      return;
+    }
+    await startOrJoinCall("audio");
+  }
+
   function currentUserId() {
     return normalizeText((state.currentUser || {}).user_id);
+  }
+
+  function livekitIdentityUserId(identity) {
+    const normalized = normalizeText(identity);
+    if (!normalized) return "";
+    return normalizeText(normalized.split("__")[0] || normalized);
+  }
+
+  function participantVolume(identity) {
+    const targetIdentity = normalizeText(identity);
+    const storedValue = Number(state.call.participantVolumes[targetIdentity]);
+    if (!targetIdentity || !Number.isFinite(storedValue)) return 1;
+    return clampNumber(storedValue, 0, 1);
+  }
+
+  function setParticipantVolume(identity, value) {
+    const targetIdentity = normalizeText(identity);
+    if (!targetIdentity) return;
+    state.call.participantVolumes[targetIdentity] = clampNumber(Number(value), 0, 1);
+    persistCallPreferences();
+    applyRemoteAudioPreferences();
+    if (state.viewMode === "ascord") {
+      renderInspector();
+    }
+  }
+
+  function currentActiveSpeakerIdentities(room) {
+    const targetRoom = room || null;
+    return new Set((targetRoom && targetRoom.activeSpeakers ? targetRoom.activeSpeakers : []).map(function (participant) {
+      return normalizeText((participant || {}).identity);
+    }).filter(Boolean));
+  }
+
+  function roomMemberProfile(room, userId, fallbackDisplayName) {
+    const targetRoom = room || state.activeRoom;
+    const targetUserId = normalizeText(userId);
+    const member = findMemberByUserId(targetRoom, targetUserId) || findContactByUserId(targetUserId) || {};
+    const displayName = normalizeText(member.display_name || fallbackDisplayName || member.name || targetUserId || "참여자");
+    return {
+      user_id: targetUserId,
+      display_name: displayName,
+      profile_image_url: normalizeText(member.profile_image_url),
+      avatar_initial: normalizeText(member.avatar_initial || avatarInitialFor(displayName, targetUserId || "U")),
+      presence_tone: normalizeText(member.presence_tone || "offline"),
+      department: normalizeText(member.department || member.presence_label || ""),
+      member_role: normalizeText(member.member_role || "member"),
+    };
+  }
+
+  function currentCallParticipantSummaries(room, roomCall) {
+    const targetRoom = room || state.activeRoom;
+    const liveRoom = currentLiveRoom();
+    const joinedHere = !!targetRoom && !!liveRoom && Number(state.call.joinedRoomId || 0) === Number(targetRoom.id || 0);
+    const roomCallParticipants = Array.isArray(roomCall && roomCall.participants) ? roomCall.participants : [];
+    if (joinedHere) {
+      return livekitParticipantSummaries(liveRoom, targetRoom).map(function (summary) {
+        const participant = roomCallParticipants.find(function (item) {
+          return normalizeText((item || {}).user_id) === normalizeText(summary.userId);
+        }) || {};
+        const participantStatus = normalizeText((participant && participant.user_id) ? callPreviewSubtitle(participant, targetRoom) : summary.statusText);
+        return Object.assign({}, summary, {
+          isStage: isStageRoom(targetRoom),
+          stageRole: callParticipantStageRole(participant),
+          speakerRequested: callParticipantSpeakerRequested(participant),
+          serverMuted: !!participant.server_muted,
+          statusText: participantStatus || summary.statusText,
+        });
+      });
+    }
+    if (!roomCall || !Array.isArray(roomCall.participants)) return [];
+    return (roomCall.participants || []).map(function (participant) {
+      const userId = normalizeText((participant || {}).user_id);
+      const profile = roomMemberProfile(targetRoom, userId, participant.display_name);
+      return {
+        identity: userId,
+        volumeKey: userId,
+        userId: userId,
+        displayName: profile.display_name,
+        department: profile.department,
+        memberRole: profile.member_role,
+        profileImageUrl: profile.profile_image_url,
+        avatarInitial: profile.avatar_initial,
+        isLocal: currentUserId() === userId,
+        isStage: isStageRoom(targetRoom),
+        stageRole: callParticipantStageRole(participant),
+        speakerRequested: callParticipantSpeakerRequested(participant),
+        isSpeaking: false,
+        audioEnabled: !!participant.audio_enabled,
+        videoEnabled: !!participant.video_enabled,
+        sharingScreen: !!participant.sharing_screen,
+        serverMuted: !!participant.server_muted,
+        statusText: callPreviewSubtitle(participant, targetRoom),
+      };
+    });
+  }
+
+  async function refreshCallDevices() {
+    if (!(navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === "function")) {
+      return;
+    }
+    let devices = [];
+    try {
+      devices = await navigator.mediaDevices.enumerateDevices();
+    } catch (_) {
+      devices = [];
+    }
+    const nextDevices = {
+      audioinput: [],
+      audiooutput: [],
+      videoinput: [],
+    };
+    (devices || []).forEach(function (device) {
+      const kind = normalizeText((device || {}).kind);
+      if (!nextDevices[kind]) return;
+      nextDevices[kind].push(device);
+    });
+    state.call.devices = nextDevices;
+    state.call.audioOutputSupported = typeof HTMLMediaElement !== "undefined" && typeof HTMLMediaElement.prototype.setSinkId === "function";
+    Object.keys(nextDevices).forEach(function (kind) {
+      const selectedValue = normalizeText((state.call.selectedDevices || {})[kind]);
+      const hasSelectedValue = !!selectedValue && nextDevices[kind].some(function (device) {
+        return normalizeText(device.deviceId) === selectedValue;
+      });
+      if (!hasSelectedValue) {
+        state.call.selectedDevices[kind] = normalizeText((nextDevices[kind][0] && nextDevices[kind][0].deviceId) || "");
+      }
+    });
+    persistCallPreferences();
+    applyRemoteAudioPreferences();
+    if (state.viewMode === "ascord") {
+      renderInspector();
+    }
+  }
+
+  async function applySelectedInputDevices() {
+    const room = currentLiveRoom();
+    if (!room || typeof room.switchActiveDevice !== "function") return;
+    const audioInputId = normalizeText((state.call.selectedDevices || {}).audioinput);
+    const videoInputId = normalizeText((state.call.selectedDevices || {}).videoinput);
+    if (audioInputId) {
+      try {
+        await room.switchActiveDevice("audioinput", audioInputId);
+      } catch (_) {}
+    }
+    if (videoInputId && state.call.cameraEnabled) {
+      try {
+        await room.switchActiveDevice("videoinput", videoInputId);
+      } catch (_) {}
+    }
+  }
+
+  async function switchCallDevice(kind, deviceId) {
+    const targetKind = normalizeText(kind);
+    const nextDeviceId = normalizeText(deviceId);
+    if (!targetKind) return;
+    state.call.selectedDevices[targetKind] = nextDeviceId;
+    persistCallPreferences();
+    const room = currentLiveRoom();
+    if (room && typeof room.switchActiveDevice === "function" && nextDeviceId) {
+      try {
+        await room.switchActiveDevice(targetKind, nextDeviceId);
+      } catch (error) {
+        if (targetKind === "audiooutput") {
+          applyRemoteAudioPreferences();
+        } else {
+          throw error;
+        }
+      }
+    }
+    applyRemoteAudioPreferences();
+    renderInspector();
+  }
+
+  async function sendCallModerationAction(action, targetUserId, room) {
+    const targetRoom = room || state.activeRoom;
+    const targetRoomId = Number((targetRoom && targetRoom.id) || 0);
+    const normalizedAction = normalizeText(action).toLowerCase();
+    const normalizedUserId = normalizeText(targetUserId);
+    if (targetRoomId <= 0 || !normalizedAction || !normalizedUserId) return;
+    const payload = await api("/api/messenger/rooms/" + targetRoomId + "/call/moderate", {
+      method: "POST",
+      body: JSON.stringify({
+        action: normalizedAction,
+        target_user_id: normalizedUserId,
+      }),
+    });
+    if (payload && payload.call) {
+      await handleCallStateUpdate(payload.call);
+    }
+    if (normalizedAction === "grant_speaker") {
+      await showToast("success", "발표자 권한을 승인했습니다.");
+      return;
+    }
+    if (normalizedAction === "move_to_audience") {
+      await showToast("success", "청중 권한으로 전환했습니다.");
+    }
+  }
+
+  async function sendStageRequestAction(action, room) {
+    const targetRoom = room || state.activeRoom;
+    const targetRoomId = Number((targetRoom && targetRoom.id) || 0);
+    const normalizedAction = normalizeText(action).toLowerCase();
+    if (targetRoomId <= 0 || !normalizedAction) return;
+    const payload = await api("/api/messenger/rooms/" + targetRoomId + "/call/stage", {
+      method: "POST",
+      body: JSON.stringify({ action: normalizedAction }),
+    });
+    if (payload && payload.call) {
+      await handleCallStateUpdate(payload.call);
+    }
+    if (normalizedAction === "request_speaker") {
+      await showToast("success", "발언 요청을 보냈습니다.");
+      return;
+    }
+    if (normalizedAction === "withdraw_request") {
+      await showToast("success", "발언 요청을 취소했습니다.");
+      return;
+    }
+    if (normalizedAction === "move_self_to_audience") {
+      await showToast("success", "청중으로 전환했습니다.");
+    }
+  }
+
+  async function updateRoomMemberRole(targetUserId, memberRole, room) {
+    const targetRoom = room || state.activeRoom;
+    const targetRoomId = Number((targetRoom && targetRoom.id) || 0);
+    const normalizedUserId = normalizeText(targetUserId);
+    const normalizedRole = normalizeMemberRole(memberRole);
+    if (targetRoomId <= 0 || !normalizedUserId) return;
+    const payload = await api("/api/messenger/rooms/" + targetRoomId + "/members/" + encodeURIComponent(normalizedUserId), {
+      method: "PATCH",
+      body: JSON.stringify({ member_role: normalizedRole }),
+    });
+    if (payload && payload.room) {
+      mergeRoom(payload.room);
+      state.activeRoom = currentRoom();
+    }
+    await showToast("success", normalizedRole === "admin" ? "ADMIN 권한을 부여했습니다." : "일반 멤버로 변경했습니다.");
+  }
+
+  async function removeMemberFromRoom(targetUserId, room) {
+    const targetRoom = room || state.activeRoom;
+    const targetRoomId = Number((targetRoom && targetRoom.id) || 0);
+    const normalizedUserId = normalizeText(targetUserId);
+    if (targetRoomId <= 0 || !normalizedUserId) return;
+    const member = findMemberByUserId(targetRoom, normalizedUserId) || findContactByUserId(normalizedUserId) || {};
+    const displayName = normalizeText(member.display_name || member.name || normalizedUserId);
+    if (!await askConfirm("구성원 제거", displayName + "님을 이 채널에서 제거할까요?", "제거", "warning")) return;
+    const payload = await api("/api/messenger/rooms/" + targetRoomId + "/members/" + encodeURIComponent(normalizedUserId), {
+      method: "DELETE",
+    });
+    if (payload && payload.room) {
+      mergeRoom(payload.room);
+      state.activeRoom = currentRoom();
+    }
+    await showToast("success", "구성원을 채널에서 제거했습니다.");
+  }
+
+  async function transferRoomOwner(targetUserId, room) {
+    const targetRoom = room || state.activeRoom;
+    const targetRoomId = Number((targetRoom && targetRoom.id) || 0);
+    const normalizedUserId = normalizeText(targetUserId);
+    if (targetRoomId <= 0 || !normalizedUserId) return;
+    const member = findMemberByUserId(targetRoom, normalizedUserId) || findContactByUserId(normalizedUserId) || {};
+    const displayName = normalizeText(member.display_name || member.name || normalizedUserId);
+    if (!await askConfirm("OWNER 이전", displayName + "님에게 OWNER 권한을 이전할까요?", "이전", "warning")) return;
+    const payload = await api("/api/messenger/rooms/" + targetRoomId + "/members/" + encodeURIComponent(normalizedUserId) + "/transfer-owner", {
+      method: "POST",
+    });
+    if (payload && payload.room) {
+      mergeRoom(payload.room);
+      state.activeRoom = currentRoom();
+    }
+    await showToast("success", "OWNER 권한을 이전했습니다.");
+  }
+
+  async function leaveRoom(room) {
+    const targetRoom = room || state.activeRoom;
+    const targetRoomId = Number((targetRoom && targetRoom.id) || 0);
+    if (targetRoomId <= 0) return;
+    if (!await askConfirm("채널 나가기", "이 채널에서 나갈까요?", "나가기", "warning")) return;
+    const payload = await api("/api/messenger/rooms/" + targetRoomId + "/leave", {
+      method: "POST",
+    });
+    if (payload && payload.room_id) {
+      removeRoom(payload.room_id);
+    }
+    await showToast("success", "채널에서 나갔습니다.");
   }
 
   function livekitSdk() {
@@ -2581,6 +4895,104 @@
   function livekitAvailable() {
     const sdk = livekitSdk();
     return !!(livekitConfigured() && sdk && typeof sdk.Room === "function");
+  }
+
+  function livekitConnectionErrorLooksTransient(error) {
+    const message = normalizeText((error && error.message) || error).toLowerCase();
+    return message.indexOf("client initiated disconnect") !== -1
+      || message.indexOf("abort handler called") !== -1
+      || message.indexOf("could not establish signal connection") !== -1;
+  }
+
+  function livekitPermissionDenied(error) {
+    const name = normalizeText((error && error.name) || "").toLowerCase();
+    const message = normalizeText((error && error.message) || error).toLowerCase();
+    return name === "notallowederror"
+      || name === "permissiondeniederror"
+      || message.indexOf("permission denied") !== -1
+      || message.indexOf("notallowederror") !== -1
+      || message.indexOf("permission dismissed") !== -1;
+  }
+
+  function livekitDeviceMissing(error) {
+    const name = normalizeText((error && error.name) || "").toLowerCase();
+    const message = normalizeText((error && error.message) || error).toLowerCase();
+    return name === "notfounderror"
+      || message.indexOf("requested device not found") !== -1
+      || message.indexOf("could not start video source") !== -1
+      || message.indexOf("could not start audio source") !== -1
+      || message.indexOf("device not found") !== -1;
+  }
+
+  function formatCallCaptureWarmupError(error, mode) {
+    const requestedMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    if (livekitPermissionDenied(error)) {
+      return requestedMode === "video"
+        ? "브라우저에서 마이크 또는 카메라 권한이 차단되어 있습니다. 주소창 자물쇠 아이콘의 사이트 설정에서 마이크/카메라를 허용한 뒤 다시 시도해주세요."
+        : "브라우저에서 마이크 권한이 차단되어 있습니다. 주소창 자물쇠 아이콘의 사이트 설정에서 마이크를 허용한 뒤 다시 시도해주세요.";
+    }
+    if (livekitDeviceMissing(error)) {
+      return requestedMode === "video"
+        ? "사용 가능한 마이크 또는 카메라 장치를 찾지 못했습니다. 장치 연결 상태를 확인한 뒤 다시 시도해주세요."
+        : "사용 가능한 마이크 장치를 찾지 못했습니다. 장치 연결 상태를 확인한 뒤 다시 시도해주세요.";
+    }
+    return normalizeText((error && error.message) || error) || "통화에 필요한 장치를 준비하지 못했습니다.";
+  }
+
+  async function warmupCallCapturePermissions(mode) {
+    const requestedMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    if (!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function")) {
+      return { effectiveMode: requestedMode, warning: "" };
+    }
+
+    const requestDevices = async function (constraints) {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stopStreamTracks(stream);
+      return stream;
+    };
+
+    if (requestedMode === "video") {
+      try {
+        await requestDevices({ audio: true, video: true });
+        await refreshCallDevices().catch(function () {});
+        return { effectiveMode: "video", warning: "" };
+      } catch (error) {
+        try {
+          await requestDevices({ audio: true, video: false });
+          await refreshCallDevices().catch(function () {});
+          return {
+            effectiveMode: "audio",
+            warning: livekitPermissionDenied(error)
+              ? "카메라 권한이 없어 음성으로 입장합니다."
+              : "카메라 장치를 준비하지 못해 음성으로 입장합니다.",
+          };
+        } catch (audioError) {
+          throw audioError || error;
+        }
+      }
+    }
+
+    await requestDevices({ audio: true, video: false });
+    await refreshCallDevices().catch(function () {});
+    return { effectiveMode: "audio", warning: "" };
+  }
+
+  function formatLivekitConnectionError(error) {
+    const rawMessage = normalizeText((error && error.message) || error);
+    const message = rawMessage.toLowerCase();
+    if (!rawMessage) {
+      return "통화 시작에 실패했습니다.";
+    }
+    if (livekitPermissionDenied(error)) {
+      return "브라우저에서 마이크/카메라 권한이 차단되어 통화에 연결하지 못했습니다. 주소창 자물쇠 아이콘의 사이트 설정에서 권한을 허용한 뒤 다시 시도해주세요.";
+    }
+    if (message.indexOf("could not establish pc connection") !== -1) {
+      return "미디어 연결을 만들지 못했습니다. 브라우저 권한과 TURN/TLS 443 경로, 그리고 서버 릴레이 포트(30000-30100/UDP) 외부 개방 상태를 함께 확인해주세요.";
+    }
+    if (message.indexOf("could not establish signal connection") !== -1) {
+      return "시그널 연결을 만들지 못했습니다. HTTPS/WSS 연결, LiveKit 서버 상태, TURN/TLS 443 경로, 그리고 브라우저 마이크/카메라 권한 차단 여부를 함께 확인해주세요.";
+    }
+    return rawMessage;
   }
 
   function callClientStorageKey() {
@@ -2609,8 +5021,9 @@
     return state.call.liveRoom || null;
   }
 
-  function callParticipantCount(roomCall) {
-    const liveRoom = currentLiveRoom();
+  function callParticipantCount(roomCall, roomId) {
+    const targetRoomId = Number(roomId || (roomCall && roomCall.room_id) || 0);
+    const liveRoom = targetRoomId > 0 && Number(state.call.joinedRoomId || 0) === targetRoomId ? currentLiveRoom() : null;
     const liveCount = liveRoom ? (1 + Number((liveRoom.remoteParticipants && liveRoom.remoteParticipants.size) || 0)) : 0;
     const presenceCount = Number((roomCall && roomCall.participant_count) || 0);
     return Math.max(liveCount, presenceCount);
@@ -2690,15 +5103,24 @@
     bindEvent(sdk.RoomEvent.Disconnected, function () {
       if (state.call.liveRoom !== targetRoom) return;
       const roomId = Number(state.call.joinedRoomId || 0);
+      if (roomId > 0) {
+        delete state.call.serverMutedRoomIds[roomId];
+      }
       state.call.liveRoom = null;
       state.call.liveRoomName = "";
       state.call.liveParticipantIdentity = "";
       state.call.joinedRoomId = 0;
       state.call.joining = false;
+      state.call.requestedAudioEnabled = true;
       state.call.audioEnabled = true;
       state.call.cameraEnabled = false;
       state.call.sharingScreen = false;
+      state.call.deafened = false;
+      state.call.pushToTalkPressed = false;
+      state.call.pinnedTrackId = "";
       renderCallUi();
+      renderRoomList();
+      renderInspector();
       if (roomId > 0) {
         sendSocket({ type: "call_leave", room_id: roomId });
       }
@@ -2722,69 +5144,132 @@
     }
     if (existingRoom && Number(state.call.joinedRoomId || 0) !== targetRoomId) {
       await disconnectLiveKitRoom(false);
+      await delayMs(120);
     }
-
-    const session = await requestCallSession(targetRoomId, requestedMode);
-    if (!session || !session.server_url || !session.participant_token) {
-      throw new Error("통화 세션 정보를 불러오지 못했습니다.");
-    }
-
-    const sdk = livekitSdk();
-    const videoCaptureDefaults = sdk.VideoPresets && sdk.VideoPresets.h720
-      ? { resolution: sdk.VideoPresets.h720.resolution }
-      : undefined;
-    const room = new sdk.Room({
-      adaptiveStream: true,
-      dynacast: true,
-      videoCaptureDefaults: videoCaptureDefaults,
-    });
-
-    bindLiveRoomEvents(room);
-    state.call.liveRoom = room;
-    state.call.liveRoomName = normalizeText(session.room_name);
-    state.call.liveParticipantIdentity = normalizeText(session.participant_identity);
-    state.call.requestedMode = requestedMode;
-    state.call.joinedRoomId = targetRoomId;
-    if (typeof room.prepareConnection === "function") {
-      room.prepareConnection(session.server_url, session.participant_token);
-    }
-    await room.connect(session.server_url, session.participant_token);
-    try {
-      if (typeof room.startAudio === "function") {
-        await room.startAudio();
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const session = await requestCallSession(targetRoomId, requestedMode);
+      if (!session || !session.server_url || !session.participant_token) {
+        throw new Error("통화 세션 정보를 불러오지 못했습니다.");
       }
-    } catch (_) {}
-    if (requestedMode === "video" && room.localParticipant.enableCameraAndMicrophone) {
-      await room.localParticipant.enableCameraAndMicrophone();
-    } else if (requestedMode === "video") {
-      await room.localParticipant.setMicrophoneEnabled(true);
-      await room.localParticipant.setCameraEnabled(true);
-    } else {
-      await room.localParticipant.setMicrophoneEnabled(true);
-      await room.localParticipant.setCameraEnabled(false);
+      const effectiveMode = normalizeText(session.preferred_mode).toLowerCase() === "video" ? "video" : "audio";
+
+      const sdk = livekitSdk();
+      const videoCaptureDefaults = sdk.VideoPresets && sdk.VideoPresets.h720
+        ? { resolution: sdk.VideoPresets.h720.resolution }
+        : undefined;
+      const room = new sdk.Room({
+        adaptiveStream: true,
+        dynacast: true,
+        videoCaptureDefaults: videoCaptureDefaults,
+      });
+
+      bindLiveRoomEvents(room);
+      try {
+        await room.connect(session.server_url, session.participant_token);
+        state.call.liveRoom = room;
+        state.call.liveRoomName = normalizeText(session.room_name);
+        state.call.liveParticipantIdentity = normalizeText(session.participant_identity);
+        state.call.requestedMode = effectiveMode;
+        state.call.joinedRoomId = targetRoomId;
+        try {
+          if (typeof room.startAudio === "function") {
+            await room.startAudio();
+          }
+        } catch (_) {}
+        let mediaEnableError = null;
+        try {
+          if (effectiveMode === "video" && room.localParticipant.enableCameraAndMicrophone) {
+            await room.localParticipant.enableCameraAndMicrophone();
+          } else if (effectiveMode === "video") {
+            await room.localParticipant.setMicrophoneEnabled(true);
+            await room.localParticipant.setCameraEnabled(true);
+          } else {
+            await room.localParticipant.setMicrophoneEnabled(true);
+            await room.localParticipant.setCameraEnabled(false);
+          }
+        } catch (mediaError) {
+          mediaEnableError = mediaError || null;
+          try {
+            await room.localParticipant.setCameraEnabled(false);
+          } catch (_) {}
+          try {
+            await room.localParticipant.setMicrophoneEnabled(false);
+          } catch (_) {}
+          state.call.requestedAudioEnabled = false;
+          state.call.micBeforeDeafen = false;
+        }
+        await applySelectedInputDevices();
+        refreshCallDevices().catch(function () {});
+        syncLocalMediaStateFromLiveRoom();
+        if (mediaEnableError) {
+          await showToast(
+            "warning",
+            livekitPermissionDenied(mediaEnableError)
+              ? "마이크 또는 카메라 권한이 막혀 있어 듣기 전용으로 입장했습니다."
+              : "마이크 또는 카메라를 켜지 못해 듣기 전용으로 입장했습니다."
+          ).catch(function () {});
+        }
+        return room;
+      } catch (error) {
+        try {
+          console.error("[ABBASMessenger:livekit-connect]", {
+            roomId: targetRoomId,
+            requestedMode: requestedMode,
+            attempt: attempt + 1,
+            serverUrl: session.server_url,
+            error: error,
+          });
+        } catch (_) {}
+        lastError = error;
+        if (state.call.liveRoom === room) {
+          await disconnectLiveKitRoom(false);
+        } else {
+          try {
+            const disconnectResult = room && typeof room.disconnect === "function" ? room.disconnect() : null;
+            if (disconnectResult && typeof disconnectResult.then === "function") {
+              await disconnectResult.catch(function () {});
+            }
+          } catch (_) {}
+        }
+        if (attempt === 0 && livekitConnectionErrorLooksTransient(error)) {
+          await delayMs(180);
+          continue;
+        }
+        throw error;
+      }
     }
-    syncLocalMediaStateFromLiveRoom();
-    return room;
+    throw lastError || new Error("통화 연결에 실패했습니다.");
   }
 
   async function disconnectLiveKitRoom(notifyServer) {
     const room = currentLiveRoom();
     const roomId = Number(state.call.joinedRoomId || 0);
+    if (roomId > 0) {
+      delete state.call.serverMutedRoomIds[roomId];
+    }
     state.call.liveRoom = null;
     state.call.liveRoomName = "";
     state.call.liveParticipantIdentity = "";
     state.call.joinedRoomId = 0;
     state.call.joining = false;
     state.call.requestedMode = "";
+    state.call.requestedAudioEnabled = true;
     state.call.audioEnabled = true;
     state.call.cameraEnabled = false;
     state.call.sharingScreen = false;
+    state.call.deafened = false;
+    state.call.pushToTalkPressed = false;
+    state.call.pinnedTrackId = "";
     if (notifyServer && roomId > 0) {
       sendSocket({ type: "call_leave", room_id: roomId });
     }
     try {
       if (room && typeof room.disconnect === "function") {
-        room.disconnect();
+        const disconnectResult = room.disconnect();
+        if (disconnectResult && typeof disconnectResult.then === "function") {
+          await disconnectResult.catch(function () {});
+        }
       }
     } catch (_) {}
     if (dom.callAudioSink) {
@@ -2797,13 +5282,59 @@
     return normalizeText(payload.name || payload.identity || fallback || "참여자");
   }
 
+  function livekitParticipantSummaries(room, roomMeta) {
+    const sdk = livekitSdk();
+    const targetRoom = room || null;
+    const targetRoomMeta = roomMeta || state.activeRoom;
+    if (!sdk || !targetRoom) return [];
+    const speakingIds = currentActiveSpeakerIdentities(targetRoom);
+    const summaries = [];
+    const pushParticipant = function (participant, isLocal) {
+      const identity = normalizeText((participant || {}).identity);
+      const userId = livekitIdentityUserId(identity);
+      const displayName = livekitParticipantDisplayName(participant, isLocal ? "나" : "참여자");
+      const micPublication = callTrackPublication(participant, sdk.Track.Source.Microphone);
+      const cameraPublication = callTrackPublication(participant, sdk.Track.Source.Camera);
+      const screenPublication = callTrackPublication(participant, sdk.Track.Source.ScreenShare);
+      const profile = roomMemberProfile(targetRoomMeta, userId, displayName);
+      summaries.push({
+        identity: identity,
+        volumeKey: identity,
+        userId: userId,
+        displayName: displayName,
+        department: profile.department,
+        memberRole: profile.member_role,
+        profileImageUrl: profile.profile_image_url,
+        avatarInitial: profile.avatar_initial,
+        isLocal: !!isLocal,
+        isSpeaking: speakingIds.has(identity),
+        audioEnabled: !!(micPublication && !micPublication.isMuted),
+        videoEnabled: !!(cameraPublication && !cameraPublication.isMuted),
+        sharingScreen: !!(screenPublication && !screenPublication.isMuted),
+        statusText: profile.department || (screenPublication && !screenPublication.isMuted ? "화면 공유 중" : (cameraPublication && !cameraPublication.isMuted ? "카메라 송출 중" : (micPublication && !micPublication.isMuted ? "음성 연결됨" : "대기 중"))),
+      });
+    };
+    if (targetRoom.localParticipant) {
+      pushParticipant(targetRoom.localParticipant, true);
+    }
+    if (targetRoom.remoteParticipants && typeof targetRoom.remoteParticipants.forEach === "function") {
+      targetRoom.remoteParticipants.forEach(function (participant) {
+        pushParticipant(participant, false);
+      });
+    }
+    return sortStageAwareEntries(targetRoomMeta, summaries);
+  }
+
   function livekitParticipantRenderItems(room) {
     const sdk = livekitSdk();
     const targetRoom = room || null;
     if (!sdk || !targetRoom) return [];
     const visualItems = [];
     const audioItems = [];
+    const speakingIds = currentActiveSpeakerIdentities(targetRoom);
     const pushParticipant = function (participant, isLocal) {
+      const identity = normalizeText((participant || {}).identity);
+      const userId = livekitIdentityUserId(identity);
       const displayName = livekitParticipantDisplayName(participant, isLocal ? "나" : "참여자");
       const micPublication = callTrackPublication(participant, sdk.Track.Source.Microphone);
       const cameraPublication = callTrackPublication(participant, sdk.Track.Source.Camera);
@@ -2813,7 +5344,9 @@
       const screenEnabled = !!(screenPublication && !screenPublication.isMuted);
       if (cameraEnabled) {
         visualItems.push({
-          id: normalizeText(participant.identity) + "::camera",
+          id: identity + "::camera",
+          identity: identity,
+          userId: userId,
           kind: "camera",
           displayName: displayName,
           subtitle: "카메라",
@@ -2822,11 +5355,14 @@
           track: callPublicationTrack(cameraPublication),
           isLocal: !!isLocal,
           audioEnabled: micEnabled,
+          isSpeaking: speakingIds.has(identity),
         });
       }
       if (screenEnabled) {
         visualItems.push({
-          id: normalizeText(participant.identity) + "::screen",
+          id: identity + "::screen",
+          identity: identity,
+          userId: userId,
           kind: "screen",
           displayName: displayName,
           subtitle: "화면 공유",
@@ -2835,11 +5371,14 @@
           track: callPublicationTrack(screenPublication),
           isLocal: !!isLocal,
           audioEnabled: micEnabled,
+          isSpeaking: speakingIds.has(identity),
         });
       }
       if (!cameraEnabled && !screenEnabled) {
         audioItems.push({
-          id: normalizeText(participant.identity) + "::audio",
+          id: identity + "::audio",
+          identity: identity,
+          userId: userId,
           kind: "audio",
           displayName: displayName,
           subtitle: micEnabled ? "음성 연결됨" : "대기 중",
@@ -2848,6 +5387,7 @@
           track: null,
           isLocal: !!isLocal,
           audioEnabled: micEnabled,
+          isSpeaking: speakingIds.has(identity),
         });
       }
     };
@@ -2859,7 +5399,9 @@
         pushParticipant(participant, false);
       });
     }
-    return visualItems.length ? visualItems : audioItems;
+    return visualItems.length
+      ? sortStageAwareEntries(findRoomById(state.call.joinedRoomId) || state.activeRoom, visualItems)
+      : sortStageAwareEntries(findRoomById(state.call.joinedRoomId) || state.activeRoom, audioItems);
   }
 
   function callGridDensity(itemCount) {
@@ -2870,15 +5412,54 @@
     return "default";
   }
 
+  function callItemPriority(item) {
+    const payload = item || {};
+    let score = 0;
+    if (normalizeText(payload.id) && normalizeText(payload.id) === normalizeText(state.call.pinnedTrackId)) score += 100;
+    if (payload.kind === "screen") score += 40;
+    if (payload.isSpeaking) score += 30;
+    if (payload.track) score += 20;
+    if (payload.audioEnabled) score += 8;
+    if (payload.isLocal) score += 4;
+    return score;
+  }
+
+  function orderedCallRenderItems(items) {
+    const roomMeta = findRoomById(state.call.joinedRoomId) || state.activeRoom;
+    const stageMode = isStageRoom(roomMeta);
+    return (Array.isArray(items) ? items.slice() : []).sort(function (a, b) {
+      const pinnedDiff = Number(normalizeText((b && b.id) || "") === normalizeText(state.call.pinnedTrackId)) - Number(normalizeText((a && a.id) || "") === normalizeText(state.call.pinnedTrackId));
+      if (pinnedDiff !== 0) return pinnedDiff;
+      if (stageMode) {
+        const participantDiff = callParticipantOrderIndex(roomMeta, a && a.userId) - callParticipantOrderIndex(roomMeta, b && b.userId);
+        if (participantDiff !== 0) return participantDiff;
+      }
+      return callItemPriority(b) - callItemPriority(a)
+        || Number(!!b.isSpeaking) - Number(!!a.isSpeaking)
+        || Number(!!b.track) - Number(!!a.track)
+        || Number(!!b.audioEnabled) - Number(!!a.audioEnabled);
+    });
+  }
+
+  function togglePinnedTrack(itemId) {
+    const nextId = normalizeText(itemId);
+    state.call.pinnedTrackId = state.call.pinnedTrackId === nextId ? "" : nextId;
+    renderCallUi();
+    if (state.viewMode === "ascord") {
+      renderInspector();
+    }
+  }
+
   function renderCallPrompt(roomCall) {
     if (!dom.callGrid) return;
     const count = callParticipantCount(roomCall);
     dom.callGrid.setAttribute("data-density", "default");
+    dom.callGrid.setAttribute("data-layout", sanitizeCallLayout(state.call.layoutMode));
     dom.callGrid.innerHTML = [
       '<div class="messenger-call-empty">',
       '<i class="bi bi-camera-video"></i>',
-      '<strong>이 대화방 통화에 참여할 수 있습니다.</strong>',
-      '<span>' + escapeHtml(count > 0 ? (count + "명이 이미 연결되어 있습니다. 참여 버튼을 눌러 바로 합류하세요.") : "음성 또는 영상 통화를 시작하면 카메라를 켠 참가자들이 모두 그리드에 표시됩니다.") + "</span>",
+      '<strong>' + escapeHtml(state.viewMode === "ascord" ? "이 ASCORD 채널을 선택한 뒤 입장할 수 있습니다." : "이 대화방 통화에 참여할 수 있습니다.") + "</strong>",
+      '<span>' + escapeHtml(count > 0 ? (count + "명이 이미 연결되어 있습니다. 참여 버튼을 눌러 바로 합류하세요.") : (state.viewMode === "ascord" ? "음성으로 입장한 뒤 카메라, 화면공유, 스피커뷰를 바로 사용할 수 있습니다." : "음성 또는 영상 통화를 시작하면 카메라를 켠 참가자들이 모두 그리드에 표시됩니다.")) + "</span>",
       "</div>",
     ].join("");
     if (dom.callAudioSink) {
@@ -2913,6 +5494,20 @@
     return true;
   }
 
+  function applyRemoteAudioPreferences() {
+    if (!dom.callAudioSink) return;
+    Array.prototype.forEach.call(dom.callAudioSink.querySelectorAll("audio, video"), function (element) {
+      if (!(element instanceof HTMLMediaElement)) return;
+      const identity = normalizeText(element.getAttribute("data-participant-identity"));
+      element.muted = !!state.call.deafened;
+      element.volume = participantVolume(identity);
+      const sinkId = normalizeText((state.call.selectedDevices || {}).audiooutput);
+      if (sinkId && typeof element.setSinkId === "function") {
+        element.setSinkId(sinkId).catch(function () {});
+      }
+    });
+  }
+
   function renderCallAudioSink(room) {
     const sdk = livekitSdk();
     const targetRoom = room || null;
@@ -2938,9 +5533,11 @@
       if (element instanceof HTMLMediaElement) {
         element.autoplay = true;
         element.playsInline = true;
+        element.setAttribute("data-participant-identity", normalizeText((participant || {}).identity));
       }
       dom.callAudioSink.appendChild(element);
     });
+    applyRemoteAudioPreferences();
   }
 
   function callForRoom(roomId) {
@@ -2957,6 +5554,33 @@
     return call.participants.find(function (item) {
       return normalizeText((item || {}).user_id) === targetUserId;
     }) || null;
+  }
+
+  function callParticipantOrderIndex(room, userId) {
+    const targetRoom = room || findRoomById(state.call.joinedRoomId) || state.activeRoom;
+    const targetUserId = normalizeText(userId);
+    if (!targetRoom || !targetUserId) return Number.MAX_SAFE_INTEGER;
+    const roomCall = callForRoom(targetRoom.id);
+    const participants = Array.isArray(roomCall && roomCall.participants) ? roomCall.participants : [];
+    const index = participants.findIndex(function (item) {
+      return normalizeText((item || {}).user_id) === targetUserId;
+    });
+    return index >= 0 ? index : Number.MAX_SAFE_INTEGER;
+  }
+
+  function sortStageAwareEntries(room, items) {
+    const targetRoom = room || findRoomById(state.call.joinedRoomId) || state.activeRoom;
+    const stageMode = isStageRoom(targetRoom);
+    return (Array.isArray(items) ? items.slice() : []).sort(function (a, b) {
+      if (stageMode) {
+        const orderDiff = callParticipantOrderIndex(targetRoom, b && b.userId) - callParticipantOrderIndex(targetRoom, a && a.userId);
+        if (orderDiff !== 0) return -orderDiff;
+      }
+      return Number(!!b.isSpeaking) - Number(!!a.isSpeaking)
+        || Number(!!b.audioEnabled) - Number(!!a.audioEnabled)
+        || Number(!!b.isLocal) - Number(!!a.isLocal)
+        || normalizeText((a && a.displayName) || "").localeCompare(normalizeText((b && b.displayName) || ""), "ko");
+    });
   }
 
   function userInCall(call, userId) {
@@ -3085,8 +5709,20 @@
     return state.call.cameraStream;
   }
 
-  function callPreviewSubtitle(participant) {
+  function callPreviewSubtitle(participant, room) {
     const payload = participant || {};
+    if (isStageRoom(room)) {
+      if (payload.server_muted) return "운영자 음소거";
+      if (callParticipantSpeakerRequested(payload)) return "발언 요청 중";
+      if (callParticipantStageRole(payload) === "speaker") {
+        if (payload.sharing_screen) return "발표 중 · 화면 공유";
+        if (payload.video_enabled) return "발표 중 · 영상";
+        if (payload.audio_enabled) return "발표 중";
+        return "발표자 대기";
+      }
+      return "청중으로 참여 중";
+    }
+    if (payload.server_muted) return "운영자 음소거";
     if (payload.sharing_screen) return "화면 공유 중";
     if (payload.video_enabled) return "영상 연결됨";
     if (payload.audio_enabled) return "음성 연결됨";
@@ -3333,20 +5969,57 @@
     if (!room) return;
     const targetRoomId = Number(room.id || 0);
     if (targetRoomId <= 0) return;
-    if (state.call.joinedRoomId && Number(state.call.joinedRoomId || 0) !== targetRoomId) {
-      await showWarning("현재는 한 번에 하나의 대화방 통화만 지원합니다. 먼저 기존 통화에서 나가주세요.");
+    if (state.call.joining) return;
+    const roomCall = callForRoom(targetRoomId);
+    if (!canJoinCall(room)) {
+      await showWarning("이 채널은 현재 통화 참여 권한이 제한되어 있습니다.", "통화 참여 권한 없음");
       return;
     }
-    const nextMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    if (!roomCall && !canStartCall(room)) {
+      await showWarning("이 채널은 새 통화를 시작할 수 있는 역할이 제한되어 있습니다.", "통화 시작 권한 없음");
+      return;
+    }
+    if (state.call.joinedRoomId && Number(state.call.joinedRoomId || 0) !== targetRoomId) {
+      if (state.viewMode === "ascord") {
+        await leaveCurrentCall();
+      } else {
+        await showWarning("현재는 한 번에 하나의 대화방 통화만 지원합니다. 먼저 기존 통화에서 나가주세요.");
+        return;
+      }
+    }
+    let nextMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    if (nextMode === "video" && !canUseVideoInCall(room)) {
+      nextMode = "audio";
+      await showToast("warning", "이 채널에서는 카메라 권한이 제한되어 음성으로만 입장합니다.");
+    }
+    state.call.requestedAudioEnabled = canSpeakInCall(room);
+    state.call.micBeforeDeafen = state.call.requestedAudioEnabled;
+    state.call.deafened = false;
+    state.call.pushToTalkPressed = false;
+    state.call.pinnedTrackId = "";
     state.call.joining = true;
     renderCallUi();
     try {
+      try {
+        const warmupResult = await warmupCallCapturePermissions(nextMode);
+        nextMode = normalizeText((warmupResult && warmupResult.effectiveMode) || nextMode).toLowerCase() === "video" ? "video" : "audio";
+        if (warmupResult && warmupResult.warning) {
+          await showToast("warning", warmupResult.warning);
+        }
+      } catch (error) {
+        await showError(formatCallCaptureWarmupError(error, nextMode), "장치 권한 확인");
+        return;
+      }
       await connectLiveKitRoom(targetRoomId, nextMode);
-      syncLocalMediaStateFromLiveRoom();
+      if (state.call.pushToTalk || state.call.deafened || !state.call.requestedAudioEnabled) {
+        await syncCallTransmitState();
+      } else {
+        syncLocalMediaStateFromLiveRoom();
+      }
       sendSocket({
         type: "call_join",
         room_id: targetRoomId,
-        media_mode: nextMode,
+        media_mode: normalizeText(state.call.requestedMode || nextMode).toLowerCase() === "video" ? "video" : "audio",
         audio_enabled: !!state.call.audioEnabled,
         video_enabled: !!state.call.cameraEnabled,
         sharing_screen: !!state.call.sharingScreen,
@@ -3354,7 +6027,7 @@
       });
       sendSocket({ type: "call_sync", room_id: targetRoomId });
     } catch (error) {
-      await showError(error.message || "통화 시작에 실패했습니다.", "통화 준비 실패");
+      await showError(formatLivekitConnectionError(error), "통화 준비 실패");
       await cleanupLocalCallSession();
     } finally {
       state.call.joining = false;
@@ -3369,19 +6042,49 @@
     await cleanupLocalCallSession();
   }
 
-  async function toggleCallMute() {
+  async function syncCallTransmitState() {
     const room = currentLiveRoom();
     if (!room || !state.call.joinedRoomId) return;
-    await room.localParticipant.setMicrophoneEnabled(!state.call.audioEnabled);
+    const serverMuted = isServerMutedInRoom(state.call.joinedRoomId);
+    const roomMeta = findRoomById(state.call.joinedRoomId) || state.activeRoom;
+    const shouldEnableMic = !!state.call.requestedAudioEnabled && canSpeakInCall(roomMeta) && !serverMuted && !state.call.deafened && (!state.call.pushToTalk || !!state.call.pushToTalkPressed);
+    await room.localParticipant.setMicrophoneEnabled(shouldEnableMic);
     syncLocalMediaStateFromLiveRoom();
     emitCallMediaState();
     renderCallUi();
   }
 
+  async function toggleCallMute() {
+    if (!state.call.joinedRoomId) return;
+    const roomMeta = findRoomById(state.call.joinedRoomId) || state.activeRoom;
+    if (!canSpeakInCall(roomMeta)) {
+      if (state.call.requestedAudioEnabled) {
+        state.call.requestedAudioEnabled = false;
+        state.call.micBeforeDeafen = false;
+        await syncCallTransmitState();
+      }
+      await showWarning("이 채널에서는 마이크 송출 권한이 제한되어 있습니다.", "마이크 권한 없음");
+      return;
+    }
+    if (isServerMutedInRoom(state.call.joinedRoomId) && !state.call.requestedAudioEnabled) {
+      await showWarning("운영자가 현재 마이크 사용을 제한하고 있습니다.", "운영자 음소거");
+      return;
+    }
+    state.call.requestedAudioEnabled = !state.call.requestedAudioEnabled;
+    state.call.micBeforeDeafen = state.call.requestedAudioEnabled;
+    await syncCallTransmitState();
+  }
+
   async function toggleCallCamera() {
     const room = currentLiveRoom();
     if (!room || !state.call.joinedRoomId) return;
+    const roomMeta = findRoomById(state.call.joinedRoomId) || state.activeRoom;
+    if (!canUseVideoInCall(roomMeta) && !state.call.cameraEnabled) {
+      await showWarning("이 채널에서는 카메라 송출 권한이 제한되어 있습니다.", "카메라 권한 없음");
+      return;
+    }
     await room.localParticipant.setCameraEnabled(!state.call.cameraEnabled);
+    await applySelectedInputDevices();
     syncLocalMediaStateFromLiveRoom();
     emitCallMediaState();
     renderCallUi();
@@ -3390,10 +6093,84 @@
   async function toggleScreenShare() {
     const room = currentLiveRoom();
     if (!room || !state.call.joinedRoomId) return;
+    const roomMeta = findRoomById(state.call.joinedRoomId) || state.activeRoom;
+    if (!canShareScreenInCall(roomMeta) && !state.call.sharingScreen) {
+      await showWarning("이 채널에서는 화면공유 권한이 제한되어 있습니다.", "화면공유 권한 없음");
+      return;
+    }
     await room.localParticipant.setScreenShareEnabled(!state.call.sharingScreen);
     syncLocalMediaStateFromLiveRoom();
     emitCallMediaState();
     renderCallUi();
+  }
+
+  async function enforceJoinedRoomPermissions(room) {
+    const joinedRoomId = Number(state.call.joinedRoomId || 0);
+    const liveRoom = currentLiveRoom();
+    const roomMeta = room && Number(room.id || 0) === joinedRoomId ? room : findRoomById(joinedRoomId);
+    if (joinedRoomId <= 0 || !liveRoom || !roomMeta) return;
+    if (!canJoinCall(roomMeta)) {
+      await showWarning("이 채널의 통화 참여 권한이 변경되어 연결을 종료합니다.", "권한 변경");
+      await leaveCurrentCall();
+      return;
+    }
+
+    let shouldEmitMediaState = false;
+    if (!canSpeakInCall(roomMeta) && state.call.requestedAudioEnabled) {
+      state.call.requestedAudioEnabled = false;
+      state.call.micBeforeDeafen = false;
+      await syncCallTransmitState();
+      showToast("warning", "이 채널에서는 마이크 송출 권한이 제한되었습니다.").catch(function () {});
+    }
+    if (!canUseVideoInCall(roomMeta) && state.call.cameraEnabled) {
+      await liveRoom.localParticipant.setCameraEnabled(false);
+      shouldEmitMediaState = true;
+      showToast("warning", "이 채널에서는 카메라 송출 권한이 제한되었습니다.").catch(function () {});
+    }
+    if (!canShareScreenInCall(roomMeta) && state.call.sharingScreen) {
+      await liveRoom.localParticipant.setScreenShareEnabled(false);
+      shouldEmitMediaState = true;
+      showToast("warning", "이 채널에서는 화면공유 권한이 제한되었습니다.").catch(function () {});
+    }
+    if (shouldEmitMediaState) {
+      syncLocalMediaStateFromLiveRoom();
+      emitCallMediaState();
+      renderCallUi();
+    }
+  }
+
+  async function toggleCallDeafen() {
+    if (!state.call.joinedRoomId) return;
+    const nextValue = !state.call.deafened;
+    if (nextValue) {
+      state.call.micBeforeDeafen = !!state.call.requestedAudioEnabled;
+    }
+    state.call.deafened = nextValue;
+    if (!nextValue) {
+      state.call.requestedAudioEnabled = !!state.call.micBeforeDeafen;
+    }
+    await syncCallTransmitState();
+    applyRemoteAudioPreferences();
+    renderInspector();
+  }
+
+  async function toggleCallPushToTalk() {
+    state.call.pushToTalk = !state.call.pushToTalk;
+    state.call.pushToTalkPressed = false;
+    persistCallPreferences();
+    if (state.call.joinedRoomId) {
+      await syncCallTransmitState();
+    } else {
+      renderCallUi();
+    }
+    renderInspector();
+  }
+
+  function toggleCallLayout() {
+    state.call.layoutMode = state.call.layoutMode === "speaker" ? "grid" : "speaker";
+    persistCallPreferences();
+    renderCallUi();
+    renderInspector();
   }
 
   function renderCallGrid(roomCall) {
@@ -3406,21 +6183,24 @@
       return;
     }
 
-    const items = livekitParticipantRenderItems(liveRoom);
+    const items = orderedCallRenderItems(livekitParticipantRenderItems(liveRoom));
     if (!items.length) {
       renderCallPrompt(call);
       return;
     }
-    dom.callGrid.setAttribute("data-density", callGridDensity(items.length));
-    dom.callGrid.innerHTML = items.map(function (item) {
+    dom.callGrid.setAttribute("data-density", state.call.layoutMode === "speaker" ? "default" : callGridDensity(items.length));
+    dom.callGrid.setAttribute("data-layout", sanitizeCallLayout(state.call.layoutMode));
+    dom.callGrid.innerHTML = items.map(function (item, index) {
       const avatarInitial = normalizeText(avatarInitialFor(item.displayName, item.displayName));
       const pillItems = [
         '<span class="messenger-call-card__pill ' + (item.audioEnabled ? 'is-on' : 'is-off') + '">' + (item.audioEnabled ? 'MIC ON' : 'MIC OFF') + '</span>',
         '<span class="messenger-call-card__pill ' + (item.track ? 'is-on' : 'is-off') + '">' + (item.track ? 'VIDEO ON' : 'VIDEO OFF') + '</span>',
+        item.isSpeaking ? '<span class="messenger-call-card__pill is-on">LIVE</span>' : "",
+        normalizeText(item.id) === normalizeText(state.call.pinnedTrackId) ? '<span class="messenger-call-card__pill is-screen">PINNED</span>' : "",
         item.kind === "screen" ? '<span class="messenger-call-card__pill is-screen">SCREEN</span>' : "",
       ].join("");
       return [
-        '<article class="messenger-call-card" data-call-card-user="' + escapeAttribute(item.id) + '">',
+        '<article class="messenger-call-card' + (item.isSpeaking ? ' is-speaking' : '') + (normalizeText(item.id) === normalizeText(state.call.pinnedTrackId) ? ' is-pinned' : '') + (state.call.layoutMode === "speaker" && index === 0 ? ' is-primary' : '') + '" data-call-card-user="' + escapeAttribute(item.id) + '">',
         '<div class="messenger-call-card__placeholder">' + escapeHtml(avatarInitial || "U") + "</div>",
         '<div class="messenger-call-card__media-slot" data-call-media-user="' + escapeAttribute(item.id) + '"></div>',
         '<div class="messenger-call-card__meta">',
@@ -3444,6 +6224,11 @@
         card.classList.toggle("has-video", attached);
       }
     });
+    Array.prototype.forEach.call(dom.callGrid.querySelectorAll("[data-call-card-user]"), function (card) {
+      card.addEventListener("click", function () {
+        togglePinnedTrack(normalizeText(card.getAttribute("data-call-card-user")));
+      });
+    });
     renderCallAudioSink(liveRoom);
   }
 
@@ -3457,10 +6242,22 @@
     const amInRoomCall = joinedHere && !!currentLiveRoom();
     const callConfigured = livekitConfigured();
     const callReady = livekitAvailable();
-    const participantCount = callParticipantCount(roomCall);
+    const participantCount = callParticipantCount(roomCall, room && room.id);
+    const isAscord = state.viewMode === "ascord";
+    const channelMode = roomChannelMode(room);
+    const serverMuted = joinedHere && isServerMutedInRoom(room && room.id);
+    const canJoinRoomCall = !!room && canJoinCall(room);
+    const canLaunchCall = !!room && canJoinRoomCall && (!!roomCall || canStartCall(room));
+    const canUseCamera = !!room && canUseVideoInCall(room);
+    const canShareScreenNow = !!room && canShareScreenInCall(room);
+    const canSpeakNow = !!room && canSpeakInCall(room);
+    const stageMode = !!room && isStageRoom(room);
+    const myStageParticipant = stageMode ? callParticipant(roomCall, currentUserId()) : null;
+    const pendingStageRequests = stageMode ? Number((roomCall && roomCall.speaker_request_count) || 0) : 0;
+    const startCallRequirement = callPermissionLabel(roomCallPermissions(room).start_call);
 
     dom.callStrip.classList.toggle("d-none", !room);
-    dom.callStage.classList.toggle("d-none", !room || (!roomCall && !amInRoomCall));
+    dom.callStage.classList.toggle("d-none", !room || (!isAscord && !roomCall && !amInRoomCall));
     if (!room) {
       return;
     }
@@ -3470,6 +6267,10 @@
       dom.callStatusBadge.textContent = "SETUP";
       dom.callStatusTitle.textContent = "그룹 통화 서버 설정이 필요합니다.";
       dom.callStatusMeta.textContent = "LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET를 설정하면 50명급 그룹 통화에 연결할 수 있습니다.";
+    } else if (!canJoinRoomCall) {
+      dom.callStatusBadge.textContent = "LOCK";
+      dom.callStatusTitle.textContent = isAscord ? "이 ASCORD 채널은 통화 참여 권한이 제한되어 있습니다." : "이 대화방은 통화 참여 권한이 제한되어 있습니다.";
+      dom.callStatusMeta.textContent = "채널 설정에서 통화 참여 권한을 올리면 음성/영상 입장이 가능합니다.";
     } else if (!callReady) {
       dom.callStatusBadge.textContent = "LOAD";
       dom.callStatusTitle.textContent = "통화 SDK를 불러오는 중입니다.";
@@ -3477,43 +6278,102 @@
     } else if (amInRoomCall) {
       dom.callStatusBadge.textContent = "LIVE";
       dom.callStatusBadge.classList.add("is-live");
-      dom.callStatusTitle.textContent = "LiveKit 그룹 통화에 참여 중입니다.";
-      dom.callStatusMeta.textContent = String(participantCount || 1) + "명이 연결되어 있고, 카메라를 켠 참가자는 전부 그리드에 표시됩니다.";
+      dom.callStatusTitle.textContent = isAscord
+        ? (channelMode === "stage" ? "ASCORD 스테이지 채널에 연결되어 있습니다." : "ASCORD 음성채널에 연결되어 있습니다.")
+        : "LiveKit 그룹 통화에 참여 중입니다.";
+      dom.callStatusMeta.textContent = String(participantCount || 1) + "명이 연결되어 있고, 카메라를 켠 참가자는 전부 그리드에 표시됩니다." + (!canSpeakNow && channelMode === "stage" ? " 현재 청중 권한으로 연결되어 있습니다." : "") + (pendingStageRequests > 0 ? " 발언 요청 " + pendingStageRequests + "건이 대기 중입니다." : "") + (serverMuted ? " 현재 운영자 음소거 상태입니다." : "");
     } else if (roomCall && participantCount > 0) {
       dom.callStatusBadge.textContent = "JOIN";
       dom.callStatusBadge.classList.add("is-ringing");
-      dom.callStatusTitle.textContent = "이 대화방에서 통화가 진행 중입니다.";
-      dom.callStatusMeta.textContent = String(participantCount) + "명이 연결되어 있습니다.";
+      dom.callStatusTitle.textContent = isAscord
+        ? (channelMode === "stage" ? "이 ASCORD 스테이지 채널에서 라이브가 진행 중입니다." : "이 ASCORD 채널에서 통화가 진행 중입니다.")
+        : "이 대화방에서 통화가 진행 중입니다.";
+      dom.callStatusMeta.textContent = String(participantCount) + "명이 연결되어 있습니다." + (channelMode === "stage" && !canSpeakNow ? " 지금 입장하면 청중으로 연결됩니다." : "") + (pendingStageRequests > 0 ? " 발언 요청 " + pendingStageRequests + "건이 대기 중입니다." : "");
     } else if (joinedElsewhere) {
       dom.callStatusBadge.textContent = "BUSY";
-      dom.callStatusTitle.textContent = "다른 대화방 통화에 참여 중입니다.";
-      dom.callStatusMeta.textContent = "현재 방에서는 새 통화를 시작할 수 없습니다.";
+      dom.callStatusTitle.textContent = isAscord ? "다른 ASCORD 채널에 연결되어 있습니다." : "다른 대화방 통화에 참여 중입니다.";
+      dom.callStatusMeta.textContent = isAscord ? "이 채널에서 음성 입장 버튼을 누르면 자동으로 전환됩니다." : "현재 방에서는 새 통화를 시작할 수 없습니다.";
+    } else if (!canLaunchCall) {
+      dom.callStatusBadge.textContent = "LOCK";
+      dom.callStatusTitle.textContent = isAscord ? "이 ASCORD 채널은 새 통화 시작 권한이 제한되어 있습니다." : "이 대화방은 새 통화 시작 권한이 제한되어 있습니다.";
+      dom.callStatusMeta.textContent = "현재 설정에서는 " + startCallRequirement + "만 새 통화를 시작할 수 있습니다.";
     } else {
       dom.callStatusBadge.textContent = "READY";
-      dom.callStatusTitle.textContent = "이 대화방에서 통화가 없습니다.";
-      dom.callStatusMeta.textContent = "음성 또는 영상 통화를 시작할 수 있습니다.";
+      dom.callStatusTitle.textContent = isAscord ? "이 ASCORD 채널은 지금 대기 중입니다." : "이 대화방에서 통화가 없습니다.";
+      dom.callStatusMeta.textContent = isAscord
+        ? (channelMode === "stage"
+          ? "청중으로 먼저 입장하고, 운영 권한이 있으면 발언과 진행 제어를 이어서 사용할 수 있습니다."
+          : "음성으로 먼저 입장한 뒤 카메라, 화면공유, PTT, 스피커뷰를 이어서 사용할 수 있습니다.")
+        : "음성 또는 영상 통화를 시작할 수 있습니다.";
     }
 
-    setCallButton(dom.audioCallBtn, "bi-telephone", roomCall && !amInRoomCall ? "음성으로 참여" : "음성 통화");
-    setCallButton(dom.videoCallBtn, "bi-camera-video", roomCall && !amInRoomCall ? "영상으로 참여" : "영상 통화");
-    setCallButton(dom.toggleMicBtn, state.call.audioEnabled ? "bi-mic" : "bi-mic-mute", state.call.audioEnabled ? "마이크" : "음소거 해제");
-    setCallButton(dom.toggleCameraBtn, state.call.cameraEnabled ? "bi-camera-video" : "bi-camera-video-off", state.call.cameraEnabled ? "카메라" : "카메라 켜기");
-    setCallButton(dom.screenShareBtn, state.call.sharingScreen ? "bi-display-fill" : "bi-display", state.call.sharingScreen ? "공유 중지" : "화면 공유");
+    setCallButton(dom.audioCallBtn, "bi-telephone", roomCall && !amInRoomCall ? (channelMode === "stage" ? "청중으로 참여" : "음성으로 참여") : (isAscord ? (channelMode === "stage" ? "청중 입장" : "음성 입장") : "음성 통화"));
+    setCallButton(dom.videoCallBtn, "bi-camera-video", !canUseCamera ? "영상 제한" : (roomCall && !amInRoomCall ? "영상으로 참여" : (isAscord ? "영상 입장" : "영상 통화")));
+    if (dom.stageSelfBtn) {
+      let stageSelfAction = "";
+      let stageSelfIcon = "bi-broadcast-pin";
+      let stageSelfLabel = "발언 요청";
+      if (stageMode && joinedHere && myStageParticipant) {
+        if (callParticipantStageRole(myStageParticipant) === "speaker") {
+          stageSelfAction = "move_self_to_audience";
+          stageSelfIcon = "bi-arrow-down-circle";
+          stageSelfLabel = "청중 이동";
+        } else if (callParticipantSpeakerRequested(myStageParticipant)) {
+          stageSelfAction = "withdraw_request";
+          stageSelfIcon = "bi-x-circle";
+          stageSelfLabel = "요청 취소";
+        } else {
+          stageSelfAction = "request_speaker";
+          stageSelfIcon = "bi-broadcast-pin";
+          stageSelfLabel = "발언 요청";
+        }
+      }
+      dom.stageSelfBtn.classList.toggle("d-none", !stageMode || !joinedHere);
+      dom.stageSelfBtn.disabled = !stageMode || !joinedHere || !stageSelfAction;
+      dom.stageSelfBtn.setAttribute("data-stage-self-action", stageSelfAction);
+      dom.stageSelfBtn.classList.toggle("is-active", stageSelfAction === "withdraw_request");
+      setCallButton(dom.stageSelfBtn, stageSelfIcon, stageSelfLabel);
+    }
+    if (dom.stageQueueBtn) {
+      const queueVisible = stageMode && canModerateCall(room);
+      dom.stageQueueBtn.classList.toggle("d-none", !queueVisible);
+      dom.stageQueueBtn.disabled = !queueVisible;
+      dom.stageQueueBtn.classList.toggle("is-active", queueVisible && pendingStageRequests > 0);
+      setCallButton(dom.stageQueueBtn, "bi-megaphone", pendingStageRequests > 0 ? ("요청 " + pendingStageRequests + "건") : "요청 없음");
+    }
+    setCallButton(dom.toggleMicBtn, serverMuted ? "bi-mic-mute-fill" : (state.call.requestedAudioEnabled ? "bi-mic" : "bi-mic-mute"), !canSpeakNow ? "MIC 제한" : (serverMuted ? "운영자 음소거" : (state.call.requestedAudioEnabled ? "마이크" : "음소거 해제")));
+    setCallButton(dom.toggleCameraBtn, state.call.cameraEnabled ? "bi-camera-video" : "bi-camera-video-off", !canUseCamera ? "카메라 제한" : (state.call.cameraEnabled ? "카메라" : "카메라 켜기"));
+    setCallButton(dom.screenShareBtn, state.call.sharingScreen ? "bi-display-fill" : "bi-display", !canShareScreenNow ? "공유 제한" : (state.call.sharingScreen ? "공유 중지" : "화면 공유"));
+    setCallButton(dom.deafenBtn, "bi-headset", state.call.deafened ? "디슨 해제" : "디슨");
+    setCallButton(dom.pushToTalkBtn, "bi-broadcast-pin", state.call.pushToTalk ? "PTT ON" : "PTT OFF");
+    setCallButton(dom.callLayoutBtn, state.call.layoutMode === "speaker" ? "bi-layout-three-columns" : "bi-grid-3x3-gap", state.call.layoutMode === "speaker" ? "그리드" : "스피커뷰");
     setCallButton(dom.leaveCallBtn, "bi-telephone-x", "나가기");
 
-    if (dom.audioCallBtn) dom.audioCallBtn.disabled = !room || !callReady || state.call.joining || joinedElsewhere || amInRoomCall;
-    if (dom.videoCallBtn) dom.videoCallBtn.disabled = !room || !callReady || state.call.joining || joinedElsewhere || amInRoomCall;
+    if (dom.audioCallBtn) dom.audioCallBtn.disabled = !room || !callReady || state.call.joining || ((!isAscord) && joinedElsewhere) || amInRoomCall || !canLaunchCall;
+    if (dom.videoCallBtn) dom.videoCallBtn.disabled = !room || !callReady || state.call.joining || ((!isAscord) && joinedElsewhere) || amInRoomCall || !canLaunchCall || !canUseCamera;
     if (dom.toggleMicBtn) {
-      dom.toggleMicBtn.disabled = !joinedHere;
-      dom.toggleMicBtn.classList.toggle("is-active", joinedHere && !!state.call.audioEnabled);
+      dom.toggleMicBtn.disabled = !joinedHere || serverMuted || !canSpeakNow;
+      dom.toggleMicBtn.classList.toggle("is-active", joinedHere && !!state.call.requestedAudioEnabled && !serverMuted && canSpeakNow);
     }
     if (dom.toggleCameraBtn) {
-      dom.toggleCameraBtn.disabled = !joinedHere;
-      dom.toggleCameraBtn.classList.toggle("is-active", joinedHere && !!state.call.cameraEnabled);
+      dom.toggleCameraBtn.disabled = !joinedHere || !canUseCamera;
+      dom.toggleCameraBtn.classList.toggle("is-active", joinedHere && !!state.call.cameraEnabled && canUseCamera);
     }
     if (dom.screenShareBtn) {
-      dom.screenShareBtn.disabled = !joinedHere;
-      dom.screenShareBtn.classList.toggle("is-active", joinedHere && !!state.call.sharingScreen);
+      dom.screenShareBtn.disabled = !joinedHere || !canShareScreenNow;
+      dom.screenShareBtn.classList.toggle("is-active", joinedHere && !!state.call.sharingScreen && canShareScreenNow);
+    }
+    if (dom.deafenBtn) {
+      dom.deafenBtn.disabled = !joinedHere;
+      dom.deafenBtn.classList.toggle("is-active", joinedHere && !!state.call.deafened);
+    }
+    if (dom.pushToTalkBtn) {
+      dom.pushToTalkBtn.disabled = !room;
+      dom.pushToTalkBtn.classList.toggle("is-active", !!state.call.pushToTalk);
+    }
+    if (dom.callLayoutBtn) {
+      dom.callLayoutBtn.disabled = !room;
+      dom.callLayoutBtn.classList.toggle("is-active", state.call.layoutMode === "speaker");
     }
     if (dom.leaveCallBtn) dom.leaveCallBtn.disabled = !joinedHere;
 
@@ -3524,15 +6384,203 @@
     const roomCall = call || null;
     const roomId = Number((roomCall && roomCall.room_id) || 0);
     if (roomId <= 0) return;
+    const roomMeta = findRoomById(roomId) || (Number(state.activeRoomId || 0) === roomId ? state.activeRoom : null);
+    const previousCall = snapshotRoomCall(state.call.callSnapshotsByRoomId[roomId] || state.call.roomCallsById[roomId]);
+    const nextCall = snapshotRoomCall(roomCall);
     state.call.roomCallsById[roomId] = roomCall;
+    state.call.callSnapshotsByRoomId[roomId] = nextCall;
+    const previousMyParticipant = callParticipant(previousCall, currentUserId());
+    const myParticipant = callParticipant(nextCall, currentUserId());
+    if (liveCallAlertKey(nextCall)) {
+      if (
+        currentUserInRoomCall(nextCall)
+        || Number(state.activeRoomId || 0) === roomId
+        || (state.viewMode === "ascord" && state.sidebarMode === "inbox")
+      ) {
+        markLiveRoomSeen(roomId, nextCall);
+      }
+    } else {
+      delete state.call.seenLiveCallIdsByRoomId[roomId];
+    }
+    if (myParticipant && myParticipant.server_muted) {
+      state.call.serverMutedRoomIds[roomId] = true;
+    } else {
+      delete state.call.serverMutedRoomIds[roomId];
+    }
+    if (currentUserInRoomCall(nextCall)) {
+      removeIncomingCallInvite(roomId, { joined: true });
+    } else {
+      handleIncomingRoomCallTransition(previousCall, nextCall);
+    }
+    recalcCounts();
+    renderIncomingCallInvites();
+    renderRoomList();
+    if (Number(state.activeRoomId || 0) === roomId) {
+      renderInspector();
+    }
+    const joinedThisRoom = Number(state.call.joinedRoomId || 0) === roomId && !!currentLiveRoom();
+    const membershipChanged = !!previousMyParticipant !== !!myParticipant;
+    const serverMuteChanged = !!(previousMyParticipant && previousMyParticipant.server_muted) !== !!(myParticipant && myParticipant.server_muted);
+    const previousStageRole = previousMyParticipant ? callParticipantStageRole(previousMyParticipant) : "";
+    const nextStageRole = myParticipant ? callParticipantStageRole(myParticipant) : "";
+    const stageRoleChanged = previousStageRole !== nextStageRole;
+    const previousSpeakerRequested = !!(previousMyParticipant && previousMyParticipant.speaker_requested);
+    const nextSpeakerRequested = !!(myParticipant && myParticipant.speaker_requested);
+    if (isStageRoom(roomMeta)) {
+      const previousRequestedMap = new Map(((previousCall && previousCall.participants) || []).filter(function (participant) {
+        return !!(participant && participant.speaker_requested);
+      }).map(function (participant) {
+        return [normalizeText((participant || {}).user_id), participant];
+      }));
+      const nextRequestedParticipants = ((nextCall && nextCall.participants) || []).filter(function (participant) {
+        return !!(participant && participant.speaker_requested);
+      });
+      const newRequesters = nextRequestedParticipants.filter(function (participant) {
+        return !previousRequestedMap.has(normalizeText((participant || {}).user_id));
+      });
+      const resolvedRequesterIds = Array.from(previousRequestedMap.keys()).filter(function (userId) {
+        return !nextRequestedParticipants.some(function (participant) {
+          return normalizeText((participant || {}).user_id) === userId;
+        });
+      });
+      if (resolvedRequesterIds.length) {
+        removeLocalStageRequestNotifications(roomId, resolvedRequesterIds);
+      }
+      if (roomMeta && canModerateCall(roomMeta)) {
+        newRequesters.forEach(function (participant) {
+          const requesterUserId = normalizeText((participant || {}).user_id);
+          if (!requesterUserId || requesterUserId === currentUserId()) return;
+          const notificationItem = buildStageRequestNotificationItem(roomMeta, nextCall, participant);
+          if (!notificationItem) return;
+          upsertNotificationItem(notificationItem);
+          showBrowserNotification(notificationItem);
+          if (Number(state.activeRoomId || 0) === roomId && state.viewMode === "ascord") {
+            showToast("info", normalizeText((participant && participant.display_name) || requesterUserId) + "님이 발언 요청을 보냈습니다.").catch(function () {});
+          }
+        });
+      }
+    } else {
+      removeLocalStageRequestNotifications(roomId);
+    }
+    if (joinedThisRoom && stageRoleChanged) {
+      if (nextStageRole === "speaker" && previousSpeakerRequested) {
+        state.call.requestedAudioEnabled = true;
+        state.call.micBeforeDeafen = true;
+      } else if (nextStageRole && nextStageRole !== "speaker") {
+        state.call.requestedAudioEnabled = false;
+        state.call.micBeforeDeafen = false;
+      }
+      await enforceJoinedRoomPermissions(roomMeta || state.activeRoom).catch(function () {});
+    }
+    if (joinedThisRoom && (membershipChanged || serverMuteChanged || stageRoleChanged)) {
+      syncCallTransmitState().catch(function () {});
+    }
+    if (joinedThisRoom && previousSpeakerRequested !== nextSpeakerRequested) {
+      renderCallUi();
+    }
     renderCallUi();
   }
 
   async function handleCallCleared(roomId) {
     const targetRoomId = Number(roomId || 0);
     if (targetRoomId <= 0) return;
+    const previousCall = snapshotRoomCall(state.call.callSnapshotsByRoomId[targetRoomId] || state.call.roomCallsById[targetRoomId]);
+    const invite = incomingInviteForRoom(targetRoomId);
+    if (invite && !invite.joined) {
+      const missedItem = buildCallNotificationItem((invite && invite.roomCall) || previousCall, "missed_call");
+      if (missedItem) {
+        upsertNotificationItem(missedItem);
+        showBrowserNotification(missedItem);
+      }
+    }
+    if (invite && invite.callId) {
+      removeLocalCallNotifications(invite.callId, "call");
+    }
+    removeLocalStageRequestNotifications(targetRoomId);
+    delete state.call.seenLiveCallIdsByRoomId[targetRoomId];
+    delete state.call.callSnapshotsByRoomId[targetRoomId];
+    delete state.call.incomingInvitesByRoomId[targetRoomId];
+    delete state.call.serverMutedRoomIds[targetRoomId];
     delete state.call.roomCallsById[targetRoomId];
+    recalcCounts();
+    renderIncomingCallInvites();
+    renderRoomList();
+    if (Number(state.activeRoomId || 0) === targetRoomId) {
+      renderInspector();
+    }
     renderCallUi();
+  }
+
+  async function handleCallAdminControl(payload) {
+    const action = normalizeText((payload && payload.action) || "").toLowerCase();
+    const roomId = Number((payload && payload.room_id) || 0);
+    if (roomId <= 0 || !action) return;
+    if (action === "server_mute") {
+      state.call.serverMutedRoomIds[roomId] = true;
+      if (Number(state.call.joinedRoomId || 0) === roomId && !!currentLiveRoom()) {
+        state.call.requestedAudioEnabled = false;
+        state.call.micBeforeDeafen = false;
+        await syncCallTransmitState().catch(function () {});
+      }
+      renderInspector();
+      renderCallUi();
+      showToast("warning", "운영자가 마이크를 서버 음소거했습니다.").catch(function () {});
+      return;
+    }
+    if (action === "server_unmute") {
+      delete state.call.serverMutedRoomIds[roomId];
+      renderInspector();
+      renderCallUi();
+      showToast("success", "운영자가 마이크 제한을 해제했습니다.").catch(function () {});
+      return;
+    }
+    if (action === "grant_speaker") {
+      renderInspector();
+      renderCallUi();
+      showToast("success", "운영자가 발표자로 승격했습니다.").catch(function () {});
+      return;
+    }
+    if (action === "move_to_audience") {
+      if (Number(state.call.joinedRoomId || 0) === roomId && !!currentLiveRoom()) {
+        state.call.requestedAudioEnabled = false;
+        state.call.micBeforeDeafen = false;
+        const liveRoom = currentLiveRoom();
+        if (liveRoom && liveRoom.localParticipant) {
+          try {
+            await liveRoom.localParticipant.setCameraEnabled(false);
+          } catch (_) {}
+          try {
+            await liveRoom.localParticipant.setScreenShareEnabled(false);
+          } catch (_) {}
+          syncLocalMediaStateFromLiveRoom();
+          emitCallMediaState();
+        }
+        await syncCallTransmitState().catch(function () {});
+      }
+      renderInspector();
+      renderCallUi();
+      showToast("warning", "운영자가 현재 연결을 청중 권한으로 전환했습니다.").catch(function () {});
+      return;
+    }
+    if (Number(state.call.joinedRoomId || 0) !== roomId || !currentLiveRoom()) return;
+    if (action === "disable_camera") {
+      if (state.call.cameraEnabled) {
+        await toggleCallCamera().catch(function () {});
+      }
+      showToast("warning", "운영자가 카메라 송출을 중지했습니다.").catch(function () {});
+      return;
+    }
+    if (action === "disable_screen_share") {
+      if (state.call.sharingScreen) {
+        await stopScreenShare().catch(function () {});
+      }
+      showToast("warning", "운영자가 화면공유를 중지했습니다.").catch(function () {});
+      return;
+    }
+    if (action === "disconnect") {
+      await leaveCurrentCall().catch(function () {});
+      showToast("warning", "운영자가 현재 통화에서 내보냈습니다.").catch(function () {});
+    }
   }
 
   async function handleIncomingCallSignal(payload) {
@@ -3747,6 +6795,9 @@
     if (room.can_delete_room) {
       items.push({ action: "room-delete", label: "대화방 삭제", icon: "bi-trash3", data: { roomId: room.id }, danger: true });
     }
+    if (canLeaveRoom(room)) {
+      items.push({ action: "room-leave", label: "채널 나가기", icon: "bi-box-arrow-right", data: { roomId: room.id }, danger: true });
+    }
     return items;
   }
 
@@ -3777,8 +6828,53 @@
     if (!state.currentUser || normalizeText((state.currentUser && state.currentUser.user_id) || "") !== targetUserId) {
       items.push({ action: "participant-dm", label: "1:1 대화 열기", icon: "bi-chat-left-text", data: { userId: targetUserId } });
     }
-    if (state.activeRoom && canManageRoom(state.activeRoom) && !state.activeRoom.is_direct) {
+    if (state.activeRoom && canInviteMembers(state.activeRoom) && !state.activeRoom.is_direct) {
       items.push({ action: "room-invite", label: "다른 구성원 초대", icon: "bi-person-plus", data: { roomId: state.activeRoom.id } });
+    }
+    if (state.activeRoom && !state.activeRoom.is_direct) {
+      if (canTransferOwnerToTarget(state.activeRoom, targetUserId)) {
+        items.push({ action: "room-transfer-owner", label: "OWNER 이전", icon: "bi-award", data: { roomId: state.activeRoom.id, userId: targetUserId }, danger: true });
+      }
+      if (canChangeTargetMemberRole(state.activeRoom, targetUserId, "admin")) {
+        items.push({ action: "room-role-admin", label: "ADMIN 지정", icon: "bi-shield-check", data: { roomId: state.activeRoom.id, userId: targetUserId } });
+      }
+      if (canChangeTargetMemberRole(state.activeRoom, targetUserId, "member")) {
+        items.push({ action: "room-role-member", label: "일반 멤버로 변경", icon: "bi-person", data: { roomId: state.activeRoom.id, userId: targetUserId } });
+      }
+      if (canRemoveTargetMember(state.activeRoom, targetUserId)) {
+        items.push({ action: "room-remove-member", label: "채널에서 제거", icon: "bi-person-dash", data: { roomId: state.activeRoom.id, userId: targetUserId }, danger: true });
+      }
+    }
+    if (state.activeRoom && canModerateCall(state.activeRoom) && !state.activeRoom.is_direct && normalizeText(currentUserId()) !== targetUserId) {
+      const roomCall = activeRoomCall();
+      const participant = callParticipant(roomCall, targetUserId) || {};
+      if (normalizeText(participant.user_id)) {
+        if (isStageRoom(state.activeRoom)) {
+          if (callParticipantStageRole(participant) === "speaker") {
+            items.push({ action: "call-move-audience", label: "청중으로 내리기", icon: "bi-arrow-down-circle", data: { roomId: state.activeRoom.id, userId: targetUserId } });
+          } else {
+            items.push({
+              action: "call-grant-speaker",
+              label: callParticipantSpeakerRequested(participant) ? "발언 요청 승인" : "발표자로 승격",
+              icon: "bi-megaphone",
+              data: { roomId: state.activeRoom.id, userId: targetUserId },
+            });
+          }
+        }
+        items.push({
+          action: normalizeText(participant.server_muted) ? "call-server-unmute" : "call-server-mute",
+          label: normalizeText(participant.server_muted) ? "서버 음소거 해제 허용" : "서버 음소거",
+          icon: normalizeText(participant.server_muted) ? "bi-mic" : "bi-mic-mute",
+          data: { roomId: state.activeRoom.id, userId: targetUserId },
+        });
+        if (participant.video_enabled) {
+          items.push({ action: "call-disable-camera", label: "카메라 중지", icon: "bi-camera-video-off", data: { roomId: state.activeRoom.id, userId: targetUserId } });
+        }
+        if (participant.sharing_screen) {
+          items.push({ action: "call-disable-screen-share", label: "화면공유 중지", icon: "bi-display", data: { roomId: state.activeRoom.id, userId: targetUserId } });
+        }
+        items.push({ action: "call-disconnect", label: "통화에서 내보내기", icon: "bi-person-x", data: { roomId: state.activeRoom.id, userId: targetUserId }, danger: true });
+      }
     }
     if (!items.length) return;
     openContextMenu(event, items);
@@ -3913,7 +7009,7 @@
 
   async function inviteMembersToRoom(room) {
     const targetRoom = room || state.activeRoom;
-    if (!targetRoom || !canManageRoom(targetRoom) || targetRoom.is_direct) return;
+    if (!targetRoom || !canInviteMembers(targetRoom) || targetRoom.is_direct) return;
     const memberIds = await promptInviteMembers(targetRoom);
     if (!Array.isArray(memberIds) || !memberIds.length) return;
     try {
@@ -3944,6 +7040,9 @@
         body: JSON.stringify({
           name: normalizeText(roomDetails.name),
           topic: normalizeText(roomDetails.topic),
+          channel_category: normalizeText(roomDetails.channel_category),
+          channel_mode: normalizeChannelMode(roomDetails.channel_mode, roomChannelMode(targetRoom)),
+          call_permissions: roomDetails.call_permissions || roomCallPermissions(targetRoom),
         }),
       });
       if (payload && payload.room) {
@@ -4073,11 +7172,23 @@
     }
     if (action === "room-edit") return editRoomDetails(findRoomById(roomId));
     if (action === "room-delete") return deleteRoom(findRoomById(roomId));
+    if (action === "room-leave") return leaveRoom(findRoomById(roomId));
     if (action === "message-copy") return copyMessageText(findMessageById(roomId, messageId));
     if (action === "message-edit") return editMessageItem(findMessageById(roomId, messageId));
     if (action === "message-delete") return deleteMessageItem(findMessageById(roomId, messageId));
     if (action === "participant-dm" && userId) return createDirectRoom(userId);
     if (action === "room-invite") return inviteMembersToRoom(findRoomById(roomId) || state.activeRoom);
+    if (action === "room-transfer-owner" && userId) return transferRoomOwner(userId, findRoomById(roomId) || state.activeRoom);
+    if (action === "room-role-admin" && userId) return updateRoomMemberRole(userId, "admin", findRoomById(roomId) || state.activeRoom);
+    if (action === "room-role-member" && userId) return updateRoomMemberRole(userId, "member", findRoomById(roomId) || state.activeRoom);
+    if (action === "room-remove-member" && userId) return removeMemberFromRoom(userId, findRoomById(roomId) || state.activeRoom);
+    if (action === "call-grant-speaker" && userId) return sendCallModerationAction("grant_speaker", userId, findRoomById(roomId) || state.activeRoom);
+    if (action === "call-move-audience" && userId) return sendCallModerationAction("move_to_audience", userId, findRoomById(roomId) || state.activeRoom);
+    if (action === "call-server-mute" && userId) return sendCallModerationAction("server_mute", userId, findRoomById(roomId) || state.activeRoom);
+    if (action === "call-server-unmute" && userId) return sendCallModerationAction("server_unmute", userId, findRoomById(roomId) || state.activeRoom);
+    if (action === "call-disable-camera" && userId) return sendCallModerationAction("disable_camera", userId, findRoomById(roomId) || state.activeRoom);
+    if (action === "call-disable-screen-share" && userId) return sendCallModerationAction("disable_screen_share", userId, findRoomById(roomId) || state.activeRoom);
+    if (action === "call-disconnect" && userId) return sendCallModerationAction("disconnect", userId, findRoomById(roomId) || state.activeRoom);
     if (action === "resource-open" && url) {
       window.open(url, "_blank", "noopener,noreferrer");
       return;
@@ -4106,6 +7217,11 @@
     state.selectedContacts.clear();
     if (dom.groupNameWrap) dom.groupNameWrap.classList.toggle("d-none", state.modalMode !== "group");
     if (dom.groupTopicWrap) dom.groupTopicWrap.classList.toggle("d-none", state.modalMode !== "group");
+    if (dom.groupCategoryWrap) dom.groupCategoryWrap.classList.toggle("d-none", state.modalMode !== "group");
+    if (dom.groupChannelModeWrap) dom.groupChannelModeWrap.classList.toggle("d-none", state.modalMode !== "group");
+    if (dom.groupChannelModeInput && !normalizeText(dom.groupChannelModeInput.value)) {
+      dom.groupChannelModeInput.value = "voice";
+    }
     if (dom.newRoomMode) {
       Array.prototype.forEach.call(dom.newRoomMode.querySelectorAll("[data-mode]"), function (button) {
         button.classList.toggle("is-active", normalizeText(button.getAttribute("data-mode")) === state.modalMode);
@@ -4115,6 +7231,10 @@
       dom.createRoomSubmitBtn.textContent = state.modalMode === "group" ? "그룹방 만들기" : "대화 시작";
     }
     renderContactPicker();
+  }
+
+  function defaultModalModeForCurrentView() {
+    return state.viewMode === "ascord" ? "group" : "dm";
   }
 
   function filteredContactsForPicker() {
@@ -4202,12 +7322,17 @@
       } else {
         const name = normalizeText(dom.groupNameInput && dom.groupNameInput.value);
         const topic = normalizeText(dom.groupTopicInput && dom.groupTopicInput.value);
+        const channelCategory = normalizeText(dom.groupCategoryInput && dom.groupCategoryInput.value);
+        const channelMode = normalizeChannelMode(dom.groupChannelModeInput && dom.groupChannelModeInput.value, "voice");
         payload = await api("/api/messenger/rooms", {
           method: "POST",
           body: JSON.stringify({
             mode: "group",
             name: name,
             topic: topic,
+            channel_category: channelCategory,
+            channel_mode: channelMode,
+            call_permissions: defaultCallPermissionsForRoom({ channel_mode: channelMode }),
             member_ids: selected,
           }),
         });
@@ -4216,6 +7341,8 @@
       if (dom.newRoomModalInstance) dom.newRoomModalInstance.hide();
       if (dom.groupNameInput) dom.groupNameInput.value = "";
       if (dom.groupTopicInput) dom.groupTopicInput.value = "";
+      if (dom.groupCategoryInput) dom.groupCategoryInput.value = "";
+      if (dom.groupChannelModeInput) dom.groupChannelModeInput.value = "voice";
       if (dom.contactSearch) dom.contactSearch.value = "";
       state.selectedContacts.clear();
       renderContactPicker();
@@ -4230,7 +7357,20 @@
   function setSocketConnected(connected) {
     const room = state.activeRoom;
     if (!room || !dom.activeRoomSubtitle) return;
-    const baseText = normalizeText(room.subtitle || room.topic || "");
+    let baseText = "";
+    if (state.viewMode === "ascord") {
+      const roomCall = callForRoom(room.id);
+      const joinedHere = !!room && Number(state.call.joinedRoomId || 0) === Number(room.id || 0) && !!currentLiveRoom();
+      const participantCount = callParticipantCount(roomCall, room && room.id);
+      baseText = [
+        channelModeLabel(roomChannelMode(room)),
+        ascordCategoryLabel(room),
+        participantCount > 0 ? (String(participantCount) + "명 연결") : "대기 중",
+        joinedHere ? "현재 이 채널에 참여 중" : "채널 선택 후 음성 입장 버튼으로 연결",
+      ].join(" · ");
+    } else {
+      baseText = normalizeText(room.subtitle || room.topic || "");
+    }
     dom.activeRoomSubtitle.textContent = connected ? baseText : (baseText ? baseText + " · 연결 재시도 중" : "연결 재시도 중");
   }
 
@@ -4247,8 +7387,32 @@
     state.heartbeatTimer = 0;
   }
 
+  function clearReconnectTimer() {
+    if (!state.reconnectTimer) return;
+    window.clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = 0;
+  }
+
+  function markSocketAuthLost() {
+    state.authLost = true;
+    clearReconnectTimer();
+    stopHeartbeat();
+    setSocketConnected(false);
+  }
+
+  function handleSocketAuthFailure() {
+    const activeSocket = state.socket;
+    state.socket = null;
+    markSocketAuthLost();
+    try {
+      if (activeSocket && (activeSocket.readyState === WebSocket.OPEN || activeSocket.readyState === WebSocket.CONNECTING)) {
+        activeSocket.close();
+      }
+    } catch (_) {}
+  }
+
   function scheduleReconnect() {
-    if (state.reconnectTimer) return;
+    if (state.authLost || state.reconnectTimer) return;
     state.reconnectTimer = window.setTimeout(function () {
       state.reconnectTimer = 0;
       connectSocket();
@@ -4281,6 +7445,7 @@
       renderRoomList();
       renderMentionPicker();
       state.activeRoom = currentRoom();
+      enforceJoinedRoomPermissions(findRoomById(state.call.joinedRoomId)).catch(function () {});
       renderHeader();
       renderInspector();
       return;
@@ -4358,6 +7523,10 @@
       await handleIncomingCallSignal(payload);
       return;
     }
+    if (type === "call_admin_control") {
+      await handleCallAdminControl(payload);
+      return;
+    }
     if (type === "typing") {
       return;
     }
@@ -4365,7 +7534,7 @@
 
   function connectSocket() {
     const socketUrl = resolveWsUrl("/ws/messenger");
-    if (!socketUrl) return;
+    if (!socketUrl || state.authLost) return;
     if (state.socket && (state.socket.readyState === WebSocket.OPEN || state.socket.readyState === WebSocket.CONNECTING)) return;
 
     try {
@@ -4376,6 +7545,7 @@
     }
 
     state.socket.addEventListener("open", function () {
+      state.authLost = false;
       stopHeartbeat();
       state.heartbeatTimer = window.setInterval(function () {
         sendSocket({ type: "ping" });
@@ -4402,9 +7572,13 @@
     state.socket.addEventListener("message", function (event) {
       handleSocketMessage(event).catch(function () {});
     });
-    state.socket.addEventListener("close", function () {
+    state.socket.addEventListener("close", function (event) {
       stopHeartbeat();
       state.socket = null;
+      if (event && (Number(event.code || 0) === 4401 || Number(event.code || 0) === 4403)) {
+        markSocketAuthLost();
+        return;
+      }
       setSocketConnected(false);
       scheduleReconnect();
     });
@@ -4463,6 +7637,18 @@
       dom.dragHandle.addEventListener("mousedown", beginPopupDrag);
     }
 
+    if (dom.talkModeBtn) {
+      dom.talkModeBtn.addEventListener("click", function () {
+        setViewMode("talk");
+      });
+    }
+
+    if (dom.ascordModeBtn) {
+      dom.ascordModeBtn.addEventListener("click", function () {
+        setViewMode("ascord");
+      });
+    }
+
     if (dom.railRoomsBtn) {
       dom.railRoomsBtn.addEventListener("click", function () {
         setSidebarMode("rooms");
@@ -4495,7 +7681,7 @@
 
     if (dom.railComposeBtn) {
       dom.railComposeBtn.addEventListener("click", function () {
-        setModalMode("dm");
+        setModalMode(defaultModalModeForCurrentView());
         if (dom.newRoomModalInstance) dom.newRoomModalInstance.show();
       });
     }
@@ -4567,6 +7753,22 @@
         startOrJoinCall("video");
       });
     }
+    if (dom.stageSelfBtn) {
+      dom.stageSelfBtn.addEventListener("click", function () {
+        const action = normalizeText(dom.stageSelfBtn.getAttribute("data-stage-self-action")).toLowerCase();
+        if (!action) return;
+        sendStageRequestAction(action, state.activeRoom).catch(function (error) {
+          showError(error.message || "STAGE 요청을 처리하지 못했습니다.");
+        });
+      });
+    }
+    if (dom.stageQueueBtn) {
+      dom.stageQueueBtn.addEventListener("click", function () {
+        openStageRequestQueue(state.activeRoom).catch(function (error) {
+          showError(error.message || "발언 요청 목록을 열지 못했습니다.");
+        });
+      });
+    }
     if (dom.toggleMicBtn) {
       dom.toggleMicBtn.addEventListener("click", function () {
         toggleCallMute().catch(function (error) {
@@ -4586,6 +7788,57 @@
         toggleScreenShare().catch(function (error) {
           showError(error.message || "화면 공유 상태를 바꾸지 못했습니다.");
         });
+      });
+    }
+    if (dom.deafenBtn) {
+      dom.deafenBtn.addEventListener("click", function () {
+        toggleCallDeafen().catch(function (error) {
+          showError(error.message || "디슨 상태를 바꾸지 못했습니다.");
+        });
+      });
+    }
+    if (dom.pushToTalkBtn) {
+      dom.pushToTalkBtn.addEventListener("click", function () {
+        toggleCallPushToTalk().catch(function (error) {
+          showError(error.message || "Push To Talk 상태를 바꾸지 못했습니다.");
+        });
+      });
+    }
+    if (dom.callLayoutBtn) {
+      dom.callLayoutBtn.addEventListener("click", function () {
+        toggleCallLayout();
+      });
+    }
+    if (dom.callInviteStack) {
+      dom.callInviteStack.addEventListener("click", function (event) {
+        const target = event.target instanceof Element ? event.target.closest("[data-call-invite-action]") : null;
+        if (!target) return;
+        const action = normalizeText(target.getAttribute("data-call-invite-action")).toLowerCase();
+        const roomId = Number(target.getAttribute("data-call-invite-room-id") || 0);
+        if (roomId <= 0) return;
+        if (action === "join-audio") {
+          acceptIncomingCall(roomId, "audio").catch(function (error) {
+            showError(error.message || "통화에 참여하지 못했습니다.");
+          });
+          return;
+        }
+        if (action === "join-video") {
+          acceptIncomingCall(roomId, "video").catch(function (error) {
+            showError(error.message || "영상 통화에 참여하지 못했습니다.");
+          });
+          return;
+        }
+        if (action === "open-talk") {
+          setViewMode("talk");
+          openRoom(roomId, 0).catch(function (error) {
+            showError(error.message || "대화방을 열지 못했습니다.");
+          });
+          return;
+        }
+        if (action === "dismiss") {
+          removeIncomingCallInvite(roomId, { dismiss: true });
+          renderIncomingCallInvites();
+        }
       });
     }
     if (dom.leaveCallBtn) {
@@ -4624,6 +7877,7 @@
         if (action === "toggle-star") toggleStar();
         if (action === "edit-room") editRoomDetails(state.activeRoom);
         if (action === "delete-room") deleteRoom(state.activeRoom);
+        if (action === "leave-room") leaveRoom(state.activeRoom);
         if (action === "refresh-room" && state.activeRoomId > 0) {
           loadRoomMessages(state.activeRoomId).catch(function (error) {
             showError(error.message || "대화 새로고침에 실패했습니다.");
@@ -4763,6 +8017,7 @@
 
     if (dom.newChatBtn) {
       dom.newChatBtn.addEventListener("click", function () {
+        setModalMode(defaultModalModeForCurrentView());
         if (dom.newRoomModalInstance) dom.newRoomModalInstance.show();
       });
     }
@@ -4812,6 +8067,15 @@
     });
 
     document.addEventListener("keydown", function (event) {
+      const target = event.target;
+      const editingTarget = target instanceof Element && !!target.closest("input, textarea, select, [contenteditable='true']");
+      if (state.viewMode === "ascord" && state.call.pushToTalk && state.call.joinedRoomId && event.code === "Space" && !editingTarget) {
+        if (!state.call.pushToTalkPressed) {
+          state.call.pushToTalkPressed = true;
+          syncCallTransmitState().catch(function () {});
+        }
+        event.preventDefault();
+      }
       if (event.key === "Escape" && state.notificationMenuOpen) {
         setNotificationMenuOpen(false);
         return;
@@ -4835,11 +8099,28 @@
       }
     });
 
+    document.addEventListener("keyup", function (event) {
+      const target = event.target;
+      const editingTarget = target instanceof Element && !!target.closest("input, textarea, select, [contenteditable='true']");
+      if (state.viewMode === "ascord" && state.call.pushToTalk && state.call.joinedRoomId && event.code === "Space" && !editingTarget) {
+        if (state.call.pushToTalkPressed) {
+          state.call.pushToTalkPressed = false;
+          syncCallTransmitState().catch(function () {});
+        }
+        event.preventDefault();
+      }
+    });
+
     window.addEventListener("mousemove", movePopupDrag);
     window.addEventListener("mouseup", endPopupDrag);
     window.addEventListener("resize", function () {
       restorePopupOffset();
     });
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === "function") {
+      navigator.mediaDevices.addEventListener("devicechange", function () {
+        refreshCallDevices().catch(function () {});
+      });
+    }
 
     window.addEventListener("pagehide", function () {
       endPopupDrag();
@@ -4859,6 +8140,12 @@
     dom.popupWindow = dom.popupLayer ? dom.popupLayer.querySelector(".messenger-popup-window") : null;
     dom.dragHandle = $("messengerDragHandle");
     dom.launcherBtn = $("messengerLauncherBtn");
+    dom.windowTitle = $("messengerWindowTitle");
+    dom.talkModeBtn = $("messengerTalkModeBtn");
+    dom.ascordModeBtn = $("messengerAscordModeBtn");
+    dom.modePrimaryChip = $("messengerModePrimaryChip");
+    dom.modeSecondaryChip = $("messengerModeSecondaryChip");
+    dom.callInviteStack = $("messengerCallInviteStack");
     dom.headerUnreadBadge = $("messengerHeaderUnreadBadge");
     dom.railRoomsBtn = $("messengerRailRoomsBtn");
     dom.railInboxBtn = $("messengerRailInboxBtn");
@@ -4907,9 +8194,14 @@
     dom.callStatusMeta = $("messengerCallStatusMeta");
     dom.audioCallBtn = $("messengerAudioCallBtn");
     dom.videoCallBtn = $("messengerVideoCallBtn");
+    dom.stageSelfBtn = $("messengerStageSelfBtn");
+    dom.stageQueueBtn = $("messengerStageQueueBtn");
     dom.toggleMicBtn = $("messengerToggleMicBtn");
     dom.toggleCameraBtn = $("messengerToggleCameraBtn");
     dom.screenShareBtn = $("messengerScreenShareBtn");
+    dom.deafenBtn = $("messengerDeafenBtn");
+    dom.pushToTalkBtn = $("messengerPushToTalkBtn");
+    dom.callLayoutBtn = $("messengerCallLayoutBtn");
     dom.leaveCallBtn = $("messengerLeaveCallBtn");
     dom.callStage = $("messengerCallStage");
     dom.callGrid = $("messengerCallGrid");
@@ -4928,10 +8220,15 @@
     dom.roomMoreBtn = $("messengerRoomMoreBtn");
     dom.roomMoreMenu = $("messengerRoomMoreMenu");
     dom.roomInfo = $("messengerRoomInfo");
+    dom.participantPanelLabel = $("messengerParticipantPanelLabel");
     dom.participantList = $("messengerParticipantList");
     dom.participantCount = $("messengerParticipantCount");
     dom.inviteMemberBtn = $("messengerInviteMemberBtn");
     dom.inspectorBadge = $("messengerInspectorBadge");
+    dom.infoPanelLabel = $("messengerInfoPanelLabel");
+    dom.infoPanelCode = $("messengerInfoPanelCode");
+    dom.resourcePanelLabel = $("messengerResourcePanelLabel");
+    dom.resourcePanelCode = $("messengerResourcePanelCode");
     dom.resourceList = $("messengerResourceList");
     dom.quickContactList = $("messengerQuickContactList");
     dom.roomAvatarInput = $("messengerRoomAvatarInput");
@@ -4947,8 +8244,12 @@
     dom.newRoomMode = $("messengerNewRoomMode");
     dom.groupNameWrap = $("messengerGroupNameWrap");
     dom.groupTopicWrap = $("messengerGroupTopicWrap");
+    dom.groupCategoryWrap = $("messengerGroupCategoryWrap");
+    dom.groupChannelModeWrap = $("messengerGroupChannelModeWrap");
     dom.groupNameInput = $("messengerGroupNameInput");
     dom.groupTopicInput = $("messengerGroupTopicInput");
+    dom.groupCategoryInput = $("messengerGroupCategoryInput");
+    dom.groupChannelModeInput = $("messengerGroupChannelModeInput");
     dom.contactSearch = $("messengerContactSearch");
     dom.contactPicker = $("messengerContactPicker");
     dom.createRoomSubmitBtn = $("messengerCreateRoomSubmitBtn");
@@ -4957,57 +8258,91 @@
   }
 
   async function init() {
-    if (state.initialized) return;
-    state.initialized = true;
-    cacheDom();
-    if (!dom.root) return;
-    loadPreferences();
-    loadRecentRooms();
-    applyPreferences();
-    restorePopupOffset();
-    bindEvents();
-    syncFilterTabs(state.filter);
-    setSidebarMode("rooms");
-    setModalMode("dm");
-    resizeComposer();
-    renderEmojiPicker();
-    renderMentionPicker();
-    connectSocket();
-    try {
-      await loadBootstrap(Number(dom.root.getAttribute("data-requested-room-id") || 0));
-      setPopupOpen(String(dom.root.getAttribute("data-auto-open") || "0") === "1" || !!config.autoOpen);
-    } catch (error) {
-      if (dom.roomList) {
-        dom.roomList.innerHTML = [
-          '<div class="messenger-empty-state">',
-          '<i class="bi bi-exclamation-circle"></i>',
-          "<strong>메신저를 불러오지 못했습니다.</strong>",
-          "<span>" + escapeHtml(error.message || "잠시 후 다시 시도해주세요.") + "</span>",
-          "</div>",
-        ].join("");
+    if (state.initialized) return true;
+    if (state.initPromise) return state.initPromise;
+    state.initPromise = (async function () {
+      cacheDom();
+      if (!dom.root) return false;
+      loadPreferences();
+      loadViewModePreference();
+      loadCallPreferences();
+      loadRecentRooms();
+      applyPreferences();
+      applyViewModeChrome();
+      restorePopupOffset();
+      bindEvents();
+      renderIncomingCallInvites();
+      syncFilterTabs(state.filter);
+      setSidebarMode("rooms");
+      setModalMode(defaultModalModeForCurrentView());
+      resizeComposer();
+      renderEmojiPicker();
+      renderMentionPicker();
+      refreshCallDevices().catch(function () {});
+      try {
+        await loadBootstrap(Number(dom.root.getAttribute("data-requested-room-id") || 0));
+        state.authLost = false;
+        connectSocket();
+        setPopupOpen(String(dom.root.getAttribute("data-auto-open") || "0") === "1" || !!config.autoOpen);
+      } catch (error) {
+        if (dom.roomList) {
+          dom.roomList.innerHTML = [
+            '<div class="messenger-empty-state">',
+            '<i class="bi bi-exclamation-circle"></i>',
+            "<strong>메신저를 불러오지 못했습니다.</strong>",
+            "<span>" + escapeHtml(error.message || "잠시 후 다시 시도해주세요.") + "</span>",
+            "</div>",
+          ].join("");
+        }
+        setPopupOpen(String(dom.root.getAttribute("data-auto-open") || "0") === "1" || !!config.autoOpen || state.isOpen);
       }
-      setPopupOpen(String(dom.root.getAttribute("data-auto-open") || "0") === "1" || !!config.autoOpen || state.isOpen);
-    }
+      state.initialized = true;
+      return true;
+    })().catch(function (error) {
+      state.initialized = false;
+      try {
+        console.error("[ABBASMessenger:init]", error);
+      } catch (_) {}
+      throw error;
+    }).finally(function () {
+      state.initPromise = null;
+    });
+    return state.initPromise;
   }
 
   window.ABBASMessenger = {
     isReady: function () {
       return !!state.initialized;
     },
-    open: function () {
+    ensureInit: function () {
+      return init();
+    },
+    open: async function () {
       if (!state.initialized) {
-        init();
+        try {
+          await init();
+        } catch (_) {}
       }
       setPopupOpen(true);
     },
     close: function () {
       setPopupOpen(false);
     },
-    toggle: function () {
+    toggle: async function () {
       if (!state.initialized) {
-        init();
+        try {
+          await init();
+        } catch (_) {}
       }
       togglePopup();
+    },
+    openNotifications: async function () {
+      if (!state.initialized) {
+        try {
+          await init();
+        } catch (_) {}
+      }
+      setNotificationMenuOpen(true);
     },
     openRoom: function (roomId, messageId) {
       return openRoom(roomId, messageId);

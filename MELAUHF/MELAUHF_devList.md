@@ -396,3 +396,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 LiveKit self-hosted 기반 그룹 통화, 카메라 타일 그리드, 실행 스크립트와 systemd 연동을 추가하는 작업이었고 MELAUHF ATmega 펌웨어 코드는 수정하지 않았다.
   - 펌웨어 디렉토리는 기존 MA5105 페이지 제어와 ESP UART 수신 동작을 그대로 유지한 채 `_devList` 기준점만 이번 채팅 내용으로 갱신했다.
+
+## 46. ASCORD 음성채널/STAGE 및 LiveKit 외부망 안정화에 따른 MELAUHF 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 ASCORD 음성채널/STAGE, 수신 통화/권한/운영 UX, LiveKit WSS/TURN/TLS 정리와 포트포워딩 점검을 진행한 작업이었고 MELAUHF ATmega 펌웨어 코드는 수정하지 않았다.
+  - 펌웨어 디렉토리는 기존 MA5105 페이지 제어와 ESP UART 수신 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 추가했다.

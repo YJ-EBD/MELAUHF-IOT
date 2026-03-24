@@ -4,8 +4,13 @@ import hashlib
 import json
 import os
 import re
+import tempfile
+import threading
+import time
 from datetime import datetime
 from typing import Any
+
+from pymysql import err as pymysql_err
 
 from .runtime import get_mysql
 from . import user_repo
@@ -17,6 +22,7 @@ _TALK_BACKUP_FORMAT_VERSION = 1
 _TALK_BACKUP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "Talk_BackUp"))
 _TALK_BACKUP_ROOMS_DIR = os.path.join(_TALK_BACKUP_ROOT_DIR, "rooms")
 _TALK_BACKUP_MANIFEST_PATH = os.path.join(_TALK_BACKUP_ROOT_DIR, "manifest.json")
+_TALK_BACKUP_WRITE_LOCK = threading.Lock()
 
 
 def _norm_text(value: Any) -> str:
@@ -34,6 +40,20 @@ def _norm_room_type(value: Any) -> str:
     return "group"
 
 
+def _norm_channel_mode(value: Any) -> str:
+    mode = _norm_text(value).lower()
+    if mode == "stage":
+        return "stage"
+    return "voice"
+
+
+def _norm_channel_category(value: Any) -> str:
+    category = _norm_text(value)
+    if len(category) > 60:
+        return category[:60].strip()
+    return category
+
+
 def _room_slug_token(value: Any) -> str:
     text = _norm_text(value)
     if not text:
@@ -41,6 +61,132 @@ def _room_slug_token(value: Any) -> str:
     normalized = re.sub(r"\s+", " ", text)
     digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()
     return digest[:16]
+
+
+_CALL_PERMISSION_KEYS = (
+    "connect",
+    "start_call",
+    "speak",
+    "video",
+    "screen_share",
+    "invite_members",
+    "moderate",
+)
+_DEFAULT_GROUP_CALL_PERMISSIONS = {
+    "connect": "member",
+    "start_call": "member",
+    "speak": "member",
+    "video": "member",
+    "screen_share": "member",
+    "invite_members": "admin",
+    "moderate": "admin",
+}
+_DEFAULT_DM_CALL_PERMISSIONS = {
+    "connect": "member",
+    "start_call": "member",
+    "speak": "member",
+    "video": "member",
+    "screen_share": "member",
+    "invite_members": "none",
+    "moderate": "none",
+}
+_DEFAULT_STAGE_CALL_PERMISSIONS = {
+    "connect": "member",
+    "start_call": "admin",
+    "speak": "admin",
+    "video": "none",
+    "screen_share": "none",
+    "invite_members": "admin",
+    "moderate": "admin",
+}
+
+
+def _normalize_call_permission_key(value: Any) -> str:
+    key = _norm_text(value).lower()
+    alias_map = {
+        "connect": "connect",
+        "join": "connect",
+        "start": "start_call",
+        "start_call": "start_call",
+        "startcall": "start_call",
+        "speak": "speak",
+        "voice": "speak",
+        "video": "video",
+        "camera": "video",
+        "screen_share": "screen_share",
+        "screenshare": "screen_share",
+        "screen": "screen_share",
+        "share_screen": "screen_share",
+        "invite": "invite_members",
+        "invite_members": "invite_members",
+        "invitemembers": "invite_members",
+        "moderate": "moderate",
+        "mod": "moderate",
+    }
+    normalized = alias_map.get(key, key)
+    return normalized if normalized in _CALL_PERMISSION_KEYS else ""
+
+
+def _normalize_call_permission_level(value: Any, default: str = "member") -> str:
+    normalized = _norm_text(value).lower()
+    alias_map = {
+        "all": "member",
+        "everyone": "member",
+        "member": "member",
+        "members": "member",
+        "admin": "admin",
+        "admins": "admin",
+        "owner": "owner",
+        "owners": "owner",
+        "none": "none",
+        "deny": "none",
+        "disabled": "none",
+        "nobody": "none",
+        "off": "none",
+    }
+    candidate = alias_map.get(normalized, normalized)
+    if candidate in {"member", "admin", "owner", "none"}:
+        return candidate
+    return default if default in {"member", "admin", "owner", "none"} else "member"
+
+
+def _default_call_permissions(room_type: Any, channel_mode: Any = None) -> dict[str, str]:
+    normalized_room_type = _norm_room_type(room_type)
+    if normalized_room_type == "dm":
+        return dict(_DEFAULT_DM_CALL_PERMISSIONS)
+    if _norm_channel_mode(channel_mode) == "stage":
+        return dict(_DEFAULT_STAGE_CALL_PERMISSIONS)
+    return dict(_DEFAULT_GROUP_CALL_PERMISSIONS)
+
+
+def normalize_call_permissions(room_type: Any, values: Any = None, *, channel_mode: Any = None) -> dict[str, str]:
+    permissions = _default_call_permissions(room_type, channel_mode)
+    if _norm_room_type(room_type) == "dm":
+        return permissions
+
+    payload = values
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload or "{}")
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    for raw_key, raw_value in payload.items():
+        key = _normalize_call_permission_key(raw_key)
+        if not key:
+            continue
+        permissions[key] = _normalize_call_permission_level(raw_value, permissions.get(key) or "member")
+    return permissions
+
+
+def serialize_call_permissions(room_type: Any, values: Any = None, *, channel_mode: Any = None) -> str:
+    return json.dumps(
+        normalize_call_permissions(room_type, values, channel_mode=channel_mode),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _message_preview(value: Any, limit: int = 140) -> str:
@@ -73,6 +219,9 @@ def _attachment_payload(message_type: Any, content: Any) -> dict[str, str]:
 
 
 def _message_preview_for_type(message_type: Any, content: Any, limit: int = 140) -> str:
+    normalized_type = _norm_text(message_type).lower()
+    if normalized_type == "system":
+        return _message_preview(content, limit=limit)
     attachment = _attachment_payload(message_type, content)
     if attachment:
         label = "[이미지]" if attachment.get("kind") == "image" else "[파일]"
@@ -97,10 +246,19 @@ def _atomic_write_text(path: str, text: str) -> None:
     parent_dir = os.path.dirname(path)
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
-    temp_path = f"{path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as file_obj:
-        file_obj.write(text)
-    os.replace(temp_path, path)
+    temp_dir = parent_dir or None
+    temp_prefix = f"{os.path.basename(path)}."
+    fd, temp_path = tempfile.mkstemp(prefix=temp_prefix, suffix=".tmp", dir=temp_dir, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
+            file_obj.write(text)
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _write_json_file(path: str, payload: Any) -> None:
@@ -267,6 +425,9 @@ def _ensure_schema_with_cur(cur) -> None:
           name VARCHAR(255) NOT NULL DEFAULT '',
           topic VARCHAR(255) NOT NULL DEFAULT '',
           avatar_path VARCHAR(255) NOT NULL DEFAULT '',
+          channel_category VARCHAR(80) NOT NULL DEFAULT '',
+          channel_mode VARCHAR(16) NOT NULL DEFAULT 'voice',
+          call_permissions_json LONGTEXT NULL,
           created_by VARCHAR(64) NOT NULL DEFAULT '',
           last_message_id BIGINT UNSIGNED NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -311,6 +472,26 @@ def _ensure_schema_with_cur(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_call_logs (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          room_id BIGINT UNSIGNED NOT NULL,
+          call_id VARCHAR(128) NOT NULL,
+          started_by_user_id VARCHAR(64) NOT NULL DEFAULT '',
+          initiated_mode VARCHAR(16) NOT NULL DEFAULT 'audio',
+          status VARCHAR(16) NOT NULL DEFAULT 'active',
+          max_participant_count INT UNSIGNED NOT NULL DEFAULT 1,
+          started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          ended_at DATETIME NULL,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          UNIQUE KEY uq_chat_call_logs_call_id (call_id),
+          KEY idx_chat_call_logs_room_recent (room_id, id),
+          KEY idx_chat_call_logs_status_recent (status, id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
 
     try:
         cur.execute("SHOW COLUMNS FROM chat_rooms")
@@ -319,6 +500,12 @@ def _ensure_schema_with_cur(cur) -> None:
         room_cols = set()
     if "avatar_path" not in room_cols:
         cur.execute("ALTER TABLE chat_rooms ADD COLUMN avatar_path VARCHAR(255) NOT NULL DEFAULT '' AFTER topic")
+    if "channel_category" not in room_cols:
+        cur.execute("ALTER TABLE chat_rooms ADD COLUMN channel_category VARCHAR(80) NOT NULL DEFAULT '' AFTER avatar_path")
+    if "channel_mode" not in room_cols:
+        cur.execute("ALTER TABLE chat_rooms ADD COLUMN channel_mode VARCHAR(16) NOT NULL DEFAULT 'voice' AFTER channel_category")
+    if "call_permissions_json" not in room_cols:
+        cur.execute("ALTER TABLE chat_rooms ADD COLUMN call_permissions_json LONGTEXT NULL AFTER channel_mode")
 
     try:
         cur.execute("SHOW COLUMNS FROM chat_room_members")
@@ -349,21 +536,52 @@ def _ensure_room_with_cur(
     room_key: str,
     name: str,
     topic: str = "",
+    channel_category: str = "",
+    channel_mode: str = "voice",
+    call_permissions: Any = None,
     created_by: str = "",
 ) -> int:
+    normalized_channel_category = _norm_channel_category(channel_category)
+    normalized_channel_mode = _norm_channel_mode(channel_mode)
+    call_permissions_json = serialize_call_permissions(
+        room_type,
+        call_permissions,
+        channel_mode=normalized_channel_mode,
+    )
     cur.execute(
         """
         INSERT INTO chat_rooms (
-          room_type, room_key, name, topic, created_by, created_at, updated_at
+          room_type, room_key, name, topic, avatar_path, channel_category, channel_mode, created_by, call_permissions_json, created_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+        VALUES (%s, %s, %s, %s, '', %s, %s, %s, %s, NOW(), NOW())
         ON DUPLICATE KEY UPDATE
           room_type=VALUES(room_type),
           name=CASE WHEN TRIM(VALUES(name))='' THEN name ELSE VALUES(name) END,
           topic=CASE WHEN TRIM(VALUES(topic))='' THEN topic ELSE VALUES(topic) END,
+          channel_category=CASE
+            WHEN TRIM(COALESCE(channel_category, ''))='' THEN VALUES(channel_category)
+            ELSE channel_category
+          END,
+          channel_mode=CASE
+            WHEN TRIM(COALESCE(channel_mode, ''))='' THEN VALUES(channel_mode)
+            ELSE channel_mode
+          END,
+          call_permissions_json=CASE
+            WHEN call_permissions_json IS NULL OR TRIM(call_permissions_json)='' THEN VALUES(call_permissions_json)
+            ELSE call_permissions_json
+          END,
           updated_at=updated_at
         """,
-        (room_type, room_key, name, topic, created_by),
+        (
+            room_type,
+            room_key,
+            name,
+            topic,
+            normalized_channel_category,
+            normalized_channel_mode,
+            created_by,
+            call_permissions_json,
+        ),
     )
     cur.execute("SELECT id FROM chat_rooms WHERE room_key=%s LIMIT 1", (room_key,))
     row = cur.fetchone() or {}
@@ -438,6 +656,8 @@ def ensure_default_rooms() -> None:
                 room_key="channel:company",
                 name="전체 채널",
                 topic="ABBAS_WEB 구성원 전체가 참여하는 공용 채널",
+                channel_category="WORKSPACE",
+                channel_mode="voice",
                 created_by="system",
             )
             if room_id > 0:
@@ -451,6 +671,8 @@ def ensure_default_rooms() -> None:
                     room_key="channel:leadership",
                     name="운영 리더 채널",
                     topic="관리자와 슈퍼유저를 위한 운영 협업 채널",
+                    channel_category="OPERATIONS",
+                    channel_mode="stage",
                     created_by="system",
                 )
                 if leadership_room_id > 0:
@@ -466,6 +688,8 @@ def ensure_default_rooms() -> None:
                     room_key=f"channel:dept:{_room_slug_token(department)}",
                     name=f"{department} 채널",
                     topic=f"{department} 팀 협업용 기본 채널",
+                    channel_category="DEPARTMENTS",
+                    channel_mode="voice",
                     created_by="system",
                 )
                 if department_room_id > 0:
@@ -537,6 +761,9 @@ def list_rooms_for_user(user_id: str) -> list[dict[str, Any]]:
                   COALESCE(r.name, '') AS name,
                   COALESCE(r.topic, '') AS topic,
                   COALESCE(r.avatar_path, '') AS avatar_path,
+                  COALESCE(r.channel_category, '') AS channel_category,
+                  COALESCE(r.channel_mode, 'voice') AS channel_mode,
+                  COALESCE(r.call_permissions_json, '') AS call_permissions_json,
                   COALESCE(r.created_by, '') AS created_by,
                   COALESCE(m.member_role, 'member') AS member_role,
                   COALESCE(m.last_read_message_id, 0) AS last_read_message_id,
@@ -577,14 +804,22 @@ def list_rooms_for_user(user_id: str) -> list[dict[str, Any]]:
         room_id = int(row.get("id") or 0)
         if room_id <= 0:
             continue
+        room_type = _norm_room_type(row.get("room_type"))
         rooms.append(
             {
                 "id": room_id,
-                "room_type": _norm_room_type(row.get("room_type")),
+                "room_type": room_type,
                 "room_key": _norm_text(row.get("room_key")),
                 "name": _norm_text(row.get("name")),
                 "topic": _norm_text(row.get("topic")),
                 "avatar_path": _norm_text(row.get("avatar_path")),
+                "channel_category": _norm_channel_category(row.get("channel_category")),
+                "channel_mode": _norm_channel_mode(row.get("channel_mode")),
+                "call_permissions": normalize_call_permissions(
+                    room_type,
+                    row.get("call_permissions_json"),
+                    channel_mode=row.get("channel_mode"),
+                ),
                 "created_by": _norm_user_id(row.get("created_by")),
                 "member_role": _norm_text(row.get("member_role")) or "member",
                 "last_read_message_id": int(row.get("last_read_message_id") or 0),
@@ -669,6 +904,214 @@ def room_has_member(room_id: int, user_id: str) -> bool:
     return bool(row.get("ok"))
 
 
+def _call_log_row_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    item = dict(row or {})
+    call_id = _norm_text(item.get("call_id"))
+    if not call_id:
+        return None
+    return {
+        "id": int(item.get("id") or 0),
+        "room_id": int(item.get("room_id") or 0),
+        "call_id": call_id,
+        "started_by_user_id": _norm_user_id(item.get("started_by_user_id")),
+        "started_by_nickname": _norm_text(item.get("started_by_nickname")),
+        "started_by_name": _norm_text(item.get("started_by_name")),
+        "started_by_department": _norm_text(item.get("started_by_department")),
+        "initiated_mode": _norm_text(item.get("initiated_mode")) or "audio",
+        "status": _norm_text(item.get("status")) or "active",
+        "max_participant_count": max(int(item.get("max_participant_count") or 0), 0),
+        "duration_sec": max(int(item.get("duration_sec") or 0), 0),
+        "started_at": _norm_text(item.get("started_at")),
+        "ended_at": _norm_text(item.get("ended_at")),
+        "updated_at": _norm_text(item.get("updated_at")),
+    }
+
+
+def get_call_log_by_call_id(call_id: str) -> dict[str, Any] | None:
+    normalized_call_id = _norm_text(call_id)
+    if not normalized_call_id:
+        return None
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                SELECT
+                  log.id,
+                  log.room_id,
+                  log.call_id,
+                  COALESCE(log.started_by_user_id, '') AS started_by_user_id,
+                  COALESCE(log.initiated_mode, 'audio') AS initiated_mode,
+                  COALESCE(log.status, 'active') AS status,
+                  COALESCE(log.max_participant_count, 1) AS max_participant_count,
+                  COALESCE(TIMESTAMPDIFF(SECOND, log.started_at, COALESCE(log.ended_at, NOW())), 0) AS duration_sec,
+                  COALESCE(DATE_FORMAT(log.started_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS started_at,
+                  COALESCE(DATE_FORMAT(log.ended_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS ended_at,
+                  COALESCE(DATE_FORMAT(log.updated_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS updated_at,
+                  COALESCE(u.nickname, '') AS started_by_nickname,
+                  COALESCE(u.name, '') AS started_by_name,
+                  COALESCE(u.department, '') AS started_by_department
+                FROM chat_call_logs log
+                LEFT JOIN users u
+                  ON u.user_id = log.started_by_user_id
+                WHERE log.call_id=%s
+                LIMIT 1
+                """,
+                (normalized_call_id,),
+            )
+            row = cur.fetchone() or {}
+    return _call_log_row_view(row)
+
+
+def create_call_log(
+    room_id: int,
+    call_id: str,
+    started_by_user_id: str,
+    *,
+    initiated_mode: str = "audio",
+    participant_count: int = 1,
+) -> dict[str, Any] | None:
+    try:
+        target_room_id = int(room_id)
+    except Exception:
+        return None
+    normalized_call_id = _norm_text(call_id)
+    normalized_user_id = _norm_user_id(started_by_user_id)
+    normalized_mode = "video" if _norm_text(initiated_mode).lower() == "video" else "audio"
+    peak_count = max(int(participant_count or 0), 1)
+    if target_room_id <= 0 or not normalized_call_id:
+        return None
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                INSERT INTO chat_call_logs (
+                  room_id, call_id, started_by_user_id, initiated_mode, status, max_participant_count, started_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, 'active', %s, NOW(), NOW())
+                ON DUPLICATE KEY UPDATE
+                  started_by_user_id=CASE
+                    WHEN COALESCE(started_by_user_id, '')='' THEN VALUES(started_by_user_id)
+                    ELSE started_by_user_id
+                  END,
+                  initiated_mode=VALUES(initiated_mode),
+                  status=CASE
+                    WHEN status='active' THEN status
+                    ELSE VALUES(status)
+                  END,
+                  max_participant_count=GREATEST(COALESCE(max_participant_count, 1), VALUES(max_participant_count)),
+                  updated_at=NOW()
+                """,
+                (target_room_id, normalized_call_id, normalized_user_id, normalized_mode, peak_count),
+            )
+    return get_call_log_by_call_id(normalized_call_id)
+
+
+def update_call_log_activity(call_id: str, *, participant_count: int = 1) -> dict[str, Any] | None:
+    normalized_call_id = _norm_text(call_id)
+    peak_count = max(int(participant_count or 0), 1)
+    if not normalized_call_id:
+        return None
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                UPDATE chat_call_logs
+                SET max_participant_count=GREATEST(COALESCE(max_participant_count, 1), %s),
+                    updated_at=NOW()
+                WHERE call_id=%s
+                """,
+                (peak_count, normalized_call_id),
+            )
+    return get_call_log_by_call_id(normalized_call_id)
+
+
+def finish_call_log(call_id: str, *, status: str = "ended", participant_count: int = 1) -> dict[str, Any] | None:
+    normalized_call_id = _norm_text(call_id)
+    normalized_status = _norm_text(status).lower()
+    if normalized_status not in {"ended", "missed"}:
+        normalized_status = "ended"
+    peak_count = max(int(participant_count or 0), 1)
+    if not normalized_call_id:
+        return None
+
+    completed = False
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                UPDATE chat_call_logs
+                SET status=%s,
+                    ended_at=COALESCE(ended_at, NOW()),
+                    max_participant_count=GREATEST(COALESCE(max_participant_count, 1), %s),
+                    updated_at=NOW()
+                WHERE call_id=%s
+                  AND status='active'
+                """,
+                (normalized_status, peak_count, normalized_call_id),
+            )
+            completed = bool(cur.rowcount)
+    payload = get_call_log_by_call_id(normalized_call_id)
+    if payload:
+        payload["just_completed"] = completed
+    return payload
+
+
+def list_call_logs_for_room(room_id: int, *, limit: int = 8) -> list[dict[str, Any]]:
+    try:
+        target_room_id = int(room_id)
+    except Exception:
+        return []
+    if target_room_id <= 0:
+        return []
+    normalized_limit = min(max(int(limit or 0), 1), 20)
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                SELECT
+                  log.id,
+                  log.room_id,
+                  log.call_id,
+                  COALESCE(log.started_by_user_id, '') AS started_by_user_id,
+                  COALESCE(log.initiated_mode, 'audio') AS initiated_mode,
+                  COALESCE(log.status, 'active') AS status,
+                  COALESCE(log.max_participant_count, 1) AS max_participant_count,
+                  COALESCE(TIMESTAMPDIFF(SECOND, log.started_at, COALESCE(log.ended_at, NOW())), 0) AS duration_sec,
+                  COALESCE(DATE_FORMAT(log.started_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS started_at,
+                  COALESCE(DATE_FORMAT(log.ended_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS ended_at,
+                  COALESCE(DATE_FORMAT(log.updated_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS updated_at,
+                  COALESCE(u.nickname, '') AS started_by_nickname,
+                  COALESCE(u.name, '') AS started_by_name,
+                  COALESCE(u.department, '') AS started_by_department
+                FROM chat_call_logs log
+                LEFT JOIN users u
+                  ON u.user_id = log.started_by_user_id
+                WHERE log.room_id=%s
+                ORDER BY
+                  COALESCE(log.ended_at, log.updated_at, log.started_at) DESC,
+                  log.id DESC
+                LIMIT %s
+                """,
+                (target_room_id, normalized_limit),
+            )
+            rows = cur.fetchall() or []
+    return [payload for payload in (_call_log_row_view(row) for row in rows) if payload]
+
+
 def add_room_members(room_id: int, member_ids: list[str]) -> list[str]:
     try:
         target_room_id = int(room_id)
@@ -721,6 +1164,183 @@ def add_room_members(room_id: int, member_ids: list[str]) -> list[str]:
     return new_ids
 
 
+def update_room_member_role(room_id: int, user_id: str, member_role: str) -> bool:
+    try:
+        target_room_id = int(room_id)
+    except Exception:
+        return False
+    uid = _norm_user_id(user_id)
+    normalized_role = _norm_text(member_role).lower() or "member"
+    if target_room_id <= 0 or not uid:
+        return False
+    if normalized_role not in {"owner", "admin", "member"}:
+        return False
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                UPDATE chat_room_members
+                SET member_role=%s,
+                    updated_at=NOW()
+                WHERE room_id=%s AND user_id=%s
+                """,
+                (normalized_role, target_room_id, uid),
+            )
+            updated = bool(cur.rowcount)
+            if updated:
+                cur.execute(
+                    """
+                    UPDATE chat_rooms
+                    SET updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (target_room_id,),
+                )
+    if updated:
+        sync_room_backup(target_room_id, sync_reason="member_role_updated")
+    return updated
+
+
+def transfer_room_owner(room_id: int, next_owner_user_id: str) -> bool:
+    try:
+        target_room_id = int(room_id)
+    except Exception:
+        return False
+    next_owner_id = _norm_user_id(next_owner_user_id)
+    if target_room_id <= 0 or not next_owner_id:
+        return False
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                SELECT COALESCE(created_by, '') AS created_by
+                FROM chat_rooms
+                WHERE id=%s
+                LIMIT 1
+                """,
+                (target_room_id,),
+            )
+            room_row = cur.fetchone() or {}
+            previous_owner_id = _norm_user_id(room_row.get("created_by"))
+            cur.execute(
+                """
+                UPDATE chat_room_members
+                SET member_role='owner',
+                    updated_at=NOW()
+                WHERE room_id=%s AND user_id=%s
+                """,
+                (target_room_id, next_owner_id),
+            )
+            next_owner_updated = bool(cur.rowcount)
+            if not next_owner_updated:
+                return False
+            if previous_owner_id and previous_owner_id != next_owner_id:
+                cur.execute(
+                    """
+                    UPDATE chat_room_members
+                    SET member_role='admin',
+                        updated_at=NOW()
+                    WHERE room_id=%s AND user_id=%s
+                    """,
+                    (target_room_id, previous_owner_id),
+                )
+            cur.execute(
+                """
+                UPDATE chat_rooms
+                SET created_by=%s,
+                    updated_at=NOW()
+                WHERE id=%s
+                """,
+                (next_owner_id, target_room_id),
+            )
+    sync_room_backup(target_room_id, sync_reason="room_owner_transferred")
+    return True
+
+
+def remove_room_member(room_id: int, user_id: str) -> bool:
+    try:
+        target_room_id = int(room_id)
+    except Exception:
+        return False
+    uid = _norm_user_id(user_id)
+    if target_room_id <= 0 or not uid:
+        return False
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                DELETE FROM chat_room_members
+                WHERE room_id=%s AND user_id=%s
+                """,
+                (target_room_id, uid),
+            )
+            removed = bool(cur.rowcount)
+            if removed:
+                cur.execute(
+                    """
+                    UPDATE chat_rooms
+                    SET updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (target_room_id,),
+                )
+    if removed:
+        sync_room_backup(target_room_id, sync_reason="member_removed")
+    return removed
+
+
+def insert_system_message(room_id: int, content: str) -> dict[str, Any]:
+    try:
+        target_room_id = int(room_id)
+    except Exception:
+        raise ValueError("room_id required")
+    normalized_content = str(content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if target_room_id <= 0:
+        raise ValueError("room_id required")
+    if not normalized_content:
+        raise ValueError("message required")
+    if len(normalized_content) > _DIRECT_MESSAGE_MAX_LEN:
+        raise ValueError(f"메시지는 최대 {_DIRECT_MESSAGE_MAX_LEN}자까지 전송할 수 있습니다.")
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                INSERT INTO chat_messages (
+                  room_id, sender_user_id, message_type, content, created_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                """,
+                (target_room_id, "system", "system", normalized_content),
+            )
+            message_id = int(cur.lastrowid or 0)
+            cur.execute(
+                """
+                UPDATE chat_rooms
+                SET last_message_id=%s, updated_at=NOW()
+                WHERE id=%s
+                """,
+                (message_id, target_room_id),
+            )
+
+    sync_room_backup(target_room_id, sync_reason="system_message_created")
+    message = get_message_by_id(message_id)
+    if not message:
+        raise RuntimeError("message load failed")
+    return message
+
+
 def get_room_by_id(room_id: int) -> dict[str, Any] | None:
     try:
         target_room_id = int(room_id)
@@ -742,6 +1362,9 @@ def get_room_by_id(room_id: int) -> dict[str, Any] | None:
                   COALESCE(name, '') AS name,
                   COALESCE(topic, '') AS topic,
                   COALESCE(avatar_path, '') AS avatar_path,
+                  COALESCE(channel_category, '') AS channel_category,
+                  COALESCE(channel_mode, 'voice') AS channel_mode,
+                  COALESCE(call_permissions_json, '') AS call_permissions_json,
                   COALESCE(created_by, '') AS created_by,
                   COALESCE(last_message_id, 0) AS last_message_id
                 FROM chat_rooms
@@ -753,13 +1376,21 @@ def get_room_by_id(room_id: int) -> dict[str, Any] | None:
             row = cur.fetchone() or {}
     if not row:
         return None
+    room_type = _norm_room_type(row.get("room_type"))
     return {
         "id": int(row.get("id") or 0),
-        "room_type": _norm_room_type(row.get("room_type")),
+        "room_type": room_type,
         "room_key": _norm_text(row.get("room_key")),
         "name": _norm_text(row.get("name")),
         "topic": _norm_text(row.get("topic")),
         "avatar_path": _norm_text(row.get("avatar_path")),
+        "channel_category": _norm_channel_category(row.get("channel_category")),
+        "channel_mode": _norm_channel_mode(row.get("channel_mode")),
+        "call_permissions": normalize_call_permissions(
+            room_type,
+            row.get("call_permissions_json"),
+            channel_mode=row.get("channel_mode"),
+        ),
         "created_by": _norm_user_id(row.get("created_by")),
         "last_message_id": int(row.get("last_message_id") or 0),
     }
@@ -779,6 +1410,9 @@ def _build_room_backup_snapshot_with_cur(cur, room_id: int) -> dict[str, Any] | 
           COALESCE(r.name, '') AS name,
           COALESCE(r.topic, '') AS topic,
           COALESCE(r.avatar_path, '') AS avatar_path,
+          COALESCE(r.channel_category, '') AS channel_category,
+          COALESCE(r.channel_mode, 'voice') AS channel_mode,
+          COALESCE(r.call_permissions_json, '') AS call_permissions_json,
           COALESCE(r.created_by, '') AS created_by,
           COALESCE(r.last_message_id, 0) AS last_message_id,
           COALESCE(DATE_FORMAT(r.created_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS created_at,
@@ -795,6 +1429,7 @@ def _build_room_backup_snapshot_with_cur(cur, room_id: int) -> dict[str, Any] | 
     room_row = cur.fetchone() or {}
     if not room_row:
         return None
+    room_type = _norm_room_type(room_row.get("room_type"))
 
     cur.execute(
         """
@@ -895,13 +1530,20 @@ def _build_room_backup_snapshot_with_cur(cur, room_id: int) -> dict[str, Any] | 
 
     room = {
         "id": int(room_row.get("id") or 0),
-        "room_type": _norm_room_type(room_row.get("room_type")),
+        "room_type": room_type,
         "room_type_label": _room_type_label(room_row.get("room_type")),
         "room_key": _norm_text(room_row.get("room_key")),
         "name": _norm_text(room_row.get("name")),
         "display_name": _room_display_name(room_row, members),
         "topic": _norm_text(room_row.get("topic")),
         "avatar_path": _norm_text(room_row.get("avatar_path")),
+        "channel_category": _norm_channel_category(room_row.get("channel_category")),
+        "channel_mode": _norm_channel_mode(room_row.get("channel_mode")),
+        "call_permissions": normalize_call_permissions(
+            room_type,
+            room_row.get("call_permissions_json"),
+            channel_mode=room_row.get("channel_mode"),
+        ),
         "created_by": _norm_user_id(room_row.get("created_by")),
         "last_message_id": int(room_row.get("last_message_id") or 0),
         "last_message_at": _norm_text(room_row.get("last_message_at")),
@@ -976,33 +1618,34 @@ def _upsert_talk_backup_manifest(snapshot: dict[str, Any], *, room_deleted: bool
 
 
 def _write_room_backup_snapshot(snapshot: dict[str, Any], *, sync_reason: str = "sync", room_deleted: bool = False, deleted_at: str = "") -> None:
-    room = dict(snapshot.get("room") or {})
-    room_id = int(room.get("id") or 0)
-    if room_id <= 0:
-        return
+    with _TALK_BACKUP_WRITE_LOCK:
+        room = dict(snapshot.get("room") or {})
+        room_id = int(room.get("id") or 0)
+        if room_id <= 0:
+            return
 
-    _ensure_talk_backup_dirs()
-    room_dir = _room_backup_dir(room_id)
-    synced_at = _backup_now_text()
-    room["deleted_at"] = deleted_at if room_deleted else _norm_text(room.get("deleted_at"))
-    room["display_name"] = _norm_text(room.get("display_name")) or _room_display_name(room, list(snapshot.get("members") or []))
+        _ensure_talk_backup_dirs()
+        room_dir = _room_backup_dir(room_id)
+        synced_at = _backup_now_text()
+        room["deleted_at"] = deleted_at if room_deleted else _norm_text(room.get("deleted_at"))
+        room["display_name"] = _norm_text(room.get("display_name")) or _room_display_name(room, list(snapshot.get("members") or []))
 
-    payload = {
-        "format_version": _TALK_BACKUP_FORMAT_VERSION,
-        "backup": {
-            "synced_at": synced_at,
-            "sync_reason": _norm_text(sync_reason) or "sync",
-            "source": "ABBAS_WEB",
-        },
-        "room": room,
-        "members": list(snapshot.get("members") or []),
-        "messages": list(snapshot.get("messages") or []),
-        "counts": dict(snapshot.get("counts") or {}),
-    }
+        payload = {
+            "format_version": _TALK_BACKUP_FORMAT_VERSION,
+            "backup": {
+                "synced_at": synced_at,
+                "sync_reason": _norm_text(sync_reason) or "sync",
+                "source": "ABBAS_WEB",
+            },
+            "room": room,
+            "members": list(snapshot.get("members") or []),
+            "messages": list(snapshot.get("messages") or []),
+            "counts": dict(snapshot.get("counts") or {}),
+        }
 
-    _write_json_file(os.path.join(room_dir, "room_snapshot.json"), payload)
-    _atomic_write_text(os.path.join(room_dir, "conversation.txt"), _render_room_backup_text(payload))
-    _upsert_talk_backup_manifest(payload, room_deleted=room_deleted)
+        _write_json_file(os.path.join(room_dir, "room_snapshot.json"), payload)
+        _atomic_write_text(os.path.join(room_dir, "conversation.txt"), _render_room_backup_text(payload))
+        _upsert_talk_backup_manifest(payload, room_deleted=room_deleted)
 
 
 def sync_room_backup(room_id: int, *, sync_reason: str = "sync") -> bool:
@@ -1236,6 +1879,7 @@ def list_recent_notifications_for_user(user_id: str, limit: int = 20) -> list[di
                 INNER JOIN chat_messages msg
                   ON msg.room_id = m.room_id
                  AND msg.deleted_at IS NULL
+                 AND COALESCE(msg.message_type, 'text') <> 'system'
                  AND msg.sender_user_id <> %s
                 LEFT JOIN users u
                   ON u.user_id = msg.sender_user_id
@@ -1355,35 +1999,46 @@ def mark_room_read(room_id: int, user_id: str, message_id: int = 0) -> int:
     if target_room_id <= 0 or not uid:
         return 0
 
-    db = get_mysql()
-    with db.conn() as conn:
-        with conn.cursor() as cur:
-            _ensure_schema_with_cur(cur)
-            cur.execute(
-                """
-                SELECT COALESCE(last_message_id, 0) AS last_message_id
-                FROM chat_rooms
-                WHERE id=%s
-                LIMIT 1
-                """,
-                (target_room_id,),
-            )
-            room_row = cur.fetchone() or {}
-            room_last_message_id = int(room_row.get("last_message_id") or 0)
-            if room_last_message_id <= 0:
-                return 0
+    last_error = None
+    for attempt in range(3):
+        db = get_mysql()
+        try:
+            with db.conn() as conn:
+                with conn.cursor() as cur:
+                    _ensure_schema_with_cur(cur)
+                    cur.execute(
+                        """
+                        SELECT COALESCE(last_message_id, 0) AS last_message_id
+                        FROM chat_rooms
+                        WHERE id=%s
+                        LIMIT 1
+                        """,
+                        (target_room_id,),
+                    )
+                    room_row = cur.fetchone() or {}
+                    room_last_message_id = int(room_row.get("last_message_id") or 0)
+                    if room_last_message_id <= 0:
+                        return 0
 
-            resolved_message_id = room_last_message_id if target_message_id <= 0 else min(target_message_id, room_last_message_id)
-            cur.execute(
-                """
-                UPDATE chat_room_members
-                SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s),
-                    updated_at=NOW()
-                WHERE room_id=%s AND user_id=%s
-                """,
-                (resolved_message_id, target_room_id, uid),
-            )
-    return resolved_message_id
+                    resolved_message_id = room_last_message_id if target_message_id <= 0 else min(target_message_id, room_last_message_id)
+                    cur.execute(
+                        """
+                        UPDATE chat_room_members
+                        SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s),
+                            updated_at=NOW()
+                        WHERE room_id=%s AND user_id=%s
+                        """,
+                        (resolved_message_id, target_room_id, uid),
+                    )
+            return resolved_message_id
+        except pymysql_err.OperationalError as error:
+            last_error = error
+            if int((error.args or [0])[0] or 0) != 1020 or attempt >= 2:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    if last_error:
+        raise last_error
+    return 0
 
 
 def set_room_star(room_id: int, user_id: str, starred: bool) -> bool:
@@ -1461,7 +2116,15 @@ def set_room_avatar(room_id: int, avatar_path: str) -> bool:
     return updated
 
 
-def update_room_details(room_id: int, *, name: str, topic: str = "") -> bool:
+def update_room_details(
+    room_id: int,
+    *,
+    name: str,
+    topic: str = "",
+    channel_category: str = "",
+    channel_mode: str = "voice",
+    call_permissions: Any = None,
+) -> bool:
     try:
         target_room_id = int(room_id)
     except Exception:
@@ -1471,6 +2134,8 @@ def update_room_details(room_id: int, *, name: str, topic: str = "") -> bool:
 
     normalized_name = _norm_text(name)
     normalized_topic = _norm_text(topic)
+    normalized_channel_category = _norm_channel_category(channel_category)
+    normalized_channel_mode = _norm_channel_mode(channel_mode)
     if len(normalized_name) < 2:
         raise ValueError("대화방 이름은 2자 이상 입력해주세요.")
     if len(normalized_name) > 80:
@@ -1482,14 +2147,35 @@ def update_room_details(room_id: int, *, name: str, topic: str = "") -> bool:
     with db.conn() as conn:
         with conn.cursor() as cur:
             _ensure_schema_with_cur(cur)
+            cur.execute("SELECT room_type FROM chat_rooms WHERE id=%s LIMIT 1", (target_room_id,))
+            room_row = cur.fetchone() or {}
+            room_type = _norm_room_type(room_row.get("room_type"))
+            serialized_call_permissions = serialize_call_permissions(
+                room_type,
+                call_permissions,
+                channel_mode=normalized_channel_mode,
+            )
             cur.execute(
                 """
                 UPDATE chat_rooms
-                SET name=%s, topic=%s, updated_at=NOW()
+                SET
+                  name=%s,
+                  topic=%s,
+                  channel_category=%s,
+                  channel_mode=%s,
+                  call_permissions_json=%s,
+                  updated_at=NOW()
                 WHERE id=%s
                   AND room_type <> 'dm'
                 """,
-                (normalized_name, normalized_topic, target_room_id),
+                (
+                    normalized_name,
+                    normalized_topic,
+                    normalized_channel_category,
+                    normalized_channel_mode,
+                    serialized_call_permissions,
+                    target_room_id,
+                ),
             )
             updated = bool(cur.rowcount)
     if updated:
@@ -1638,9 +2324,20 @@ def get_or_create_direct_room(user_id: str, target_user_id: str) -> int:
     return room_id
 
 
-def create_group_room(name: str, created_by: str, member_ids: list[str], topic: str = "") -> int:
+def create_group_room(
+    name: str,
+    created_by: str,
+    member_ids: list[str],
+    topic: str = "",
+    *,
+    channel_category: str = "",
+    channel_mode: str = "voice",
+    call_permissions: Any = None,
+) -> int:
     room_name = _norm_text(name)
     creator_user_id = _norm_user_id(created_by)
+    normalized_channel_category = _norm_channel_category(channel_category)
+    normalized_channel_mode = _norm_channel_mode(channel_mode)
     if not creator_user_id:
         raise ValueError("creator required")
     if len(room_name) < 2:
@@ -1667,11 +2364,20 @@ def create_group_room(name: str, created_by: str, member_ids: list[str], topic: 
             cur.execute(
                 """
                 INSERT INTO chat_rooms (
-                  room_type, room_key, name, topic, created_by, created_at, updated_at
+                  room_type, room_key, name, topic, channel_category, channel_mode, created_by, call_permissions_json, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 """,
-                ("group", room_key, room_name, _norm_text(topic), creator_user_id),
+                (
+                    "group",
+                    room_key,
+                    room_name,
+                    _norm_text(topic),
+                    normalized_channel_category,
+                    normalized_channel_mode,
+                    creator_user_id,
+                    serialize_call_permissions("group", call_permissions, channel_mode=normalized_channel_mode),
+                ),
             )
             room_id = int(cur.lastrowid or 0)
             member_rows = [(creator_user_id, "owner")] + [(uid, "member") for uid in unique_members if uid != creator_user_id]

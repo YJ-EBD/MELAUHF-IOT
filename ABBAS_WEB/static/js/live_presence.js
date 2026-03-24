@@ -7,6 +7,7 @@
   let heartbeatTimer = 0;
   let closedByClient = false;
   let disconnectSent = false;
+  let authLost = false;
 
   function normalizeText(value) {
     return String(value || "").trim();
@@ -69,13 +70,25 @@
     heartbeatTimer = 0;
   }
 
+  function clearReconnectTimer() {
+    if (!reconnectTimer) return;
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = 0;
+  }
+
+  function markAuthLost() {
+    authLost = true;
+    clearReconnectTimer();
+    stopHeartbeat();
+  }
+
   function startHeartbeat() {
     stopHeartbeat();
     heartbeatTimer = window.setInterval(sendPresence, heartbeatMs);
   }
 
   function scheduleReconnect() {
-    if (closedByClient || reconnectTimer) return;
+    if (closedByClient || authLost || reconnectTimer) return;
     reconnectTimer = window.setTimeout(function () {
       reconnectTimer = 0;
       connect();
@@ -102,7 +115,7 @@
 
   function connect() {
     const wsBase = resolveWsUrl(config.wsPath || "");
-    if (!wsBase) return;
+    if (!wsBase || authLost) return;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
 
     const separator = wsBase.indexOf("?") === -1 ? "?" : "&";
@@ -114,14 +127,19 @@
     }
 
     socket.addEventListener("open", function () {
+      authLost = false;
       disconnectSent = false;
       sendPresence();
       startHeartbeat();
     });
 
-    socket.addEventListener("close", function () {
+    socket.addEventListener("close", function (event) {
       stopHeartbeat();
       socket = null;
+      if (event && (Number(event.code || 0) === 4401 || Number(event.code || 0) === 4403)) {
+        markAuthLost();
+        return;
+      }
       scheduleReconnect();
     });
 
@@ -138,6 +156,7 @@
     if (closedByClient) {
       closedByClient = false;
       disconnectSent = false;
+      if (authLost) return;
       connect();
       return;
     }

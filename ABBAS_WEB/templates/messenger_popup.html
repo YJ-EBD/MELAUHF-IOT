@@ -18,8 +18,12 @@
         </div>
 
         <div class="messenger-shell-topbar__chips">
-          <span class="messenger-shell-chip">Team Messenger</span>
-          <span class="messenger-shell-chip messenger-shell-chip--soft">Realtime Collaboration</span>
+          <div class="messenger-shell-mode-switch" data-no-drag>
+            <button class="messenger-shell-mode-switch__item is-active" type="button" id="messengerTalkModeBtn">ABBAS Talk</button>
+            <button class="messenger-shell-mode-switch__item" type="button" id="messengerAscordModeBtn">ASCORD</button>
+          </div>
+          <span class="messenger-shell-chip" id="messengerModePrimaryChip">Team Messenger</span>
+          <span class="messenger-shell-chip messenger-shell-chip--soft" id="messengerModeSecondaryChip">Realtime Collaboration</span>
         </div>
 
         <div class="messenger-shell-topbar__actions" data-no-drag>
@@ -37,6 +41,8 @@
           </button>
         </div>
       </header>
+
+      <div class="messenger-call-invite-stack" id="messengerCallInviteStack" aria-live="polite"></div>
 
       <section class="messenger-shell messenger-shell--channel">
         <aside class="messenger-rail">
@@ -153,7 +159,7 @@
           </section>
         </aside>
 
-        <section class="messenger-conversation">
+        <section class="messenger-conversation" id="messengerConversationSection">
           <header class="messenger-chat-header" id="messengerChatHeader">
             <div class="messenger-chat-header__main">
               <span class="messenger-chat-header__avatar" id="messengerActiveRoomAvatar">A</span>
@@ -210,6 +216,14 @@
                 <i class="bi bi-camera-video"></i>
                 <span>영상 통화</span>
               </button>
+              <button class="messenger-call-action messenger-call-action--soft d-none" type="button" id="messengerStageSelfBtn" disabled>
+                <i class="bi bi-broadcast-pin"></i>
+                <span>발언 요청</span>
+              </button>
+              <button class="messenger-call-action messenger-call-action--soft d-none" type="button" id="messengerStageQueueBtn" disabled>
+                <i class="bi bi-megaphone"></i>
+                <span>요청 0건</span>
+              </button>
               <button class="messenger-call-action messenger-call-action--soft" type="button" id="messengerToggleMicBtn" disabled>
                 <i class="bi bi-mic"></i>
                 <span>마이크</span>
@@ -221,6 +235,18 @@
               <button class="messenger-call-action messenger-call-action--soft" type="button" id="messengerScreenShareBtn" disabled>
                 <i class="bi bi-display"></i>
                 <span>화면 공유</span>
+              </button>
+              <button class="messenger-call-action messenger-call-action--soft" type="button" id="messengerDeafenBtn" disabled>
+                <i class="bi bi-headset"></i>
+                <span>디슨</span>
+              </button>
+              <button class="messenger-call-action messenger-call-action--soft" type="button" id="messengerPushToTalkBtn" disabled>
+                <i class="bi bi-broadcast-pin"></i>
+                <span>PTT</span>
+              </button>
+              <button class="messenger-call-action messenger-call-action--soft" type="button" id="messengerCallLayoutBtn" disabled>
+                <i class="bi bi-grid-3x3-gap"></i>
+                <span>레이아웃</span>
               </button>
               <button class="messenger-call-action messenger-call-action--danger" type="button" id="messengerLeaveCallBtn" disabled>
                 <i class="bi bi-telephone-x"></i>
@@ -277,10 +303,10 @@
           </footer>
         </section>
 
-        <aside class="messenger-inspector">
-          <section class="messenger-panel messenger-panel--members">
+        <aside class="messenger-inspector" id="messengerInspector">
+          <section class="messenger-panel messenger-panel--members" id="messengerParticipantPanel">
             <div class="messenger-panel__head">
-              <span>참여자</span>
+              <span id="messengerParticipantPanelLabel">참여자</span>
               <div class="messenger-panel__head-actions">
                 <button class="messenger-panel__action d-none" id="messengerInviteMemberBtn" type="button">
                   <i class="bi bi-person-plus"></i>
@@ -294,10 +320,10 @@
             </div>
           </section>
 
-          <section class="messenger-panel">
+          <section class="messenger-panel" id="messengerInfoPanel">
             <div class="messenger-panel__head">
-              <span>대화방 설명</span>
-              <strong>INFO</strong>
+              <span id="messengerInfoPanelLabel">대화방 설명</span>
+              <strong id="messengerInfoPanelCode">INFO</strong>
             </div>
             <input id="messengerRoomAvatarInput" type="file" class="d-none" accept="image/*">
             <div class="messenger-room-info" id="messengerRoomInfo">
@@ -305,10 +331,10 @@
             </div>
           </section>
 
-          <section class="messenger-panel">
+          <section class="messenger-panel" id="messengerResourcePanel">
             <div class="messenger-panel__head">
-              <span>파일, 링크 모아보기</span>
-              <strong>RECENT</strong>
+              <span id="messengerResourcePanelLabel">파일, 링크 모아보기</span>
+              <strong id="messengerResourcePanelCode">RECENT</strong>
             </div>
             <div class="messenger-resource-list" id="messengerResourceList">
               <div class="messenger-empty-inline">메시지에 공유된 링크와 파일이 여기에 표시됩니다.</div>
@@ -342,6 +368,19 @@
           <div class="mb-3 d-none" id="messengerGroupTopicWrap">
             <label class="form-label" for="messengerGroupTopicInput">방 설명</label>
             <input class="form-control" id="messengerGroupTopicInput" type="text" maxlength="120" placeholder="대화 목적이나 주제를 간단히 적어주세요.">
+          </div>
+
+          <div class="mb-3 d-none" id="messengerGroupCategoryWrap">
+            <label class="form-label" for="messengerGroupCategoryInput">ASCORD 카테고리</label>
+            <input class="form-control" id="messengerGroupCategoryInput" type="text" maxlength="60" placeholder="예: PROJECT HUB, DESIGN, LIVE EVENTS">
+          </div>
+
+          <div class="mb-3 d-none" id="messengerGroupChannelModeWrap">
+            <label class="form-label" for="messengerGroupChannelModeInput">ASCORD 채널 모드</label>
+            <select class="form-control" id="messengerGroupChannelModeInput">
+              <option value="voice">VOICE · 일반 음성채널</option>
+              <option value="stage">STAGE · 청중 중심 채널</option>
+            </select>
           </div>
 
           <div class="mb-3">

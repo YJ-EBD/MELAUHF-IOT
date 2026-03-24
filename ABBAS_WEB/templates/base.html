@@ -40,7 +40,7 @@
 
   <link href="{{ url_for('static', path='css/admin.css') }}" rel="stylesheet">
   <link href="{{ url_for('static', path='css/cleanpay_theme.css') }}?v=20260324_notify7" rel="stylesheet">
-  <link href="{{ url_for('static', path='css/messenger.css') }}?v=20260324_livekit02" rel="stylesheet">
+  <link href="{{ url_for('static', path='css/messenger.css') }}?v=20260324_ascord19" rel="stylesheet">
 
   {% block extra_head %}{% endblock %}
 </head>
@@ -219,6 +219,7 @@
           aria-haspopup="true"
           aria-controls="topbarNotifyMenu"
           aria-expanded="false"
+          onclick="if (window.ABBASMessenger && typeof window.ABBASMessenger.isReady === 'function' && !window.ABBASMessenger.isReady() && typeof window.ABBASMessenger.openNotifications === 'function') { window.ABBASMessenger.openNotifications(); }"
         >
           <i class="bi bi-bell-fill"></i>
           <span class="header-icon-btn__dot d-none" id="topbarNotifyDot"></span>
@@ -383,7 +384,9 @@
   </div>
 </div>
 
+{% if logged_in %}
 {% include "messenger_popup.html" %}
+{% endif %}
 
 <div class="app-loading d-none" id="appLoadingOverlay" aria-hidden="true">
   <div class="app-loading__inner">
@@ -394,8 +397,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
 <script src="{{ url_for('static', path='js/common.js') }}"></script>
+{% if logged_in %}
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.18.0/dist/livekit-client.umd.min.js"></script>
 <script>
   window.MessengerConfig = {
     requestedRoomId: {{ (request.query_params.get('messenger_room_id') or '0')|int }},
@@ -404,7 +408,7 @@
     livekitWsUrl: {{ (livekit_ws_url or '')|tojson }}
   };
 </script>
-  <script src="{{ url_for('static', path='js/messenger.js') }}?v=20260324_livekit02"></script>
+<script src="{{ url_for('static', path='js/messenger.js') }}?v=20260324_ascord19"></script>
 <script>
   window.LivePresenceConfig = {
     wsPath: "/ws/live-presence",
@@ -412,7 +416,8 @@
     heartbeatMs: 8000
   };
 </script>
-<script src="{{ url_for('static', path='js/live_presence.js') }}"></script>
+<script src="{{ url_for('static', path='js/live_presence.js') }}?v=20260324_presence01"></script>
+{% endif %}
 {% block extra_scripts %}{% endblock %}
 </body>
 </html>

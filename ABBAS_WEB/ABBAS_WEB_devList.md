@@ -558,3 +558,20 @@
 - 간단한 설명
   - 프로젝트 내부 `bin/livekit-server`와 `systemd` 서비스(`abbas-livekit.service`, `abbas-web.service`) 기준으로 self-hosted LiveKit과 ABBAS_WEB를 안전하게 재기동할 수 있는 스크립트와 문서를 추가했다.
   - 런타임 바이너리/PID/로그 파일은 `.gitignore`로 기본 추적 대상에서 제외해 다른 디렉토리에 영향이 가지 않도록 정리했고, 중복으로 8000 포트를 잡던 기존 `for_rnd_web.service`는 비활성화 기준으로 문서화했다.
+
+## 59. ASCORD 음성채널/STAGE 확장과 LiveKit 외부망 연결 안정화
+- 수정코드
+  - `DB/chat_repo.py`
+  - `router/pages.py`
+  - `templates/base.html`
+  - `templates/messenger_popup.html`
+  - `static/css/messenger.css`
+  - `static/js/live_presence.js`
+  - `static/js/messenger.js`
+  - `deploy/systemd/abbas-livekit.service`
+  - `deploy/raspberrypi/nginx-abbas-web.conf`
+  - `scripts/livekit_local.sh`
+  - `deploy/livekit/livekit.yml`
+- 간단한 설명
+  - `messenger-popup-window`를 `ASCORD` 전용 음성채널 화면으로 확장하고, VOICE/STAGE 모드, 발언 요청/승격, 수신 통화/부재중, 권한 매트릭스, 운영 로그, 장치 선택, PTT, 개별 볼륨, 카메라 타일 그리드까지 디스코드식 통화 UX를 한 흐름으로 정리했다.
+  - self-hosted LiveKit의 WSS/TURN/TLS/릴레이 설정과 메신저 웹소켓 재연결, 읽음 처리, 채널 입장, 알림 배지, 통화 상태 동기화 버그를 함께 보정해서 외부망 실사용 점검이 가능한 기준까지 맞췄다.

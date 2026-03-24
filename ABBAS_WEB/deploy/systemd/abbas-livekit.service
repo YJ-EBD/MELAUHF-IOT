@@ -7,13 +7,14 @@ Wants=network-online.target
 Type=simple
 User=abbas
 Group=abbas
+EnvironmentFile=/home/abbas/Desktop/ABBAS_WEB/deploy/livekit/livekit.env
 WorkingDirectory=/home/abbas/Desktop/ABBAS_WEB
-ExecStart=/home/abbas/Desktop/ABBAS_WEB/bin/livekit-server --dev --bind 0.0.0.0 --node-ip 192.168.0.12
+ExecStart=/bin/bash -lc 'exec /home/abbas/Desktop/ABBAS_WEB/bin/livekit-server --config /home/abbas/Desktop/ABBAS_WEB/deploy/livekit/livekit.yml --keys "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"'
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
-LimitNOFILE=8192
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
