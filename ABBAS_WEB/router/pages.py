@@ -43,6 +43,11 @@ from redis.session import (
 )
 
 try:
+    from livekit import api as livekit_api
+except Exception:
+    livekit_api = None
+
+try:
     import psutil
 except Exception:
     psutil = None
@@ -77,6 +82,10 @@ _NAS_INFO_CACHE_TS = 0.0
 _NAS_STATUS_CACHE: dict[str, Any] = {}
 _NAS_STATUS_CACHE_TS = 0.0
 _NAS_USER_PROFILE_CACHE: dict[str, dict[str, str]] = {}
+LIVEKIT_URL = (os.getenv("LIVEKIT_URL") or "").strip()
+LIVEKIT_API_KEY = (os.getenv("LIVEKIT_API_KEY") or "").strip()
+LIVEKIT_API_SECRET = (os.getenv("LIVEKIT_API_SECRET") or "").strip()
+LIVEKIT_ROOM_PREFIX = (os.getenv("LIVEKIT_ROOM_PREFIX") or "abbas-talk-room-").strip() or "abbas-talk-room-"
 PROFILE_IMAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "uploads", "profile-images")
 PROFILE_IMAGE_PUBLIC_PREFIX = "/static/uploads/profile-images"
 PROFILE_IMAGE_MAX_BYTES = int(os.getenv("ABBAS_PROFILE_IMAGE_MAX_BYTES", str(3 * 1024 * 1024)))
@@ -498,6 +507,33 @@ def _request_user_row(request: Request) -> dict[str, Any]:
 def _request_user_role(request: Request) -> str:
     row = _request_user_row(request)
     return _normalize_role(row.get("ROLE") or "")
+
+
+def _livekit_enabled() -> bool:
+    return bool(LIVEKIT_URL and LIVEKIT_API_KEY and LIVEKIT_API_SECRET and livekit_api is not None)
+
+
+def _livekit_public_ws_url() -> str:
+    raw = str(LIVEKIT_URL or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("https://"):
+        return "wss://" + raw[len("https://"):]
+    if raw.startswith("http://"):
+        return "ws://" + raw[len("http://"):]
+    return raw
+
+
+def _livekit_room_name(room_id: int) -> str:
+    try:
+        target_room_id = int(room_id)
+    except Exception:
+        target_room_id = 0
+    return f"{LIVEKIT_ROOM_PREFIX}{max(target_room_id, 0)}"
+
+
+def _livekit_identity_token(value: Any) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-._")
 
 
 def _request_is_admin(request: Request) -> bool:
@@ -1690,8 +1726,227 @@ class _MessengerHub:
                 else:
                     self._connections.pop(user_id, None)
 
+    async def has_connection(self, user_id: str) -> bool:
+        async with self._lock:
+            return bool(self._connections.get(user_id))
+
 
 _MESSENGER_HUB = _MessengerHub()
+
+
+class _MessengerCallHub:
+    def __init__(self) -> None:
+        self._calls_by_room: dict[int, dict[str, Any]] = {}
+        self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _normalize_mode(value: Any) -> str:
+        mode = str(value or "").strip().lower()
+        if mode in {"audio", "video"}:
+            return mode
+        return "audio"
+
+    @staticmethod
+    def _normalize_source(value: Any) -> str:
+        source = str(value or "").strip().lower()
+        if source in {"camera", "screen"}:
+            return source
+        return "camera"
+
+    @staticmethod
+    def _participant_view(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "user_id": str(row.get("user_id") or ""),
+            "display_name": str(row.get("display_name") or row.get("user_id") or ""),
+            "joined_at": float(row.get("joined_at") or 0.0),
+            "media_mode": str(row.get("media_mode") or "audio"),
+            "audio_enabled": bool(row.get("audio_enabled")),
+            "video_enabled": bool(row.get("video_enabled")),
+            "sharing_screen": bool(row.get("sharing_screen")),
+            "source": str(row.get("source") or "camera"),
+        }
+
+    def _call_view_locked(self, room_id: int) -> dict[str, Any] | None:
+        call = self._calls_by_room.get(int(room_id) or 0)
+        if not call:
+            return None
+        participants = sorted(
+            [self._participant_view(item) for item in (call.get("participants") or {}).values()],
+            key=lambda item: (float(item.get("joined_at") or 0.0), str(item.get("user_id") or "")),
+        )
+        return {
+            "room_id": int(call.get("room_id") or 0),
+            "call_id": str(call.get("call_id") or ""),
+            "started_at": float(call.get("started_at") or 0.0),
+            "updated_at": float(call.get("updated_at") or 0.0),
+            "participant_count": len(participants),
+            "participants": participants,
+        }
+
+    async def get_room_call(self, room_id: int) -> dict[str, Any] | None:
+        async with self._lock:
+            return self._call_view_locked(int(room_id) or 0)
+
+    async def join_room(
+        self,
+        room_id: int,
+        user_id: str,
+        *,
+        display_name: str = "",
+        media_mode: Any = "audio",
+        audio_enabled: bool = True,
+        video_enabled: bool = False,
+        sharing_screen: bool = False,
+        source: Any = "camera",
+    ) -> dict[str, Any] | None:
+        target_room_id = int(room_id or 0)
+        normalized_user_id = str(user_id or "").strip()
+        if target_room_id <= 0 or not normalized_user_id:
+            return None
+
+        async with self._lock:
+            call = self._calls_by_room.get(target_room_id)
+            now_ts = time.time()
+            if not call:
+                call = {
+                    "room_id": target_room_id,
+                    "call_id": f"room-{target_room_id}-{int(now_ts * 1000)}",
+                    "started_at": now_ts,
+                    "updated_at": now_ts,
+                    "participants": {},
+                }
+                self._calls_by_room[target_room_id] = call
+
+            participants = call["participants"]
+            previous = dict(participants.get(normalized_user_id) or {})
+            participants[normalized_user_id] = {
+                "user_id": normalized_user_id,
+                "display_name": str(display_name or previous.get("display_name") or normalized_user_id),
+                "joined_at": float(previous.get("joined_at") or now_ts),
+                "media_mode": self._normalize_mode(media_mode),
+                "audio_enabled": bool(audio_enabled),
+                "video_enabled": bool(video_enabled),
+                "sharing_screen": bool(sharing_screen),
+                "source": self._normalize_source(source),
+            }
+            call["updated_at"] = now_ts
+            return self._call_view_locked(target_room_id)
+
+    async def update_media_state(
+        self,
+        room_id: int,
+        user_id: str,
+        *,
+        audio_enabled: Any = None,
+        video_enabled: Any = None,
+        sharing_screen: Any = None,
+        media_mode: Any = None,
+        source: Any = None,
+    ) -> dict[str, Any] | None:
+        target_room_id = int(room_id or 0)
+        normalized_user_id = str(user_id or "").strip()
+        if target_room_id <= 0 or not normalized_user_id:
+            return None
+
+        async with self._lock:
+            call = self._calls_by_room.get(target_room_id)
+            if not call:
+                return None
+            participants = call.get("participants") or {}
+            participant = participants.get(normalized_user_id)
+            if not participant:
+                return None
+            if audio_enabled is not None:
+                participant["audio_enabled"] = bool(audio_enabled)
+            if video_enabled is not None:
+                participant["video_enabled"] = bool(video_enabled)
+            if sharing_screen is not None:
+                participant["sharing_screen"] = bool(sharing_screen)
+            if media_mode is not None:
+                participant["media_mode"] = self._normalize_mode(media_mode)
+            if source is not None:
+                participant["source"] = self._normalize_source(source)
+            call["updated_at"] = time.time()
+            return self._call_view_locked(target_room_id)
+
+    async def leave_room(self, room_id: int, user_id: str) -> dict[str, Any] | None:
+        target_room_id = int(room_id or 0)
+        normalized_user_id = str(user_id or "").strip()
+        if target_room_id <= 0 or not normalized_user_id:
+            return None
+
+        async with self._lock:
+            call = self._calls_by_room.get(target_room_id)
+            if not call:
+                return None
+            participants = call.get("participants") or {}
+            participants.pop(normalized_user_id, None)
+            if not participants:
+                self._calls_by_room.pop(target_room_id, None)
+                return None
+            call["updated_at"] = time.time()
+            return self._call_view_locked(target_room_id)
+
+    async def room_has_participant(self, room_id: int, user_id: str) -> bool:
+        target_room_id = int(room_id or 0)
+        normalized_user_id = str(user_id or "").strip()
+        if target_room_id <= 0 or not normalized_user_id:
+            return False
+        async with self._lock:
+            call = self._calls_by_room.get(target_room_id)
+            if not call:
+                return False
+            participants = call.get("participants") or {}
+            return normalized_user_id in participants
+
+    async def leave_all(self, user_id: str) -> list[int]:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return []
+        affected_room_ids: list[int] = []
+        async with self._lock:
+            for room_id in list(self._calls_by_room):
+                call = self._calls_by_room.get(room_id)
+                if not call:
+                    continue
+                participants = call.get("participants") or {}
+                if normalized_user_id not in participants:
+                    continue
+                participants.pop(normalized_user_id, None)
+                affected_room_ids.append(int(room_id))
+                if not participants:
+                    self._calls_by_room.pop(room_id, None)
+                else:
+                    call["updated_at"] = time.time()
+        return affected_room_ids
+
+
+_MESSENGER_CALL_HUB = _MessengerCallHub()
+
+
+async def _messenger_emit_call_state(user_ids: list[str], room_id: int) -> None:
+    room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+    target_room_id = int(room_id or 0)
+    if target_room_id <= 0:
+        return
+    payload = (
+        {"type": "call_state", "call": room_call}
+        if room_call
+        else {"type": "call_cleared", "room_id": target_room_id}
+    )
+    for user_id in _messenger_unique_user_ids(user_ids):
+        await _MESSENGER_HUB.send_to_user(user_id, payload)
+
+
+async def _messenger_emit_call_state_to_user(user_id: str, room_id: int) -> None:
+    room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+    target_room_id = int(room_id or 0)
+    if target_room_id <= 0:
+        return
+    await _MESSENGER_HUB.send_to_user(
+        user_id,
+        {"type": "call_state", "call": room_call} if room_call else {"type": "call_cleared", "room_id": target_room_id},
+    )
 
 
 async def _messenger_emit_notifications_update(user_ids: list[str]) -> None:
@@ -3456,6 +3711,8 @@ def _base_context(request: Request, active_key: str, **kwargs: Any) -> dict[str,
         "current_user_profile_image_url": current_profile.get("profile_image_url") or "",
         "is_admin": is_admin,
         "is_superuser": is_superuser,
+        "livekit_enabled": _livekit_enabled(),
+        "livekit_ws_url": _livekit_public_ws_url(),
         **kwargs,
     }
 
@@ -5802,11 +6059,107 @@ async def ws_messenger(websocket: WebSocket):
                 room_id = _payload_int(payload.get("room_id"), 0)
                 if room_id > 0:
                     await _messenger_emit_room_update(user_id, room_id)
+                    await _messenger_emit_call_state_to_user(user_id, room_id)
                 continue
 
             if event_type == "refresh_bootstrap":
                 bootstrap_payload = await asyncio.to_thread(_build_messenger_bootstrap_payload, user_id)
                 await _MESSENGER_HUB.send_to_user(user_id, {"type": "bootstrap", "payload": bootstrap_payload})
+                continue
+
+            if event_type == "call_sync":
+                room_id = _payload_int(payload.get("room_id"), 0)
+                if room_id <= 0:
+                    continue
+                has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
+                if not has_access:
+                    continue
+                await _messenger_emit_call_state_to_user(user_id, room_id)
+                continue
+
+            if event_type == "call_join":
+                room_id = _payload_int(payload.get("room_id"), 0)
+                if room_id <= 0:
+                    continue
+                has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
+                if not has_access:
+                    continue
+                room_call = await _MESSENGER_CALL_HUB.join_room(
+                    room_id,
+                    user_id,
+                    media_mode=payload.get("media_mode") or payload.get("mode"),
+                    audio_enabled=_payload_bool(payload.get("audio_enabled"), True),
+                    video_enabled=_payload_bool(payload.get("video_enabled"), False),
+                    sharing_screen=_payload_bool(payload.get("sharing_screen"), False),
+                    source=payload.get("source"),
+                )
+                participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+                await _messenger_emit_call_state(participant_ids, room_id)
+                if room_call:
+                    await _MESSENGER_HUB.send_to_user(
+                        user_id,
+                        {"type": "call_joined", "room_id": room_id, "call": room_call},
+                    )
+                continue
+
+            if event_type == "call_leave":
+                room_id = _payload_int(payload.get("room_id"), 0)
+                if room_id <= 0:
+                    continue
+                has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
+                if not has_access:
+                    continue
+                await _MESSENGER_CALL_HUB.leave_room(room_id, user_id)
+                participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+                await _messenger_emit_call_state(participant_ids, room_id)
+                continue
+
+            if event_type == "call_media_state":
+                room_id = _payload_int(payload.get("room_id"), 0)
+                if room_id <= 0:
+                    continue
+                has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
+                if not has_access:
+                    continue
+                is_participant = await _MESSENGER_CALL_HUB.room_has_participant(room_id, user_id)
+                if not is_participant:
+                    continue
+                await _MESSENGER_CALL_HUB.update_media_state(
+                    room_id,
+                    user_id,
+                    audio_enabled=payload.get("audio_enabled"),
+                    video_enabled=payload.get("video_enabled"),
+                    sharing_screen=payload.get("sharing_screen"),
+                    media_mode=payload.get("media_mode") or payload.get("mode"),
+                    source=payload.get("source"),
+                )
+                participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+                await _messenger_emit_call_state(participant_ids, room_id)
+                continue
+
+            if event_type == "call_signal":
+                room_id = _payload_int(payload.get("room_id"), 0)
+                target_user_id = str(payload.get("target_user_id") or "").strip()
+                signal = payload.get("signal") if isinstance(payload.get("signal"), dict) else {}
+                if room_id <= 0 or not target_user_id or not signal:
+                    continue
+                has_access = await asyncio.to_thread(chat_repo.room_has_member, room_id, user_id)
+                if not has_access:
+                    continue
+                sender_in_call = await _MESSENGER_CALL_HUB.room_has_participant(room_id, user_id)
+                target_in_call = await _MESSENGER_CALL_HUB.room_has_participant(room_id, target_user_id)
+                if not sender_in_call or not target_in_call:
+                    continue
+                await _MESSENGER_HUB.send_to_user(
+                    target_user_id,
+                    {
+                        "type": "call_signal",
+                        "room_id": room_id,
+                        "from_user_id": user_id,
+                        "target_user_id": target_user_id,
+                        "signal": signal,
+                    },
+                )
                 continue
     except WebSocketDisconnect:
         pass
@@ -5817,6 +6170,11 @@ async def ws_messenger(websocket: WebSocket):
             pass
     finally:
         await _MESSENGER_HUB.disconnect(user_id, websocket)
+        if user_id and not await _MESSENGER_HUB.has_connection(user_id):
+            affected_room_ids = await _MESSENGER_CALL_HUB.leave_all(user_id)
+            for room_id in affected_room_ids:
+                participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)
+                await _messenger_emit_call_state(participant_ids, room_id)
         return
 
 
@@ -5959,6 +6317,68 @@ def api_plan_payload():
 @router.get("/api/firmware/payload")
 def api_firmware_payload():
     return {"ok": True, **_build_firmware_payload()}
+
+
+@router.post("/api/messenger/rooms/{room_id}/call/session")
+async def api_messenger_room_call_session(
+    request: Request,
+    room_id: int,
+    payload: dict[str, Any] = Body(default={}),
+):
+    current_user_id = getattr(request.state, "user_id", "") or ""
+    if not current_user_id:
+        return JSONResponse({"ok": False, "detail": "로그인이 필요합니다."}, status_code=401)
+
+    room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id, current_user_id)
+    if not room:
+        return JSONResponse({"ok": False, "detail": "대화방에 접근할 수 없습니다."}, status_code=404)
+
+    if not _livekit_enabled():
+        detail = "LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET 설정이 필요합니다."
+        if livekit_api is None:
+            detail = "livekit-api 패키지가 설치되지 않았습니다. requirements.txt 설치 후 다시 시도해주세요."
+        return JSONResponse({"ok": False, "detail": detail}, status_code=503)
+
+    client_id_raw = str(payload.get("client_id") or "").strip()
+    client_id = _livekit_identity_token(client_id_raw) or secrets.token_hex(6)
+    preferred_mode = "video" if str(payload.get("preferred_mode") or "").strip().lower() == "video" else "audio"
+
+    current_user = _request_user_row(request)
+    display_name = _display_user_name(current_user) or current_user_id
+    room_name = _livekit_room_name(room_id)
+    participant_identity = "__".join(
+        [
+            _livekit_identity_token(current_user_id) or "user",
+            client_id,
+        ]
+    )
+    token = (
+        livekit_api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        .with_identity(participant_identity)
+        .with_name(display_name)
+        .with_grants(
+            livekit_api.VideoGrants(
+                room_join=True,
+                room=room_name,
+            )
+        )
+        .to_jwt()
+    )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "payload": {
+                "server_url": _livekit_public_ws_url(),
+                "participant_token": token,
+                "participant_identity": participant_identity,
+                "participant_name": display_name,
+                "room_name": room_name,
+                "room_id": int(room_id),
+                "preferred_mode": preferred_mode,
+            },
+        }
+    )
 
 
 @router.get("/api/messenger/bootstrap")

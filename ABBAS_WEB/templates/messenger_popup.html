@@ -193,6 +193,53 @@
             </div>
           </header>
 
+          <section class="messenger-call-strip d-none" id="messengerCallStrip" aria-live="polite">
+            <div class="messenger-call-strip__copy">
+              <span class="messenger-call-strip__badge" id="messengerCallStatusBadge">CALL</span>
+              <div class="messenger-call-strip__text">
+                <strong id="messengerCallStatusTitle">이 대화방에서 통화가 없습니다.</strong>
+                <span id="messengerCallStatusMeta">음성 또는 영상 통화를 시작할 수 있습니다.</span>
+              </div>
+            </div>
+            <div class="messenger-call-strip__actions" data-no-drag>
+              <button class="messenger-call-action" type="button" id="messengerAudioCallBtn" disabled>
+                <i class="bi bi-telephone"></i>
+                <span>음성 통화</span>
+              </button>
+              <button class="messenger-call-action" type="button" id="messengerVideoCallBtn" disabled>
+                <i class="bi bi-camera-video"></i>
+                <span>영상 통화</span>
+              </button>
+              <button class="messenger-call-action messenger-call-action--soft" type="button" id="messengerToggleMicBtn" disabled>
+                <i class="bi bi-mic"></i>
+                <span>마이크</span>
+              </button>
+              <button class="messenger-call-action messenger-call-action--soft" type="button" id="messengerToggleCameraBtn" disabled>
+                <i class="bi bi-camera-video"></i>
+                <span>카메라</span>
+              </button>
+              <button class="messenger-call-action messenger-call-action--soft" type="button" id="messengerScreenShareBtn" disabled>
+                <i class="bi bi-display"></i>
+                <span>화면 공유</span>
+              </button>
+              <button class="messenger-call-action messenger-call-action--danger" type="button" id="messengerLeaveCallBtn" disabled>
+                <i class="bi bi-telephone-x"></i>
+                <span>나가기</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="messenger-call-stage d-none" id="messengerCallStage">
+            <div class="messenger-call-stage__grid" id="messengerCallGrid">
+              <div class="messenger-call-empty">
+                <i class="bi bi-camera-video-off"></i>
+                <strong>통화가 시작되지 않았습니다.</strong>
+                <span>참여자가 입장하면 영상과 오디오 상태가 여기에 표시됩니다.</span>
+              </div>
+            </div>
+            <div class="d-none" id="messengerCallAudioSink" aria-hidden="true"></div>
+          </section>
+
           <div class="messenger-message-scroll" id="messengerMessageScroll">
             <div class="messenger-empty-state messenger-empty-state--large" id="messengerConversationEmpty">
               <i class="bi bi-chat-square-heart"></i>

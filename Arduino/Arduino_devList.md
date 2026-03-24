@@ -284,3 +284,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 ABBAS Talk 메시지 복사/삭제 토스트가 우측 상단에 뜰 때 다크모드에서만 세로로 길게 보이던 배경 오버레이를 제거하고, CSS 캐시 버전을 갱신하는 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
   - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.
+
+## 38. ABBAS Talk LiveKit 그룹 통화 추가에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 LiveKit self-hosted 기반 그룹 통화, 카메라 타일 그리드, 실행 스크립트와 systemd 연동을 추가하는 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
+  - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기준점만 이번 채팅 내용으로 갱신했다.

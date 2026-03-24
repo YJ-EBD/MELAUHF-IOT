@@ -52,10 +52,32 @@
     dragRectTop: 0,
     dragRectWidth: 0,
     dragRectHeight: 0,
+    call: {
+      roomCallsById: {},
+      joinedRoomId: 0,
+      joining: false,
+      requestedMode: "",
+      audioEnabled: true,
+      cameraEnabled: false,
+      sharingScreen: false,
+      liveRoom: null,
+      liveRoomName: "",
+      liveParticipantIdentity: "",
+      clientId: "",
+      cameraStream: null,
+      screenStream: null,
+      localStream: null,
+      peersByUserId: {},
+      remoteStreamsByUserId: {},
+      pendingSignalsByUserId: {},
+    },
   };
 
   const dom = {};
   const EMOJI_SET = ["😀", "😁", "😂", "🙂", "😊", "😍", "👍", "🙏", "🎉", "🔥", "💡", "✅", "🚀", "👏", "💬", "❤️"];
+  const DEFAULT_ICE_SERVERS = [
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  ];
   const ROOM_AVATAR_PRESETS = Array.from({ length: 10 }, function (_value, index) {
     const itemNo = index + 1;
     return {
@@ -2279,6 +2301,7 @@
     if (dom.linkInsertBtn) dom.linkInsertBtn.disabled = !enabled;
     if (dom.formatBtn) dom.formatBtn.disabled = !enabled;
     renderRoomMoreMenu();
+    renderCallUi();
   }
 
   function resizeComposer() {
@@ -2398,6 +2421,7 @@
   }
 
   function removeRoom(roomId) {
+    delete state.call.roomCallsById[Number(roomId || 0)];
     state.rooms = state.rooms.filter(function (room) {
       return Number(room.id || 0) !== Number(roomId || 0);
     });
@@ -2443,6 +2467,7 @@
     renderMessages();
     if (state.activeRoomId > 0) {
       await loadRoomMessages(state.activeRoomId);
+      sendSocket({ type: "call_sync", room_id: state.activeRoomId });
     }
     renderContactPicker();
   }
@@ -2465,6 +2490,7 @@
     renderMessages();
     renderTyping();
     scrollMessagesToBottom(true);
+    sendSocket({ type: "call_sync", room_id: targetRoomId });
     markActiveRoomRead();
   }
 
@@ -2512,6 +2538,7 @@
       renderHeader();
       renderInspector();
       renderMessages();
+      sendSocket({ type: "call_sync", room_id: targetRoomId });
       markActiveRoomRead();
       return;
     }
@@ -2522,6 +2549,7 @@
     renderInspector();
     renderMessages();
     await loadRoomMessages(targetRoomId);
+    sendSocket({ type: "call_sync", room_id: targetRoomId });
   }
 
   async function openRoom(roomId, messageId) {
@@ -2536,6 +2564,979 @@
     await selectRoom(targetRoomId);
     highlightPendingMessage();
     dismissNotificationsForRoom(targetRoomId);
+  }
+
+  function currentUserId() {
+    return normalizeText((state.currentUser || {}).user_id);
+  }
+
+  function livekitSdk() {
+    return window.LivekitClient || null;
+  }
+
+  function livekitConfigured() {
+    return !!config.livekitEnabled && !!config.livekitWsUrl;
+  }
+
+  function livekitAvailable() {
+    const sdk = livekitSdk();
+    return !!(livekitConfigured() && sdk && typeof sdk.Room === "function");
+  }
+
+  function callClientStorageKey() {
+    return "abbasMessengerCallClientId";
+  }
+
+  function callClientId() {
+    if (state.call.clientId) return state.call.clientId;
+    let value = "";
+    try {
+      value = normalizeText(window.sessionStorage.getItem(callClientStorageKey()));
+    } catch (_) {
+      value = "";
+    }
+    if (!value) {
+      value = "call-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      try {
+        window.sessionStorage.setItem(callClientStorageKey(), value);
+      } catch (_) {}
+    }
+    state.call.clientId = value;
+    return value;
+  }
+
+  function currentLiveRoom() {
+    return state.call.liveRoom || null;
+  }
+
+  function callParticipantCount(roomCall) {
+    const liveRoom = currentLiveRoom();
+    const liveCount = liveRoom ? (1 + Number((liveRoom.remoteParticipants && liveRoom.remoteParticipants.size) || 0)) : 0;
+    const presenceCount = Number((roomCall && roomCall.participant_count) || 0);
+    return Math.max(liveCount, presenceCount);
+  }
+
+  function callTrackPublication(participant, source) {
+    const target = participant || null;
+    if (!target || typeof target.getTrackPublication !== "function") return null;
+    return target.getTrackPublication(source) || null;
+  }
+
+  function callPublicationTrack(publication) {
+    const payload = publication || null;
+    if (!payload) return null;
+    return payload.videoTrack || payload.audioTrack || payload.track || null;
+  }
+
+  function syncLocalMediaStateFromLiveRoom() {
+    const sdk = livekitSdk();
+    const room = currentLiveRoom();
+    if (!sdk || !room || !room.localParticipant) return;
+    const micPublication = callTrackPublication(room.localParticipant, sdk.Track.Source.Microphone);
+    const cameraPublication = callTrackPublication(room.localParticipant, sdk.Track.Source.Camera);
+    const screenPublication = callTrackPublication(room.localParticipant, sdk.Track.Source.ScreenShare);
+    state.call.audioEnabled = !!(micPublication && !micPublication.isMuted);
+    state.call.cameraEnabled = !!(cameraPublication && !cameraPublication.isMuted);
+    state.call.sharingScreen = !!(screenPublication && !screenPublication.isMuted);
+  }
+
+  async function requestCallSession(roomId, mode) {
+    const payload = await api("/api/messenger/rooms/" + Number(roomId || 0) + "/call/session", {
+      method: "POST",
+      body: JSON.stringify({
+        client_id: callClientId(),
+        preferred_mode: normalizeText(mode).toLowerCase() === "video" ? "video" : "audio",
+      }),
+    });
+    return (payload && payload.payload) || null;
+  }
+
+  function bindLiveRoomEvents(room) {
+    const sdk = livekitSdk();
+    const targetRoom = room || null;
+    if (!sdk || !targetRoom || typeof targetRoom.on !== "function") return;
+
+    const rerender = function () {
+      syncLocalMediaStateFromLiveRoom();
+      renderCallUi();
+    };
+
+    const bindEvent = function (eventName, handler) {
+      if (!eventName) return;
+      try {
+        targetRoom.on(eventName, handler);
+      } catch (_) {}
+    };
+
+    bindEvent(sdk.RoomEvent.TrackSubscribed, rerender);
+    bindEvent(sdk.RoomEvent.TrackUnsubscribed, rerender);
+    bindEvent(sdk.RoomEvent.TrackMuted, rerender);
+    bindEvent(sdk.RoomEvent.TrackUnmuted, rerender);
+    bindEvent(sdk.RoomEvent.LocalTrackPublished, rerender);
+    bindEvent(sdk.RoomEvent.LocalTrackUnpublished, rerender);
+    bindEvent(sdk.RoomEvent.ParticipantConnected, rerender);
+    bindEvent(sdk.RoomEvent.ParticipantDisconnected, rerender);
+    bindEvent(sdk.RoomEvent.ConnectionStateChanged, rerender);
+    bindEvent(sdk.RoomEvent.ActiveSpeakersChanged, rerender);
+    bindEvent(sdk.RoomEvent.MediaDevicesError, function (error) {
+      showError((error && error.message) || "카메라 또는 마이크 장치를 사용할 수 없습니다.", "장치 오류");
+      rerender();
+    });
+    bindEvent(sdk.RoomEvent.AudioPlaybackStatusChanged, function () {
+      if (!targetRoom.canPlaybackAudio && typeof targetRoom.startAudio === "function") {
+        targetRoom.startAudio().catch(function () {});
+      }
+    });
+    bindEvent(sdk.RoomEvent.Disconnected, function () {
+      if (state.call.liveRoom !== targetRoom) return;
+      const roomId = Number(state.call.joinedRoomId || 0);
+      state.call.liveRoom = null;
+      state.call.liveRoomName = "";
+      state.call.liveParticipantIdentity = "";
+      state.call.joinedRoomId = 0;
+      state.call.joining = false;
+      state.call.audioEnabled = true;
+      state.call.cameraEnabled = false;
+      state.call.sharingScreen = false;
+      renderCallUi();
+      if (roomId > 0) {
+        sendSocket({ type: "call_leave", room_id: roomId });
+      }
+    });
+  }
+
+  async function connectLiveKitRoom(roomId, mode) {
+    const targetRoomId = Number(roomId || 0);
+    const requestedMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    if (targetRoomId <= 0) return null;
+    if (!livekitConfigured()) {
+      throw new Error("LiveKit 통화 서버 설정이 아직 완료되지 않았습니다.");
+    }
+    if (!livekitAvailable()) {
+      throw new Error("LiveKit 브라우저 SDK를 불러오지 못했습니다.");
+    }
+
+    const existingRoom = currentLiveRoom();
+    if (existingRoom && Number(state.call.joinedRoomId || 0) === targetRoomId) {
+      return existingRoom;
+    }
+    if (existingRoom && Number(state.call.joinedRoomId || 0) !== targetRoomId) {
+      await disconnectLiveKitRoom(false);
+    }
+
+    const session = await requestCallSession(targetRoomId, requestedMode);
+    if (!session || !session.server_url || !session.participant_token) {
+      throw new Error("통화 세션 정보를 불러오지 못했습니다.");
+    }
+
+    const sdk = livekitSdk();
+    const videoCaptureDefaults = sdk.VideoPresets && sdk.VideoPresets.h720
+      ? { resolution: sdk.VideoPresets.h720.resolution }
+      : undefined;
+    const room = new sdk.Room({
+      adaptiveStream: true,
+      dynacast: true,
+      videoCaptureDefaults: videoCaptureDefaults,
+    });
+
+    bindLiveRoomEvents(room);
+    state.call.liveRoom = room;
+    state.call.liveRoomName = normalizeText(session.room_name);
+    state.call.liveParticipantIdentity = normalizeText(session.participant_identity);
+    state.call.requestedMode = requestedMode;
+    state.call.joinedRoomId = targetRoomId;
+    if (typeof room.prepareConnection === "function") {
+      room.prepareConnection(session.server_url, session.participant_token);
+    }
+    await room.connect(session.server_url, session.participant_token);
+    try {
+      if (typeof room.startAudio === "function") {
+        await room.startAudio();
+      }
+    } catch (_) {}
+    if (requestedMode === "video" && room.localParticipant.enableCameraAndMicrophone) {
+      await room.localParticipant.enableCameraAndMicrophone();
+    } else if (requestedMode === "video") {
+      await room.localParticipant.setMicrophoneEnabled(true);
+      await room.localParticipant.setCameraEnabled(true);
+    } else {
+      await room.localParticipant.setMicrophoneEnabled(true);
+      await room.localParticipant.setCameraEnabled(false);
+    }
+    syncLocalMediaStateFromLiveRoom();
+    return room;
+  }
+
+  async function disconnectLiveKitRoom(notifyServer) {
+    const room = currentLiveRoom();
+    const roomId = Number(state.call.joinedRoomId || 0);
+    state.call.liveRoom = null;
+    state.call.liveRoomName = "";
+    state.call.liveParticipantIdentity = "";
+    state.call.joinedRoomId = 0;
+    state.call.joining = false;
+    state.call.requestedMode = "";
+    state.call.audioEnabled = true;
+    state.call.cameraEnabled = false;
+    state.call.sharingScreen = false;
+    if (notifyServer && roomId > 0) {
+      sendSocket({ type: "call_leave", room_id: roomId });
+    }
+    try {
+      if (room && typeof room.disconnect === "function") {
+        room.disconnect();
+      }
+    } catch (_) {}
+    if (dom.callAudioSink) {
+      dom.callAudioSink.innerHTML = "";
+    }
+  }
+
+  function livekitParticipantDisplayName(participant, fallback) {
+    const payload = participant || {};
+    return normalizeText(payload.name || payload.identity || fallback || "참여자");
+  }
+
+  function livekitParticipantRenderItems(room) {
+    const sdk = livekitSdk();
+    const targetRoom = room || null;
+    if (!sdk || !targetRoom) return [];
+    const visualItems = [];
+    const audioItems = [];
+    const pushParticipant = function (participant, isLocal) {
+      const displayName = livekitParticipantDisplayName(participant, isLocal ? "나" : "참여자");
+      const micPublication = callTrackPublication(participant, sdk.Track.Source.Microphone);
+      const cameraPublication = callTrackPublication(participant, sdk.Track.Source.Camera);
+      const screenPublication = callTrackPublication(participant, sdk.Track.Source.ScreenShare);
+      const micEnabled = !!(micPublication && !micPublication.isMuted);
+      const cameraEnabled = !!(cameraPublication && !cameraPublication.isMuted);
+      const screenEnabled = !!(screenPublication && !screenPublication.isMuted);
+      if (cameraEnabled) {
+        visualItems.push({
+          id: normalizeText(participant.identity) + "::camera",
+          kind: "camera",
+          displayName: displayName,
+          subtitle: "카메라",
+          participant: participant,
+          publication: cameraPublication,
+          track: callPublicationTrack(cameraPublication),
+          isLocal: !!isLocal,
+          audioEnabled: micEnabled,
+        });
+      }
+      if (screenEnabled) {
+        visualItems.push({
+          id: normalizeText(participant.identity) + "::screen",
+          kind: "screen",
+          displayName: displayName,
+          subtitle: "화면 공유",
+          participant: participant,
+          publication: screenPublication,
+          track: callPublicationTrack(screenPublication),
+          isLocal: !!isLocal,
+          audioEnabled: micEnabled,
+        });
+      }
+      if (!cameraEnabled && !screenEnabled) {
+        audioItems.push({
+          id: normalizeText(participant.identity) + "::audio",
+          kind: "audio",
+          displayName: displayName,
+          subtitle: micEnabled ? "음성 연결됨" : "대기 중",
+          participant: participant,
+          publication: null,
+          track: null,
+          isLocal: !!isLocal,
+          audioEnabled: micEnabled,
+        });
+      }
+    };
+    if (targetRoom.localParticipant) {
+      pushParticipant(targetRoom.localParticipant, true);
+    }
+    if (targetRoom.remoteParticipants && typeof targetRoom.remoteParticipants.forEach === "function") {
+      targetRoom.remoteParticipants.forEach(function (participant) {
+        pushParticipant(participant, false);
+      });
+    }
+    return visualItems.length ? visualItems : audioItems;
+  }
+
+  function callGridDensity(itemCount) {
+    const count = Number(itemCount || 0);
+    if (count >= 41) return "ultra";
+    if (count >= 25) return "dense";
+    if (count >= 13) return "compact";
+    return "default";
+  }
+
+  function renderCallPrompt(roomCall) {
+    if (!dom.callGrid) return;
+    const count = callParticipantCount(roomCall);
+    dom.callGrid.setAttribute("data-density", "default");
+    dom.callGrid.innerHTML = [
+      '<div class="messenger-call-empty">',
+      '<i class="bi bi-camera-video"></i>',
+      '<strong>이 대화방 통화에 참여할 수 있습니다.</strong>',
+      '<span>' + escapeHtml(count > 0 ? (count + "명이 이미 연결되어 있습니다. 참여 버튼을 눌러 바로 합류하세요.") : "음성 또는 영상 통화를 시작하면 카메라를 켠 참가자들이 모두 그리드에 표시됩니다.") + "</span>",
+      "</div>",
+    ].join("");
+    if (dom.callAudioSink) {
+      dom.callAudioSink.innerHTML = "";
+    }
+  }
+
+  function attachLiveKitTrack(track, mountPoint, isLocal) {
+    if (!track || !mountPoint || typeof track.attach !== "function") return false;
+    while (mountPoint.firstChild) {
+      mountPoint.removeChild(mountPoint.firstChild);
+    }
+    try {
+      if (typeof track.detach === "function") {
+        track.detach();
+      }
+    } catch (_) {}
+    let element = null;
+    try {
+      element = track.attach();
+    } catch (_) {
+      element = null;
+    }
+    if (!element) return false;
+    if (element instanceof HTMLMediaElement) {
+      element.autoplay = true;
+      element.playsInline = true;
+      element.muted = !!isLocal;
+    }
+    element.classList.add("messenger-call-card__video");
+    mountPoint.appendChild(element);
+    return true;
+  }
+
+  function renderCallAudioSink(room) {
+    const sdk = livekitSdk();
+    const targetRoom = room || null;
+    if (!dom.callAudioSink) return;
+    dom.callAudioSink.innerHTML = "";
+    if (!sdk || !targetRoom || !targetRoom.remoteParticipants) return;
+    targetRoom.remoteParticipants.forEach(function (participant) {
+      const publication = callTrackPublication(participant, sdk.Track.Source.Microphone);
+      const track = callPublicationTrack(publication);
+      if (!publication || publication.isMuted || !track || typeof track.attach !== "function") return;
+      try {
+        if (typeof track.detach === "function") {
+          track.detach();
+        }
+      } catch (_) {}
+      let element = null;
+      try {
+        element = track.attach();
+      } catch (_) {
+        element = null;
+      }
+      if (!element) return;
+      if (element instanceof HTMLMediaElement) {
+        element.autoplay = true;
+        element.playsInline = true;
+      }
+      dom.callAudioSink.appendChild(element);
+    });
+  }
+
+  function callForRoom(roomId) {
+    return state.call.roomCallsById[Number(roomId || 0)] || null;
+  }
+
+  function activeRoomCall() {
+    return state.activeRoom ? callForRoom(state.activeRoom.id) : null;
+  }
+
+  function callParticipant(call, userId) {
+    const targetUserId = normalizeText(userId);
+    if (!call || !targetUserId || !Array.isArray(call.participants)) return null;
+    return call.participants.find(function (item) {
+      return normalizeText((item || {}).user_id) === targetUserId;
+    }) || null;
+  }
+
+  function userInCall(call, userId) {
+    return !!callParticipant(call, userId);
+  }
+
+  function callMediaMode(participant) {
+    const payload = participant || {};
+    if (payload.sharing_screen) return "screen";
+    if (payload.video_enabled) return "video";
+    return "audio";
+  }
+
+  function resolveIceServers() {
+    return Array.isArray(config.iceServers) && config.iceServers.length ? config.iceServers : DEFAULT_ICE_SERVERS;
+  }
+
+  function localAudioTrack() {
+    const stream = state.call.cameraStream;
+    return stream && stream.getAudioTracks ? (stream.getAudioTracks()[0] || null) : null;
+  }
+
+  function localCameraTrack() {
+    const stream = state.call.cameraStream;
+    return stream && stream.getVideoTracks ? (stream.getVideoTracks()[0] || null) : null;
+  }
+
+  function localScreenTrack() {
+    const stream = state.call.screenStream;
+    return stream && stream.getVideoTracks ? (stream.getVideoTracks()[0] || null) : null;
+  }
+
+  function activeLocalVideoTrack() {
+    return state.call.sharingScreen ? localScreenTrack() : localCameraTrack();
+  }
+
+  function stopStreamTracks(stream) {
+    if (!stream || typeof stream.getTracks !== "function") return;
+    stream.getTracks().forEach(function (track) {
+      try {
+        track.onended = null;
+      } catch (_) {}
+      try {
+        track.stop();
+      } catch (_) {}
+    });
+  }
+
+  function closePeerConnection(peerUserId) {
+    const targetUserId = normalizeText(peerUserId);
+    const peer = state.call.peersByUserId[targetUserId];
+    if (!peer) return;
+    try {
+      if (peer.pc) {
+        peer.pc.onicecandidate = null;
+        peer.pc.ontrack = null;
+        peer.pc.onconnectionstatechange = null;
+        peer.pc.close();
+      }
+    } catch (_) {}
+    delete state.call.peersByUserId[targetUserId];
+    delete state.call.remoteStreamsByUserId[targetUserId];
+    delete state.call.pendingSignalsByUserId[targetUserId];
+  }
+
+  function closeAllPeerConnections() {
+    Object.keys(state.call.peersByUserId || {}).forEach(function (peerUserId) {
+      closePeerConnection(peerUserId);
+    });
+    state.call.peersByUserId = {};
+    state.call.remoteStreamsByUserId = {};
+    state.call.pendingSignalsByUserId = {};
+  }
+
+  function refreshLocalTrackState() {
+    const audioTrack = localAudioTrack();
+    const cameraTrack = localCameraTrack();
+    const screenTrack = localScreenTrack();
+    if (audioTrack) {
+      audioTrack.enabled = !!state.call.audioEnabled;
+    }
+    if (cameraTrack) {
+      cameraTrack.enabled = !state.call.sharingScreen && !!state.call.cameraEnabled;
+    }
+    if (screenTrack) {
+      screenTrack.enabled = !!state.call.sharingScreen;
+    }
+  }
+
+  function rebuildLocalCallStream() {
+    refreshLocalTrackState();
+    const nextStream = new MediaStream();
+    const audioTrack = localAudioTrack();
+    const videoTrack = activeLocalVideoTrack();
+    if (audioTrack) {
+      nextStream.addTrack(audioTrack);
+    }
+    if (videoTrack) {
+      nextStream.addTrack(videoTrack);
+    }
+    state.call.localStream = nextStream;
+    return nextStream;
+  }
+
+  async function ensureCameraStream(options) {
+    const settings = options || {};
+    const needAudio = settings.audio !== false;
+    const needVideo = !!settings.video;
+    const currentStream = state.call.cameraStream;
+    const hasAudio = !!(currentStream && currentStream.getAudioTracks && currentStream.getAudioTracks().length);
+    const hasVideo = !!(currentStream && currentStream.getVideoTracks && currentStream.getVideoTracks().length);
+    if (currentStream && (!needAudio || hasAudio) && (!needVideo || hasVideo)) {
+      return currentStream;
+    }
+    if (!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function")) {
+      throw new Error("이 브라우저에서는 음성/영상 통화를 지원하지 않습니다.");
+    }
+    if (currentStream) {
+      stopStreamTracks(currentStream);
+      state.call.cameraStream = null;
+    }
+    state.call.cameraStream = await navigator.mediaDevices.getUserMedia({
+      audio: needAudio,
+      video: needVideo,
+    });
+    return state.call.cameraStream;
+  }
+
+  function callPreviewSubtitle(participant) {
+    const payload = participant || {};
+    if (payload.sharing_screen) return "화면 공유 중";
+    if (payload.video_enabled) return "영상 연결됨";
+    if (payload.audio_enabled) return "음성 연결됨";
+    return "대기 중";
+  }
+
+  function setCallButton(button, iconClass, label) {
+    if (!button) return;
+    button.innerHTML = '<i class="bi ' + escapeAttribute(iconClass || "bi-circle") + '"></i><span>' + escapeHtml(label || "") + "</span>";
+  }
+
+  function streamHasLiveVideo(stream) {
+    if (!stream || typeof stream.getVideoTracks !== "function") return false;
+    return stream.getVideoTracks().some(function (track) {
+      return !!track && track.readyState !== "ended" && track.enabled !== false;
+    });
+  }
+
+  function queuedSignals(peerUserId) {
+    const targetUserId = normalizeText(peerUserId);
+    const queued = state.call.pendingSignalsByUserId[targetUserId];
+    if (Array.isArray(queued)) return queued.slice();
+    return [];
+  }
+
+  function shouldInitiateOffer(selfParticipant, peerParticipant) {
+    const selfJoinedAt = Number((selfParticipant || {}).joined_at || 0);
+    const peerJoinedAt = Number((peerParticipant || {}).joined_at || 0);
+    if (selfJoinedAt !== peerJoinedAt) {
+      return selfJoinedAt > peerJoinedAt;
+    }
+    return normalizeText((selfParticipant || {}).user_id) > normalizeText((peerParticipant || {}).user_id);
+  }
+
+  async function syncPeerConnectionTracks(peer) {
+    const target = peer || {};
+    if (!target.pc) return;
+    rebuildLocalCallStream();
+    const currentLocalStream = state.call.localStream;
+    const desiredTracks = {
+      audio: localAudioTrack(),
+      video: activeLocalVideoTrack(),
+    };
+    await Promise.all(["audio", "video"].map(async function (kind) {
+      const sender = target.pc.getSenders().find(function (item) {
+        return item && item.track && item.track.kind === kind;
+      }) || null;
+      const nextTrack = desiredTracks[kind];
+      if (sender) {
+        if (sender.track !== nextTrack) {
+          try {
+            await sender.replaceTrack(nextTrack || null);
+          } catch (_) {}
+        }
+        return;
+      }
+      if (nextTrack && currentLocalStream) {
+        try {
+          target.pc.addTrack(nextTrack, currentLocalStream);
+        } catch (_) {}
+      }
+    }));
+  }
+
+  async function ensurePeerConnection(peerUserId) {
+    const targetUserId = normalizeText(peerUserId);
+    if (!targetUserId) return null;
+    let peer = state.call.peersByUserId[targetUserId];
+    if (peer && peer.pc) {
+      return peer;
+    }
+    const pc = new RTCPeerConnection({ iceServers: resolveIceServers() });
+    peer = {
+      pc: pc,
+      remoteStream: new MediaStream(),
+      offerStarted: false,
+    };
+    state.call.peersByUserId[targetUserId] = peer;
+    state.call.remoteStreamsByUserId[targetUserId] = peer.remoteStream;
+    pc.onicecandidate = function (event) {
+      if (!event.candidate || !state.call.joinedRoomId) return;
+      sendSocket({
+        type: "call_signal",
+        room_id: state.call.joinedRoomId,
+        target_user_id: targetUserId,
+        signal: { candidate: (event.candidate.toJSON ? event.candidate.toJSON() : event.candidate) },
+      });
+    };
+    pc.ontrack = function (event) {
+      const stream = event.streams && event.streams[0]
+        ? event.streams[0]
+        : (peer.remoteStream || new MediaStream());
+      if (!event.streams || !event.streams[0]) {
+        try {
+          stream.addTrack(event.track);
+        } catch (_) {}
+      }
+      peer.remoteStream = stream;
+      state.call.remoteStreamsByUserId[targetUserId] = stream;
+      renderCallUi();
+    };
+    pc.onconnectionstatechange = function () {
+      const currentState = normalizeText(pc.connectionState).toLowerCase();
+      if (currentState === "failed" || currentState === "closed") {
+        closePeerConnection(targetUserId);
+      }
+      renderCallUi();
+    };
+    await syncPeerConnectionTracks(peer);
+    const queued = queuedSignals(targetUserId);
+    delete state.call.pendingSignalsByUserId[targetUserId];
+    for (const signal of queued) {
+      await applySignalToPeer(targetUserId, signal);
+    }
+    return peer;
+  }
+
+  async function sendOfferToPeer(peerUserId) {
+    const peer = await ensurePeerConnection(peerUserId);
+    if (!peer || !peer.pc || !state.call.joinedRoomId) return;
+    await syncPeerConnectionTracks(peer);
+    const offer = await peer.pc.createOffer();
+    await peer.pc.setLocalDescription(offer);
+    sendSocket({
+      type: "call_signal",
+      room_id: state.call.joinedRoomId,
+      target_user_id: normalizeText(peerUserId),
+      signal: { description: (peer.pc.localDescription && peer.pc.localDescription.toJSON ? peer.pc.localDescription.toJSON() : peer.pc.localDescription) },
+    });
+  }
+
+  async function applySignalToPeer(peerUserId, signal) {
+    const targetUserId = normalizeText(peerUserId);
+    const payload = signal || {};
+    if (!targetUserId || !payload) return;
+    const peer = await ensurePeerConnection(targetUserId);
+    if (!peer || !peer.pc) return;
+    if (payload.description) {
+      await peer.pc.setRemoteDescription(payload.description);
+      if (normalizeText((payload.description || {}).type).toLowerCase() === "offer") {
+        await syncPeerConnectionTracks(peer);
+        const answer = await peer.pc.createAnswer();
+        await peer.pc.setLocalDescription(answer);
+        sendSocket({
+          type: "call_signal",
+          room_id: state.call.joinedRoomId,
+          target_user_id: targetUserId,
+          signal: { description: (peer.pc.localDescription && peer.pc.localDescription.toJSON ? peer.pc.localDescription.toJSON() : peer.pc.localDescription) },
+        });
+      }
+      return;
+    }
+    if (payload.candidate) {
+      try {
+        await peer.pc.addIceCandidate(payload.candidate);
+      } catch (_) {}
+    }
+  }
+
+  async function syncAllPeerConnections() {
+    for (const peerUserId of Object.keys(state.call.peersByUserId || {})) {
+      await syncPeerConnectionTracks(state.call.peersByUserId[peerUserId]);
+    }
+  }
+
+  async function syncPeersFromCall(call) {
+    const roomCall = call || null;
+    const selfUserId = currentUserId();
+    if (!roomCall || !selfUserId || Number(roomCall.room_id || 0) !== Number(state.call.joinedRoomId || 0)) {
+      closeAllPeerConnections();
+      return;
+    }
+    const selfParticipant = callParticipant(roomCall, selfUserId);
+    if (!selfParticipant) {
+      closeAllPeerConnections();
+      return;
+    }
+    const activePeerIds = new Set();
+    for (const participant of (roomCall.participants || [])) {
+      const peerUserId = normalizeText((participant || {}).user_id);
+      if (!peerUserId || peerUserId === selfUserId) continue;
+      activePeerIds.add(peerUserId);
+      const peer = await ensurePeerConnection(peerUserId);
+      if (!peer) continue;
+      if (shouldInitiateOffer(selfParticipant, participant) && !peer.offerStarted) {
+        peer.offerStarted = true;
+        try {
+          await sendOfferToPeer(peerUserId);
+        } catch (_) {
+          peer.offerStarted = false;
+        }
+      }
+    }
+    Object.keys(state.call.peersByUserId || {}).forEach(function (peerUserId) {
+      if (!activePeerIds.has(peerUserId)) {
+        closePeerConnection(peerUserId);
+      }
+    });
+  }
+
+  async function cleanupLocalCallSession() {
+    await disconnectLiveKitRoom(false);
+    closeAllPeerConnections();
+    stopStreamTracks(state.call.screenStream);
+    stopStreamTracks(state.call.cameraStream);
+    state.call.screenStream = null;
+    state.call.cameraStream = null;
+    state.call.localStream = null;
+    renderCallUi();
+  }
+
+  function emitCallMediaState() {
+    if (!state.call.joinedRoomId) return;
+    sendSocket({
+      type: "call_media_state",
+      room_id: state.call.joinedRoomId,
+      media_mode: (state.call.sharingScreen || state.call.cameraEnabled) ? "video" : "audio",
+      audio_enabled: !!state.call.audioEnabled,
+      video_enabled: !!(state.call.sharingScreen || state.call.cameraEnabled),
+      sharing_screen: !!state.call.sharingScreen,
+      source: state.call.sharingScreen ? "screen" : "camera",
+    });
+  }
+
+  async function stopScreenShare() {
+    const room = currentLiveRoom();
+    if (!room || !state.call.sharingScreen) return;
+    await room.localParticipant.setScreenShareEnabled(false);
+    syncLocalMediaStateFromLiveRoom();
+    emitCallMediaState();
+    renderCallUi();
+  }
+
+  function bindScreenShareLifecycle(stream) {
+    const track = stream && stream.getVideoTracks ? (stream.getVideoTracks()[0] || null) : null;
+    if (!track) return;
+    track.onended = function () {
+      stopScreenShare().catch(function () {});
+    };
+  }
+
+  async function startOrJoinCall(mode) {
+    const room = state.activeRoom;
+    if (!room) return;
+    const targetRoomId = Number(room.id || 0);
+    if (targetRoomId <= 0) return;
+    if (state.call.joinedRoomId && Number(state.call.joinedRoomId || 0) !== targetRoomId) {
+      await showWarning("현재는 한 번에 하나의 대화방 통화만 지원합니다. 먼저 기존 통화에서 나가주세요.");
+      return;
+    }
+    const nextMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    state.call.joining = true;
+    renderCallUi();
+    try {
+      await connectLiveKitRoom(targetRoomId, nextMode);
+      syncLocalMediaStateFromLiveRoom();
+      sendSocket({
+        type: "call_join",
+        room_id: targetRoomId,
+        media_mode: nextMode,
+        audio_enabled: !!state.call.audioEnabled,
+        video_enabled: !!state.call.cameraEnabled,
+        sharing_screen: !!state.call.sharingScreen,
+        source: state.call.sharingScreen ? "screen" : "camera",
+      });
+      sendSocket({ type: "call_sync", room_id: targetRoomId });
+    } catch (error) {
+      await showError(error.message || "통화 시작에 실패했습니다.", "통화 준비 실패");
+      await cleanupLocalCallSession();
+    } finally {
+      state.call.joining = false;
+      renderCallUi();
+    }
+  }
+
+  async function leaveCurrentCall() {
+    const roomId = Number(state.call.joinedRoomId || 0);
+    if (roomId <= 0) return;
+    await disconnectLiveKitRoom(true);
+    await cleanupLocalCallSession();
+  }
+
+  async function toggleCallMute() {
+    const room = currentLiveRoom();
+    if (!room || !state.call.joinedRoomId) return;
+    await room.localParticipant.setMicrophoneEnabled(!state.call.audioEnabled);
+    syncLocalMediaStateFromLiveRoom();
+    emitCallMediaState();
+    renderCallUi();
+  }
+
+  async function toggleCallCamera() {
+    const room = currentLiveRoom();
+    if (!room || !state.call.joinedRoomId) return;
+    await room.localParticipant.setCameraEnabled(!state.call.cameraEnabled);
+    syncLocalMediaStateFromLiveRoom();
+    emitCallMediaState();
+    renderCallUi();
+  }
+
+  async function toggleScreenShare() {
+    const room = currentLiveRoom();
+    if (!room || !state.call.joinedRoomId) return;
+    await room.localParticipant.setScreenShareEnabled(!state.call.sharingScreen);
+    syncLocalMediaStateFromLiveRoom();
+    emitCallMediaState();
+    renderCallUi();
+  }
+
+  function renderCallGrid(roomCall) {
+    if (!dom.callGrid) return;
+    const call = roomCall || null;
+    const liveRoom = currentLiveRoom();
+    const joinedHere = !!liveRoom && Number(state.call.joinedRoomId || 0) === Number((state.activeRoom && state.activeRoom.id) || 0);
+    if (!joinedHere) {
+      renderCallPrompt(call);
+      return;
+    }
+
+    const items = livekitParticipantRenderItems(liveRoom);
+    if (!items.length) {
+      renderCallPrompt(call);
+      return;
+    }
+    dom.callGrid.setAttribute("data-density", callGridDensity(items.length));
+    dom.callGrid.innerHTML = items.map(function (item) {
+      const avatarInitial = normalizeText(avatarInitialFor(item.displayName, item.displayName));
+      const pillItems = [
+        '<span class="messenger-call-card__pill ' + (item.audioEnabled ? 'is-on' : 'is-off') + '">' + (item.audioEnabled ? 'MIC ON' : 'MIC OFF') + '</span>',
+        '<span class="messenger-call-card__pill ' + (item.track ? 'is-on' : 'is-off') + '">' + (item.track ? 'VIDEO ON' : 'VIDEO OFF') + '</span>',
+        item.kind === "screen" ? '<span class="messenger-call-card__pill is-screen">SCREEN</span>' : "",
+      ].join("");
+      return [
+        '<article class="messenger-call-card" data-call-card-user="' + escapeAttribute(item.id) + '">',
+        '<div class="messenger-call-card__placeholder">' + escapeHtml(avatarInitial || "U") + "</div>",
+        '<div class="messenger-call-card__media-slot" data-call-media-user="' + escapeAttribute(item.id) + '"></div>',
+        '<div class="messenger-call-card__meta">',
+        '<div class="messenger-call-card__identity">',
+        '<strong>' + escapeHtml(item.displayName) + (item.isLocal ? ' (나)' : "") + "</strong>",
+        '<span>' + escapeHtml(item.subtitle || (item.track ? '영상 연결됨' : '대기 중')) + "</span>",
+        "</div>",
+        '<div class="messenger-call-card__state">' + pillItems + "</div>",
+        "</div>",
+        "</article>",
+      ].join("");
+    }).join("");
+
+    Array.prototype.forEach.call(dom.callGrid.querySelectorAll("[data-call-media-user]"), function (slot) {
+      const item = items.find(function (entry) {
+        return entry.id === normalizeText(slot.getAttribute("data-call-media-user"));
+      }) || null;
+      const card = slot.closest("[data-call-card-user]");
+      const attached = !!(item && item.track && attachLiveKitTrack(item.track, slot, item.isLocal));
+      if (card) {
+        card.classList.toggle("has-video", attached);
+      }
+    });
+    renderCallAudioSink(liveRoom);
+  }
+
+  function renderCallUi() {
+    if (!dom.callStrip || !dom.callStage || !dom.callStatusBadge || !dom.callStatusTitle || !dom.callStatusMeta) return;
+    const room = state.activeRoom;
+    const roomCall = activeRoomCall();
+    const joinedRoomId = Number(state.call.joinedRoomId || 0);
+    const joinedHere = !!room && joinedRoomId > 0 && joinedRoomId === Number(room.id || 0);
+    const joinedElsewhere = joinedRoomId > 0 && !joinedHere;
+    const amInRoomCall = joinedHere && !!currentLiveRoom();
+    const callConfigured = livekitConfigured();
+    const callReady = livekitAvailable();
+    const participantCount = callParticipantCount(roomCall);
+
+    dom.callStrip.classList.toggle("d-none", !room);
+    dom.callStage.classList.toggle("d-none", !room || (!roomCall && !amInRoomCall));
+    if (!room) {
+      return;
+    }
+
+    dom.callStatusBadge.classList.remove("is-live", "is-ringing");
+    if (!callConfigured) {
+      dom.callStatusBadge.textContent = "SETUP";
+      dom.callStatusTitle.textContent = "그룹 통화 서버 설정이 필요합니다.";
+      dom.callStatusMeta.textContent = "LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET를 설정하면 50명급 그룹 통화에 연결할 수 있습니다.";
+    } else if (!callReady) {
+      dom.callStatusBadge.textContent = "LOAD";
+      dom.callStatusTitle.textContent = "통화 SDK를 불러오는 중입니다.";
+      dom.callStatusMeta.textContent = "잠시 후 다시 시도해주세요.";
+    } else if (amInRoomCall) {
+      dom.callStatusBadge.textContent = "LIVE";
+      dom.callStatusBadge.classList.add("is-live");
+      dom.callStatusTitle.textContent = "LiveKit 그룹 통화에 참여 중입니다.";
+      dom.callStatusMeta.textContent = String(participantCount || 1) + "명이 연결되어 있고, 카메라를 켠 참가자는 전부 그리드에 표시됩니다.";
+    } else if (roomCall && participantCount > 0) {
+      dom.callStatusBadge.textContent = "JOIN";
+      dom.callStatusBadge.classList.add("is-ringing");
+      dom.callStatusTitle.textContent = "이 대화방에서 통화가 진행 중입니다.";
+      dom.callStatusMeta.textContent = String(participantCount) + "명이 연결되어 있습니다.";
+    } else if (joinedElsewhere) {
+      dom.callStatusBadge.textContent = "BUSY";
+      dom.callStatusTitle.textContent = "다른 대화방 통화에 참여 중입니다.";
+      dom.callStatusMeta.textContent = "현재 방에서는 새 통화를 시작할 수 없습니다.";
+    } else {
+      dom.callStatusBadge.textContent = "READY";
+      dom.callStatusTitle.textContent = "이 대화방에서 통화가 없습니다.";
+      dom.callStatusMeta.textContent = "음성 또는 영상 통화를 시작할 수 있습니다.";
+    }
+
+    setCallButton(dom.audioCallBtn, "bi-telephone", roomCall && !amInRoomCall ? "음성으로 참여" : "음성 통화");
+    setCallButton(dom.videoCallBtn, "bi-camera-video", roomCall && !amInRoomCall ? "영상으로 참여" : "영상 통화");
+    setCallButton(dom.toggleMicBtn, state.call.audioEnabled ? "bi-mic" : "bi-mic-mute", state.call.audioEnabled ? "마이크" : "음소거 해제");
+    setCallButton(dom.toggleCameraBtn, state.call.cameraEnabled ? "bi-camera-video" : "bi-camera-video-off", state.call.cameraEnabled ? "카메라" : "카메라 켜기");
+    setCallButton(dom.screenShareBtn, state.call.sharingScreen ? "bi-display-fill" : "bi-display", state.call.sharingScreen ? "공유 중지" : "화면 공유");
+    setCallButton(dom.leaveCallBtn, "bi-telephone-x", "나가기");
+
+    if (dom.audioCallBtn) dom.audioCallBtn.disabled = !room || !callReady || state.call.joining || joinedElsewhere || amInRoomCall;
+    if (dom.videoCallBtn) dom.videoCallBtn.disabled = !room || !callReady || state.call.joining || joinedElsewhere || amInRoomCall;
+    if (dom.toggleMicBtn) {
+      dom.toggleMicBtn.disabled = !joinedHere;
+      dom.toggleMicBtn.classList.toggle("is-active", joinedHere && !!state.call.audioEnabled);
+    }
+    if (dom.toggleCameraBtn) {
+      dom.toggleCameraBtn.disabled = !joinedHere;
+      dom.toggleCameraBtn.classList.toggle("is-active", joinedHere && !!state.call.cameraEnabled);
+    }
+    if (dom.screenShareBtn) {
+      dom.screenShareBtn.disabled = !joinedHere;
+      dom.screenShareBtn.classList.toggle("is-active", joinedHere && !!state.call.sharingScreen);
+    }
+    if (dom.leaveCallBtn) dom.leaveCallBtn.disabled = !joinedHere;
+
+    renderCallGrid(roomCall);
+  }
+
+  async function handleCallStateUpdate(call) {
+    const roomCall = call || null;
+    const roomId = Number((roomCall && roomCall.room_id) || 0);
+    if (roomId <= 0) return;
+    state.call.roomCallsById[roomId] = roomCall;
+    renderCallUi();
+  }
+
+  async function handleCallCleared(roomId) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    delete state.call.roomCallsById[targetRoomId];
+    renderCallUi();
+  }
+
+  async function handleIncomingCallSignal(payload) {
+    return;
   }
 
   function scrollMessagesToBottom(force) {
@@ -3254,7 +4255,7 @@
     }, 1500);
   }
 
-  function handleSocketMessage(event) {
+  async function handleSocketMessage(event) {
     let payload = {};
     try {
       payload = JSON.parse(event.data || "{}");
@@ -3339,6 +4340,24 @@
       }
       return;
     }
+    if (type === "call_state" && payload.call) {
+      await handleCallStateUpdate(payload.call);
+      return;
+    }
+    if (type === "call_cleared") {
+      await handleCallCleared(Number(payload.room_id || 0));
+      return;
+    }
+    if (type === "call_joined") {
+      if (payload.call) {
+        await handleCallStateUpdate(payload.call);
+      }
+      return;
+    }
+    if (type === "call_signal") {
+      await handleIncomingCallSignal(payload);
+      return;
+    }
     if (type === "typing") {
       return;
     }
@@ -3362,13 +4381,27 @@
         sendSocket({ type: "ping" });
       }, 12000);
       sendSocket({ type: "ping" });
+      if (state.call.joinedRoomId > 0) {
+        sendSocket({
+          type: "call_join",
+          room_id: state.call.joinedRoomId,
+          media_mode: (state.call.sharingScreen || state.call.cameraEnabled) ? "video" : "audio",
+          audio_enabled: !!state.call.audioEnabled,
+          video_enabled: !!(state.call.sharingScreen || state.call.cameraEnabled),
+          sharing_screen: !!state.call.sharingScreen,
+          source: state.call.sharingScreen ? "screen" : "camera",
+        });
+        sendSocket({ type: "call_sync", room_id: state.call.joinedRoomId });
+      }
       if (state.activeRoomId > 0) {
         sendSocket({ type: "refresh_room", room_id: state.activeRoomId });
       }
       setSocketConnected(true);
     });
 
-    state.socket.addEventListener("message", handleSocketMessage);
+    state.socket.addEventListener("message", function (event) {
+      handleSocketMessage(event).catch(function () {});
+    });
     state.socket.addEventListener("close", function () {
       stopHeartbeat();
       state.socket = null;
@@ -3522,6 +4555,44 @@
         event.stopPropagation();
         if (dom.roomMoreBtn.disabled) return;
         setRoomMoreMenuOpen(!state.roomMoreMenuOpen);
+      });
+    }
+    if (dom.audioCallBtn) {
+      dom.audioCallBtn.addEventListener("click", function () {
+        startOrJoinCall("audio");
+      });
+    }
+    if (dom.videoCallBtn) {
+      dom.videoCallBtn.addEventListener("click", function () {
+        startOrJoinCall("video");
+      });
+    }
+    if (dom.toggleMicBtn) {
+      dom.toggleMicBtn.addEventListener("click", function () {
+        toggleCallMute().catch(function (error) {
+          showError(error.message || "마이크 상태를 바꾸지 못했습니다.");
+        });
+      });
+    }
+    if (dom.toggleCameraBtn) {
+      dom.toggleCameraBtn.addEventListener("click", function () {
+        toggleCallCamera().catch(function (error) {
+          showError(error.message || "카메라 상태를 바꾸지 못했습니다.");
+        });
+      });
+    }
+    if (dom.screenShareBtn) {
+      dom.screenShareBtn.addEventListener("click", function () {
+        toggleScreenShare().catch(function (error) {
+          showError(error.message || "화면 공유 상태를 바꾸지 못했습니다.");
+        });
+      });
+    }
+    if (dom.leaveCallBtn) {
+      dom.leaveCallBtn.addEventListener("click", function () {
+        leaveCurrentCall().catch(function (error) {
+          showError(error.message || "통화에서 나가지 못했습니다.");
+        });
       });
     }
     if (dom.chatHeader) {
@@ -3773,6 +4844,9 @@
     window.addEventListener("pagehide", function () {
       endPopupDrag();
       stopHeartbeat();
+      if (state.call.joinedRoomId) {
+        disconnectLiveKitRoom(true).catch(function () {});
+      }
       try {
         if (state.socket) state.socket.close();
       } catch (_) {}
@@ -3827,6 +4901,19 @@
     dom.activeRoomTitle = $("messengerActiveRoomTitle");
     dom.activeRoomSubtitle = $("messengerActiveRoomSubtitle");
     dom.chatHeader = $("messengerChatHeader");
+    dom.callStrip = $("messengerCallStrip");
+    dom.callStatusBadge = $("messengerCallStatusBadge");
+    dom.callStatusTitle = $("messengerCallStatusTitle");
+    dom.callStatusMeta = $("messengerCallStatusMeta");
+    dom.audioCallBtn = $("messengerAudioCallBtn");
+    dom.videoCallBtn = $("messengerVideoCallBtn");
+    dom.toggleMicBtn = $("messengerToggleMicBtn");
+    dom.toggleCameraBtn = $("messengerToggleCameraBtn");
+    dom.screenShareBtn = $("messengerScreenShareBtn");
+    dom.leaveCallBtn = $("messengerLeaveCallBtn");
+    dom.callStage = $("messengerCallStage");
+    dom.callGrid = $("messengerCallGrid");
+    dom.callAudioSink = $("messengerCallAudioSink");
     dom.messageScroll = $("messengerMessageScroll");
     dom.messageList = $("messengerMessageList");
     dom.conversationEmpty = $("messengerConversationEmpty");

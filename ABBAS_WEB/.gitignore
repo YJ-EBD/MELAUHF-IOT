@@ -1,1 +1,5 @@
 Talk_BackUp/
+bin/
+livekit.log
+livekit.pid
+uvicorn.pid

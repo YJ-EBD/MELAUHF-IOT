@@ -1,0 +1,19 @@
+[Unit]
+Description=ABBAS LiveKit self-hosted service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=abbas
+Group=abbas
+WorkingDirectory=/home/abbas/Desktop/ABBAS_WEB
+ExecStart=/home/abbas/Desktop/ABBAS_WEB/bin/livekit-server --dev --bind 0.0.0.0 --node-ip 192.168.0.12
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

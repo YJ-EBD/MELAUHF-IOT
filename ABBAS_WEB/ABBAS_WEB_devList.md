@@ -533,3 +533,28 @@
 - 간단한 설명
   - ABBAS Talk의 채널/그룹채팅/개인톡 메시지를 방 단위 스냅샷과 텍스트 내역으로 `Talk_BackUp` 디렉토리에 자동 백업하도록 추가했고, 서버 시작 시 기존 대화도 한 번에 동기화되도록 연결했다.
   - 메시지 전송/수정/삭제, 방 생성/수정/삭제, 멤버 추가 시 백업이 즉시 갱신되게 정리했으며, 런타임 백업 산출물 `Talk_BackUp/`은 다른 디렉토리에 영향이 가지 않도록 Source Control 기본 추적 대상에서 제외했다.
+
+## 57. ABBAS Talk 그룹 통화 LiveKit 연동 및 50명급 카메라 그리드 추가
+- 수정코드
+  - `requirements.txt`
+  - `router/pages.py`
+  - `templates/base.html`
+  - `templates/messenger_popup.html`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+- 간단한 설명
+  - ABBAS Talk 메신저에 LiveKit 기반 그룹 통화 세션 생성과 방별 call presence/signaling 연동을 추가해, 브라우저가 room token을 받아 self-hosted SFU에 접속하도록 정리했다.
+  - 통화 바/참여 버튼/마이크·카메라·화면공유·나가기 UI와 영상 그리드를 붙였고, 카메라를 켠 참가자는 모두 타일로 표시되며 인원 수가 많아질수록 더 촘촘한 레이아웃으로 배치되도록 정리했다.
+
+## 58. 무료 self-hosted LiveKit 실행 스크립트·systemd 정리 및 Source Control 안전 기준 추가
+- 수정코드
+  - `.gitignore`
+  - `LIVEKIT_SETUP.md`
+  - `scripts/livekit_local.sh`
+  - `scripts/abbas_web_service.sh`
+  - `scripts/start_group_call_stack.sh`
+  - `deploy/systemd/abbas-livekit.service`
+  - `deploy/systemd/abbas-web.override.conf`
+- 간단한 설명
+  - 프로젝트 내부 `bin/livekit-server`와 `systemd` 서비스(`abbas-livekit.service`, `abbas-web.service`) 기준으로 self-hosted LiveKit과 ABBAS_WEB를 안전하게 재기동할 수 있는 스크립트와 문서를 추가했다.
+  - 런타임 바이너리/PID/로그 파일은 `.gitignore`로 기본 추적 대상에서 제외해 다른 디렉토리에 영향이 가지 않도록 정리했고, 중복으로 8000 포트를 잡던 기존 `for_rnd_web.service`는 비활성화 기준으로 문서화했다.
