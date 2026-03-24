@@ -1194,6 +1194,7 @@ a {
 .swal2-container.swal2-bottom-left.swal2-backdrop-show,
 .swal2-container.swal2-bottom-right.swal2-backdrop-show {
   background: transparent !important;
+  -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 
@@ -1735,6 +1736,21 @@ html[data-bs-theme="dark"] .toast-header {
 
 html[data-bs-theme="dark"] .swal2-container.swal2-backdrop-show {
   background: rgba(5, 10, 20, 0.58) !important;
+}
+
+html[data-bs-theme="dark"] .swal2-container.swal2-top-start.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-top.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-top-end.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-top-left.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-top-right.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-bottom-start.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-bottom.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-bottom-end.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-bottom-left.swal2-backdrop-show,
+html[data-bs-theme="dark"] .swal2-container.swal2-bottom-right.swal2-backdrop-show {
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 html[data-bs-theme="dark"] .app-swal-popup {
