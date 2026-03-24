@@ -73,10 +73,13 @@ async def on_startup() -> None:
         firmware_repo.ensure_schema()
         nas_repo.ensure_schema()
         chat_repo.ensure_schema()
+        chat_repo.ensure_default_rooms()
+        synced_room_total = chat_repo.sync_all_room_backups()
+        print(f"[TALK_BACKUP] Talk_BackUp 동기화 완료: {synced_room_total}개 대화방")
         print("[DB] MySQL/MariaDB 연결 OK")
     except Exception as e:
         # 운영 중 CSV로 저장/조회하는 fallback은 허용되지 않습니다.
-        print(f"[DB] MySQL/MariaDB 연결 실패: {e}")
+        print(f"[DB] MySQL/MariaDB 또는 Talk_BackUp 초기화 실패: {e}")
         raise
 
 

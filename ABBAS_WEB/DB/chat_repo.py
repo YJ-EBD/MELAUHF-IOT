@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+from datetime import datetime
 from typing import Any
 
 from .runtime import get_mysql
@@ -11,6 +13,10 @@ from . import user_repo
 
 _SCHEMA_READY = False
 _DIRECT_MESSAGE_MAX_LEN = 5000
+_TALK_BACKUP_FORMAT_VERSION = 1
+_TALK_BACKUP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "Talk_BackUp"))
+_TALK_BACKUP_ROOMS_DIR = os.path.join(_TALK_BACKUP_ROOT_DIR, "rooms")
+_TALK_BACKUP_MANIFEST_PATH = os.path.join(_TALK_BACKUP_ROOT_DIR, "manifest.json")
 
 
 def _norm_text(value: Any) -> str:
@@ -73,6 +79,178 @@ def _message_preview_for_type(message_type: Any, content: Any, limit: int = 140)
         name = attachment.get("name") or attachment.get("url") or "첨부"
         return _message_preview(f"{label} {name}", limit=limit)
     return _message_preview(content, limit=limit)
+
+
+def _backup_now_text() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _room_backup_dir(room_id: int) -> str:
+    return os.path.join(_TALK_BACKUP_ROOMS_DIR, f"room_{int(room_id):06d}")
+
+
+def _ensure_talk_backup_dirs() -> None:
+    os.makedirs(_TALK_BACKUP_ROOMS_DIR, exist_ok=True)
+
+
+def _atomic_write_text(path: str, text: str) -> None:
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as file_obj:
+        file_obj.write(text)
+    os.replace(temp_path, path)
+
+
+def _write_json_file(path: str, payload: Any) -> None:
+    _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _load_talk_backup_manifest() -> dict[str, Any]:
+    try:
+        with open(_TALK_BACKUP_MANIFEST_PATH, "r", encoding="utf-8") as file_obj:
+            payload = json.load(file_obj)
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    rooms = payload.get("rooms") or []
+    if not isinstance(rooms, list):
+        rooms = []
+    return {
+        "format_version": _TALK_BACKUP_FORMAT_VERSION,
+        "generated_at": _norm_text(payload.get("generated_at")),
+        "rooms": rooms,
+    }
+
+
+def _save_talk_backup_manifest(payload: dict[str, Any]) -> None:
+    manifest = {
+        "format_version": _TALK_BACKUP_FORMAT_VERSION,
+        "generated_at": _norm_text(payload.get("generated_at")) or _backup_now_text(),
+        "rooms": list(payload.get("rooms") or []),
+    }
+    _write_json_file(_TALK_BACKUP_MANIFEST_PATH, manifest)
+
+
+def _member_display_name(member: dict[str, Any] | None) -> str:
+    item = dict(member or {})
+    return (
+        _norm_text(item.get("nickname"))
+        or _norm_text(item.get("name"))
+        or _norm_user_id(item.get("user_id"))
+        or "알 수 없음"
+    )
+
+
+def _room_type_label(room_type: Any) -> str:
+    normalized = _norm_room_type(room_type)
+    if normalized == "channel":
+        return "채널"
+    if normalized == "dm":
+        return "개인톡"
+    return "그룹채팅"
+
+
+def _room_display_name(room: dict[str, Any] | None, members: list[dict[str, Any]] | None = None) -> str:
+    current_room = dict(room or {})
+    room_type = _norm_room_type(current_room.get("room_type"))
+    explicit_name = _norm_text(current_room.get("name"))
+    if room_type != "dm":
+        return explicit_name or ("채널" if room_type == "channel" else "그룹 대화")
+
+    member_names = [_member_display_name(member) for member in list(members or []) if _member_display_name(member)]
+    if member_names:
+        return " / ".join(member_names[:2]) if len(member_names) <= 2 else ", ".join(member_names)
+    return explicit_name or f"개인톡 {int(current_room.get('id') or 0)}"
+
+
+def _message_export_text(message: dict[str, Any] | None) -> str:
+    item = dict(message or {})
+    attachment = item.get("attachment") or {}
+    prefix = "[삭제됨] " if _norm_text(item.get("deleted_at")) else ""
+    if attachment:
+        label = "[이미지]" if attachment.get("kind") == "image" else "[파일]"
+        name = _norm_text(attachment.get("name")) or _norm_text(attachment.get("url")) or "첨부"
+        url = _norm_text(attachment.get("url"))
+        size_text = _norm_text(attachment.get("size_text"))
+        extra = [value for value in [url, size_text] if value]
+        return prefix + " ".join(part for part in [label, name] if part) + (f" ({' | '.join(extra)})" if extra else "")
+    content = str(item.get("content") or "")
+    return prefix + (content if content else "(내용 없음)")
+
+
+def _render_room_backup_text(snapshot: dict[str, Any]) -> str:
+    room = dict(snapshot.get("room") or {})
+    members = list(snapshot.get("members") or [])
+    messages = list(snapshot.get("messages") or [])
+    backup = dict(snapshot.get("backup") or {})
+    counts = dict(snapshot.get("counts") or {})
+
+    lines = [
+        "ABBAS Talk Backup",
+        f"synced_at: {_norm_text(backup.get('synced_at'))}",
+        f"sync_reason: {_norm_text(backup.get('sync_reason'))}",
+        f"room_id: {int(room.get('id') or 0)}",
+        f"room_type: {_room_type_label(room.get('room_type'))} ({_norm_room_type(room.get('room_type'))})",
+        f"room_name: {_norm_text(room.get('display_name')) or _room_display_name(room, members)}",
+        f"topic: {_norm_text(room.get('topic')) or '-'}",
+        f"created_by: {_norm_user_id(room.get('created_by')) or '-'}",
+        f"created_at: {_norm_text(room.get('created_at')) or '-'}",
+        f"updated_at: {_norm_text(room.get('updated_at')) or '-'}",
+        f"deleted_at: {_norm_text(room.get('deleted_at')) or '-'}",
+        f"member_total: {int(counts.get('member_total') or len(members))}",
+        f"message_total: {int(counts.get('message_total') or len(messages))}",
+        f"active_message_total: {int(counts.get('active_message_total') or 0)}",
+        f"deleted_message_total: {int(counts.get('deleted_message_total') or 0)}",
+        "",
+        "[Members]",
+    ]
+
+    if members:
+        for member in members:
+            lines.append(
+                "- "
+                + " | ".join(
+                    [
+                        _member_display_name(member),
+                        _norm_user_id(member.get("user_id")) or "-",
+                        _norm_text(member.get("member_role")) or "member",
+                        _norm_text(member.get("department")) or "-",
+                    ]
+                )
+            )
+    else:
+        lines.append("- (멤버 없음)")
+
+    lines.extend(["", "[Messages]"])
+    if not messages:
+        lines.append("(메시지 없음)")
+        return "\n".join(lines).rstrip() + "\n"
+
+    for message in messages:
+        sender_name = _norm_text(message.get("sender_display_name")) or _norm_user_id(message.get("sender_user_id")) or "알 수 없음"
+        sender_user_id = _norm_user_id(message.get("sender_user_id")) or "-"
+        created_at = _norm_text(message.get("created_at")) or "-"
+        message_type = _norm_text(message.get("message_type")) or "text"
+        flags: list[str] = []
+        edited_at = _norm_text(message.get("edited_at"))
+        deleted_at = _norm_text(message.get("deleted_at"))
+        if edited_at:
+            flags.append(f"edited {edited_at}")
+        if deleted_at:
+            flags.append(f"deleted {deleted_at}")
+        header = f"[{created_at}] {sender_name} ({sender_user_id}) [{message_type}]"
+        if flags:
+            header += " | " + ", ".join(flags)
+        lines.append(header)
+        body = _message_export_text(message)
+        for segment in str(body).splitlines() or [""]:
+            lines.append(f"  {segment}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _ensure_schema_with_cur(cur) -> None:
@@ -238,6 +416,7 @@ def ensure_default_rooms() -> None:
     company_members = [(_norm_user_id(row.get("ID")), "member") for row in approved_rows]
     department_map: dict[str, list[tuple[str, str]]] = {}
     leadership_members: list[tuple[str, str]] = []
+    touched_room_ids: list[int] = []
 
     for row in approved_rows:
         user_id = _norm_user_id(row.get("ID"))
@@ -261,6 +440,8 @@ def ensure_default_rooms() -> None:
                 topic="ABBAS_WEB 구성원 전체가 참여하는 공용 채널",
                 created_by="system",
             )
+            if room_id > 0:
+                touched_room_ids.append(room_id)
             _upsert_room_members_with_cur(cur, room_id, company_members)
 
             if leadership_members:
@@ -272,6 +453,8 @@ def ensure_default_rooms() -> None:
                     topic="관리자와 슈퍼유저를 위한 운영 협업 채널",
                     created_by="system",
                 )
+                if leadership_room_id > 0:
+                    touched_room_ids.append(leadership_room_id)
                 _upsert_room_members_with_cur(cur, leadership_room_id, leadership_members)
 
             for department, members in department_map.items():
@@ -285,7 +468,11 @@ def ensure_default_rooms() -> None:
                     topic=f"{department} 팀 협업용 기본 채널",
                     created_by="system",
                 )
+                if department_room_id > 0:
+                    touched_room_ids.append(department_room_id)
                 _upsert_room_members_with_cur(cur, department_room_id, members)
+    for room_id in sorted({room_id for room_id in touched_room_ids if room_id > 0}):
+        sync_room_backup(room_id, sync_reason="default_room_sync")
 
 
 def _load_room_member_rows(cur, room_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
@@ -530,6 +717,7 @@ def add_room_members(room_id: int, member_ids: list[str]) -> list[str]:
                 """,
                 (target_room_id,),
             )
+    sync_room_backup(target_room_id, sync_reason="member_added")
     return new_ids
 
 
@@ -575,6 +763,284 @@ def get_room_by_id(room_id: int) -> dict[str, Any] | None:
         "created_by": _norm_user_id(row.get("created_by")),
         "last_message_id": int(row.get("last_message_id") or 0),
     }
+
+
+def _build_room_backup_snapshot_with_cur(cur, room_id: int) -> dict[str, Any] | None:
+    target_room_id = int(room_id or 0)
+    if target_room_id <= 0:
+        return None
+
+    cur.execute(
+        """
+        SELECT
+          r.id,
+          COALESCE(r.room_type, 'group') AS room_type,
+          COALESCE(r.room_key, '') AS room_key,
+          COALESCE(r.name, '') AS name,
+          COALESCE(r.topic, '') AS topic,
+          COALESCE(r.avatar_path, '') AS avatar_path,
+          COALESCE(r.created_by, '') AS created_by,
+          COALESCE(r.last_message_id, 0) AS last_message_id,
+          COALESCE(DATE_FORMAT(r.created_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS created_at,
+          COALESCE(DATE_FORMAT(r.updated_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS updated_at,
+          COALESCE(DATE_FORMAT(last_msg.created_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS last_message_at
+        FROM chat_rooms r
+        LEFT JOIN chat_messages last_msg
+          ON last_msg.id = r.last_message_id
+        WHERE r.id=%s
+        LIMIT 1
+        """,
+        (target_room_id,),
+    )
+    room_row = cur.fetchone() or {}
+    if not room_row:
+        return None
+
+    cur.execute(
+        """
+        SELECT
+          m.room_id,
+          m.user_id,
+          COALESCE(m.member_role, 'member') AS member_role,
+          COALESCE(DATE_FORMAT(m.joined_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS joined_at,
+          COALESCE(u.nickname, '') AS nickname,
+          COALESCE(u.name, '') AS name,
+          COALESCE(u.department, '') AS department,
+          COALESCE(u.profile_image_path, '') AS profile_image_path,
+          COALESCE(u.role, 'user') AS role
+        FROM chat_room_members m
+        LEFT JOIN users u
+          ON u.user_id = m.user_id
+        WHERE m.room_id=%s
+        ORDER BY m.joined_at ASC, m.user_id ASC
+        """,
+        (target_room_id,),
+    )
+    member_rows = cur.fetchall() or []
+    members: list[dict[str, Any]] = []
+    for row in member_rows:
+        members.append(
+            {
+                "user_id": _norm_user_id(row.get("user_id")),
+                "member_role": _norm_text(row.get("member_role")) or "member",
+                "nickname": _norm_text(row.get("nickname")),
+                "name": _norm_text(row.get("name")),
+                "department": _norm_text(row.get("department")),
+                "profile_image_path": _norm_text(row.get("profile_image_path")),
+                "role": _norm_text(row.get("role")) or "user",
+                "joined_at": _norm_text(row.get("joined_at")),
+                "display_name": _member_display_name(row),
+            }
+        )
+
+    cur.execute(
+        """
+        SELECT
+          msg.id,
+          msg.room_id,
+          msg.sender_user_id,
+          COALESCE(msg.message_type, 'text') AS message_type,
+          COALESCE(msg.content, '') AS content,
+          COALESCE(DATE_FORMAT(msg.created_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS created_at,
+          COALESCE(DATE_FORMAT(msg.edited_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS edited_at,
+          COALESCE(DATE_FORMAT(msg.deleted_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS deleted_at,
+          COALESCE(u.nickname, '') AS sender_nickname,
+          COALESCE(u.name, '') AS sender_name,
+          COALESCE(u.department, '') AS sender_department,
+          COALESCE(u.profile_image_path, '') AS sender_profile_image_path,
+          COALESCE(u.role, 'user') AS sender_role
+        FROM chat_messages msg
+        LEFT JOIN users u
+          ON u.user_id = msg.sender_user_id
+        WHERE msg.room_id=%s
+        ORDER BY msg.id ASC
+        """,
+        (target_room_id,),
+    )
+    message_rows = cur.fetchall() or []
+    messages: list[dict[str, Any]] = []
+    deleted_message_total = 0
+    for row in message_rows:
+        attachment = _attachment_payload(row.get("message_type"), row.get("content"))
+        deleted_at = _norm_text(row.get("deleted_at"))
+        if deleted_at:
+            deleted_message_total += 1
+        sender_user_id = _norm_user_id(row.get("sender_user_id"))
+        sender_display_name = (
+            _norm_text(row.get("sender_nickname"))
+            or _norm_text(row.get("sender_name"))
+            or sender_user_id
+            or "알 수 없음"
+        )
+        messages.append(
+            {
+                "id": int(row.get("id") or 0),
+                "room_id": int(row.get("room_id") or 0),
+                "sender_user_id": sender_user_id,
+                "sender_display_name": sender_display_name,
+                "sender_nickname": _norm_text(row.get("sender_nickname")),
+                "sender_name": _norm_text(row.get("sender_name")),
+                "sender_department": _norm_text(row.get("sender_department")),
+                "sender_profile_image_path": _norm_text(row.get("sender_profile_image_path")),
+                "sender_role": _norm_text(row.get("sender_role")) or "user",
+                "message_type": _norm_text(row.get("message_type")) or "text",
+                "content": str(row.get("content") or ""),
+                "content_preview": _message_preview_for_type(row.get("message_type"), row.get("content")),
+                "attachment": attachment,
+                "created_at": _norm_text(row.get("created_at")),
+                "edited_at": _norm_text(row.get("edited_at")),
+                "deleted_at": deleted_at,
+            }
+        )
+
+    room = {
+        "id": int(room_row.get("id") or 0),
+        "room_type": _norm_room_type(room_row.get("room_type")),
+        "room_type_label": _room_type_label(room_row.get("room_type")),
+        "room_key": _norm_text(room_row.get("room_key")),
+        "name": _norm_text(room_row.get("name")),
+        "display_name": _room_display_name(room_row, members),
+        "topic": _norm_text(room_row.get("topic")),
+        "avatar_path": _norm_text(room_row.get("avatar_path")),
+        "created_by": _norm_user_id(room_row.get("created_by")),
+        "last_message_id": int(room_row.get("last_message_id") or 0),
+        "last_message_at": _norm_text(room_row.get("last_message_at")),
+        "created_at": _norm_text(room_row.get("created_at")),
+        "updated_at": _norm_text(room_row.get("updated_at")),
+        "deleted_at": "",
+    }
+    return {
+        "format_version": _TALK_BACKUP_FORMAT_VERSION,
+        "generated_at": _backup_now_text(),
+        "room": room,
+        "members": members,
+        "messages": messages,
+        "counts": {
+            "member_total": len(members),
+            "message_total": len(messages),
+            "active_message_total": max(len(messages) - deleted_message_total, 0),
+            "deleted_message_total": deleted_message_total,
+        },
+    }
+
+
+def _upsert_talk_backup_manifest(snapshot: dict[str, Any], *, room_deleted: bool = False) -> None:
+    room = dict(snapshot.get("room") or {})
+    room_id = int(room.get("id") or 0)
+    if room_id <= 0:
+        return
+
+    manifest = _load_talk_backup_manifest()
+    rooms_by_id: dict[int, dict[str, Any]] = {}
+    for item in list(manifest.get("rooms") or []):
+        try:
+            existing_room_id = int(item.get("room_id") or 0)
+        except Exception:
+            existing_room_id = 0
+        if existing_room_id > 0:
+            rooms_by_id[existing_room_id] = dict(item)
+
+    room_dir = _room_backup_dir(room_id)
+    snapshot_path = os.path.relpath(os.path.join(room_dir, "room_snapshot.json"), _TALK_BACKUP_ROOT_DIR).replace(os.sep, "/")
+    text_path = os.path.relpath(os.path.join(room_dir, "conversation.txt"), _TALK_BACKUP_ROOT_DIR).replace(os.sep, "/")
+    members = list(snapshot.get("members") or [])
+    counts = dict(snapshot.get("counts") or {})
+    backup = dict(snapshot.get("backup") or {})
+    rooms_by_id[room_id] = {
+        "room_id": room_id,
+        "room_type": _norm_room_type(room.get("room_type")),
+        "room_type_label": _room_type_label(room.get("room_type")),
+        "room_name": _norm_text(room.get("display_name")) or _room_display_name(room, members),
+        "name": _norm_text(room.get("name")),
+        "topic": _norm_text(room.get("topic")),
+        "room_key": _norm_text(room.get("room_key")),
+        "member_ids": [_norm_user_id(member.get("user_id")) for member in members if _norm_user_id(member.get("user_id"))],
+        "member_display_names": [_member_display_name(member) for member in members if _member_display_name(member)],
+        "message_total": int(counts.get("message_total") or 0),
+        "active_message_total": int(counts.get("active_message_total") or 0),
+        "deleted_message_total": int(counts.get("deleted_message_total") or 0),
+        "last_message_id": int(room.get("last_message_id") or 0),
+        "last_message_at": _norm_text(room.get("last_message_at")),
+        "created_at": _norm_text(room.get("created_at")),
+        "updated_at": _norm_text(room.get("updated_at")),
+        "deleted_at": _norm_text(room.get("deleted_at")),
+        "is_deleted": bool(room_deleted),
+        "last_synced_at": _norm_text(backup.get("synced_at")) or _backup_now_text(),
+        "snapshot_path": snapshot_path,
+        "text_export_path": text_path,
+    }
+
+    manifest["generated_at"] = _norm_text(backup.get("synced_at")) or _backup_now_text()
+    manifest["rooms"] = [rooms_by_id[key] for key in sorted(rooms_by_id)]
+    _save_talk_backup_manifest(manifest)
+
+
+def _write_room_backup_snapshot(snapshot: dict[str, Any], *, sync_reason: str = "sync", room_deleted: bool = False, deleted_at: str = "") -> None:
+    room = dict(snapshot.get("room") or {})
+    room_id = int(room.get("id") or 0)
+    if room_id <= 0:
+        return
+
+    _ensure_talk_backup_dirs()
+    room_dir = _room_backup_dir(room_id)
+    synced_at = _backup_now_text()
+    room["deleted_at"] = deleted_at if room_deleted else _norm_text(room.get("deleted_at"))
+    room["display_name"] = _norm_text(room.get("display_name")) or _room_display_name(room, list(snapshot.get("members") or []))
+
+    payload = {
+        "format_version": _TALK_BACKUP_FORMAT_VERSION,
+        "backup": {
+            "synced_at": synced_at,
+            "sync_reason": _norm_text(sync_reason) or "sync",
+            "source": "ABBAS_WEB",
+        },
+        "room": room,
+        "members": list(snapshot.get("members") or []),
+        "messages": list(snapshot.get("messages") or []),
+        "counts": dict(snapshot.get("counts") or {}),
+    }
+
+    _write_json_file(os.path.join(room_dir, "room_snapshot.json"), payload)
+    _atomic_write_text(os.path.join(room_dir, "conversation.txt"), _render_room_backup_text(payload))
+    _upsert_talk_backup_manifest(payload, room_deleted=room_deleted)
+
+
+def sync_room_backup(room_id: int, *, sync_reason: str = "sync") -> bool:
+    try:
+        target_room_id = int(room_id)
+    except Exception:
+        return False
+    if target_room_id <= 0:
+        return False
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            snapshot = _build_room_backup_snapshot_with_cur(cur, target_room_id)
+    if not snapshot:
+        return False
+    _write_room_backup_snapshot(snapshot, sync_reason=sync_reason)
+    return True
+
+
+def sync_all_room_backups() -> int:
+    _ensure_talk_backup_dirs()
+    db = get_mysql()
+    room_ids: list[int] = []
+    snapshots: list[dict[str, Any]] = []
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute("SELECT id FROM chat_rooms ORDER BY id ASC")
+            room_ids = [int(row.get("id") or 0) for row in (cur.fetchall() or []) if int(row.get("id") or 0) > 0]
+            for room_id in room_ids:
+                snapshot = _build_room_backup_snapshot_with_cur(cur, room_id)
+                if snapshot:
+                    snapshots.append(snapshot)
+    for snapshot in snapshots:
+        _write_room_backup_snapshot(snapshot, sync_reason="startup_sync")
+    return len(snapshots)
 
 
 def _refresh_room_last_message_with_cur(cur, room_id: int) -> int:
@@ -869,6 +1335,7 @@ def insert_message(room_id: int, sender_user_id: str, content: str, message_type
                 (message_id, target_room_id, sender_id),
             )
 
+    sync_room_backup(target_room_id, sync_reason="message_created")
     messages = list_messages_for_user(sender_id, target_room_id, limit=1)
     if not messages:
         raise RuntimeError("message load failed")
@@ -988,7 +1455,10 @@ def set_room_avatar(room_id: int, avatar_path: str) -> bool:
                 """,
                 (normalized_avatar_path, target_room_id),
             )
-            return bool(cur.rowcount)
+            updated = bool(cur.rowcount)
+    if updated:
+        sync_room_backup(target_room_id, sync_reason="room_avatar_updated")
+    return updated
 
 
 def update_room_details(room_id: int, *, name: str, topic: str = "") -> bool:
@@ -1021,7 +1491,10 @@ def update_room_details(room_id: int, *, name: str, topic: str = "") -> bool:
                 """,
                 (normalized_name, normalized_topic, target_room_id),
             )
-            return bool(cur.rowcount)
+            updated = bool(cur.rowcount)
+    if updated:
+        sync_room_backup(target_room_id, sync_reason="room_updated")
+    return updated
 
 
 def delete_room(room_id: int) -> bool:
@@ -1032,14 +1505,26 @@ def delete_room(room_id: int) -> bool:
     if target_room_id <= 0:
         return False
 
+    deleted_snapshot: dict[str, Any] | None = None
+    deleted_at = ""
     db = get_mysql()
     with db.conn() as conn:
         with conn.cursor() as cur:
             _ensure_schema_with_cur(cur)
+            deleted_snapshot = _build_room_backup_snapshot_with_cur(cur, target_room_id)
+            deleted_at = _backup_now_text()
             cur.execute("DELETE FROM chat_messages WHERE room_id=%s", (target_room_id,))
             cur.execute("DELETE FROM chat_room_members WHERE room_id=%s", (target_room_id,))
             cur.execute("DELETE FROM chat_rooms WHERE id=%s", (target_room_id,))
-            return bool(cur.rowcount)
+            deleted = bool(cur.rowcount)
+    if deleted and deleted_snapshot:
+        _write_room_backup_snapshot(
+            deleted_snapshot,
+            sync_reason="room_deleted",
+            room_deleted=True,
+            deleted_at=deleted_at,
+        )
+    return deleted
 
 
 def update_message_content(message_id: int, content: str) -> dict[str, Any] | None:
@@ -1056,6 +1541,7 @@ def update_message_content(message_id: int, content: str) -> dict[str, Any] | No
     if len(normalized_content) > _DIRECT_MESSAGE_MAX_LEN:
         raise ValueError(f"메시지는 최대 {_DIRECT_MESSAGE_MAX_LEN}자까지 입력할 수 있습니다.")
 
+    room_id = 0
     db = get_mysql()
     with db.conn() as conn:
         with conn.cursor() as cur:
@@ -1076,6 +1562,8 @@ def update_message_content(message_id: int, content: str) -> dict[str, Any] | No
             room_id = int(row.get("room_id") or 0)
             if room_id > 0:
                 _refresh_room_last_message_with_cur(cur, room_id)
+    if room_id > 0:
+        sync_room_backup(room_id, sync_reason="message_updated")
     return get_message_by_id(target_message_id)
 
 
@@ -1117,7 +1605,10 @@ def delete_message(message_id: int) -> dict[str, int]:
             if not cur.rowcount:
                 return {"room_id": 0, "message_id": 0}
             _refresh_room_last_message_with_cur(cur, room_id)
-            return {"room_id": room_id, "message_id": target_message_id}
+            delete_result = {"room_id": room_id, "message_id": target_message_id}
+    if int(delete_result.get("room_id") or 0) > 0:
+        sync_room_backup(int(delete_result.get("room_id") or 0), sync_reason="message_deleted")
+    return delete_result
 
 
 def get_or_create_direct_room(user_id: str, target_user_id: str) -> int:
@@ -1143,7 +1634,8 @@ def get_or_create_direct_room(user_id: str, target_user_id: str) -> int:
             )
             _upsert_room_members_with_cur(cur, room_id, [(pair[0], "member"), (pair[1], "member")])
             cur.execute("UPDATE chat_rooms SET updated_at=updated_at WHERE id=%s", (room_id,))
-            return room_id
+    sync_room_backup(room_id, sync_reason="direct_room_sync")
+    return room_id
 
 
 def create_group_room(name: str, created_by: str, member_ids: list[str], topic: str = "") -> int:
@@ -1184,4 +1676,5 @@ def create_group_room(name: str, created_by: str, member_ids: list[str], topic: 
             room_id = int(cur.lastrowid or 0)
             member_rows = [(creator_user_id, "owner")] + [(uid, "member") for uid in unique_members if uid != creator_user_id]
             _upsert_room_members_with_cur(cur, room_id, member_rows)
-            return room_id
+    sync_room_backup(room_id, sync_reason="group_room_created")
+    return room_id
