@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -59,10 +61,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             next_q = request.url.path
             if request.url.query:
                 next_q = f"{next_q}?{request.url.query}"
-            return RedirectResponse(url=f"/login?next={next_q}", status_code=302)
+            return RedirectResponse(url=f"/login?{urlencode({'next': next_q})}", status_code=302)
 
         # Sliding refresh (keep session alive while active)
-        refresh_session(sid, auto_login=False)
+        refresh_session(sid)
 
         request.state.user_id = user_id
         return await call_next(request)

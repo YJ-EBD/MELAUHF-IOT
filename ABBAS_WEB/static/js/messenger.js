@@ -212,8 +212,33 @@
     return normalizeChannelMode(targetRoom.channel_mode, "voice");
   }
 
+  function roomAppDomain(room) {
+    const targetRoom = room || {};
+    const explicit = normalizeText(targetRoom.app_domain).toLowerCase();
+    if (explicit === "ascord" || explicit === "talk") return explicit;
+    const roomKey = normalizeText(targetRoom.room_key).toLowerCase();
+    if (roomKey.indexOf("ascord:") === 0) return "ascord";
+    return "talk";
+  }
+
+  function isAscordRoom(room) {
+    return roomAppDomain(room) === "ascord";
+  }
+
+  function isTalkRoom(room) {
+    return roomAppDomain(room) === "talk";
+  }
+
+  function roomSupportsCalls(room) {
+    const targetRoom = room || {};
+    if (Object.prototype.hasOwnProperty.call(targetRoom, "supports_calls")) {
+      return !!targetRoom.supports_calls;
+    }
+    return isAscordRoom(targetRoom);
+  }
+
   function isStageRoom(room) {
-    return roomChannelMode(room) === "stage";
+    return roomSupportsCalls(room) && roomChannelMode(room) === "stage";
   }
 
   function normalizeStageRole(value) {
@@ -478,16 +503,18 @@
   }
 
   function canJoinCall(room) {
-    return !!(room && room.can_join_call !== false);
+    return !!(room && roomSupportsCalls(room) && room.can_join_call !== false);
   }
 
   function canStartCall(room) {
     if (!room) return false;
+    if (!roomSupportsCalls(room)) return false;
     return room.can_start_call !== false;
   }
 
   function canSpeakInCall(room) {
     if (!room) return false;
+    if (!roomSupportsCalls(room)) return false;
     const participant = currentUserCallParticipant(room);
     if (isStageRoom(room) && participant) {
       return callParticipantStageRole(participant) === "speaker";
@@ -497,6 +524,7 @@
 
   function canUseVideoInCall(room) {
     if (!room) return false;
+    if (!roomSupportsCalls(room)) return false;
     const participant = currentUserCallParticipant(room);
     if (isStageRoom(room) && participant && callParticipantStageRole(participant) !== "speaker") {
       return false;
@@ -506,6 +534,7 @@
 
   function canShareScreenInCall(room) {
     if (!room) return false;
+    if (!roomSupportsCalls(room)) return false;
     const participant = currentUserCallParticipant(room);
     if (isStageRoom(room) && participant && callParticipantStageRole(participant) !== "speaker") {
       return false;
@@ -514,7 +543,7 @@
   }
 
   function canModerateCall(room) {
-    return !!(room && room.can_moderate_call);
+    return !!(room && roomSupportsCalls(room) && room.can_moderate_call);
   }
 
   function canManageMembers(room) {
@@ -599,6 +628,60 @@
     return state.rooms.find(function (room) {
       return Number(room.id || 0) === targetRoomId;
     }) || null;
+  }
+
+  function roomMatchesView(room, mode) {
+    const normalizedMode = sanitizeViewMode(mode || state.viewMode);
+    return normalizedMode === "ascord" ? isAscordRoom(room) : isTalkRoom(room);
+  }
+
+  function currentViewRooms(mode) {
+    return (state.rooms || []).filter(function (room) {
+      return roomMatchesView(room, mode);
+    });
+  }
+
+  function notificationMatchesView(item, mode) {
+    const normalizedMode = sanitizeViewMode(mode || state.viewMode);
+    const room = findRoomById(Number((item && item.room_id) || 0));
+    if (room) {
+      return roomMatchesView(room, normalizedMode);
+    }
+    const action = notificationActionType(item);
+    if (action === "join-call" || action === "open-ascord") {
+      return normalizedMode === "ascord";
+    }
+    return normalizedMode === "talk";
+  }
+
+  function currentViewNotificationItems(mode) {
+    return (state.notifications || []).filter(function (item) {
+      return notificationMatchesView(item, mode);
+    });
+  }
+
+  function currentViewNotificationCounts(mode) {
+    return notificationCountsFromItems(currentViewNotificationItems(mode));
+  }
+
+  function resolveActiveRoomIdForView(preferredId, mode) {
+    const normalizedMode = sanitizeViewMode(mode || state.viewMode);
+    const preferredRoom = findRoomById(Number(preferredId || 0));
+    if (preferredRoom && roomMatchesView(preferredRoom, normalizedMode)) {
+      return Number(preferredRoom.id || 0);
+    }
+    const joinedRoom = findRoomById(Number(state.call.joinedRoomId || 0));
+    if (normalizedMode === "ascord" && joinedRoom && roomMatchesView(joinedRoom, normalizedMode)) {
+      return Number(joinedRoom.id || 0);
+    }
+    const rooms = currentViewRooms(normalizedMode);
+    return rooms.length ? Number((rooms[0] && rooms[0].id) || 0) : 0;
+  }
+
+  function ensureActiveRoomForCurrentView(preferredId) {
+    state.activeRoomId = resolveActiveRoomIdForView(preferredId, state.viewMode);
+    state.activeRoom = currentRoom();
+    return Number(state.activeRoomId || 0);
   }
 
   function findMessageById(roomId, messageId) {
@@ -970,6 +1053,7 @@
 
   async function promptRoomDetails(room) {
     const currentRoom = room || {};
+    const isAscord = isAscordRoom(currentRoom);
     const currentName = normalizeText(currentRoom.title || currentRoom.name);
     const currentTopic = normalizeText(currentRoom.topic || "");
     const currentCategory = roomChannelCategory(currentRoom);
@@ -985,9 +1069,9 @@
       return {
         name: normalizedName,
         topic: normalizeText(fallbackTopic),
-        channel_category: currentCategory,
-        channel_mode: currentChannelMode,
-        call_permissions: currentPermissions,
+        channel_category: isAscord ? currentCategory : "",
+        channel_mode: isAscord ? currentChannelMode : "voice",
+        call_permissions: isAscord ? currentPermissions : {},
       };
     }
     const result = await fireDialog({
@@ -1003,23 +1087,25 @@
         '<label class="form-label" for="swalMessengerRoomTopic">방 설명</label>',
         '<textarea id="swalMessengerRoomTopic" class="form-control app-swal-field app-swal-field--textarea" maxlength="120" placeholder="대화 목적이나 주제를 간단히 적어주세요."></textarea>',
         '</div>',
-        '<div class="app-swal-field-group">',
-        '<label class="form-label" for="swalMessengerRoomCategory">카테고리</label>',
-        '<input id="swalMessengerRoomCategory" class="form-control app-swal-field" maxlength="60" placeholder="예: PROJECT HUB, DESIGN, LIVE EVENTS">',
-        '<p class="messenger-room-permission-grid__foot">ASCORD 왼쪽 목록에서 같은 카테고리끼리 묶여 보입니다.</p>',
-        '</div>',
-        '<div class="app-swal-field-group">',
-        roomChannelModeSelectMarkup(currentChannelMode),
-        '</div>',
-        '<div class="app-swal-field-group">',
-        '<label class="form-label">ASCORD 통화 권한</label>',
-        '<div class="messenger-room-permission-grid">',
-        CALL_PERMISSION_FIELDS.map(function (field) {
-          return roomPermissionSelectMarkup(field, currentPermissions[field.key]);
-        }).join(""),
-        "</div>",
-        '<p class="messenger-room-permission-grid__foot">채널마다 통화 참여, 마이크, 카메라, 화면공유, 초대, 운영 권한을 따로 조정할 수 있습니다.</p>',
-        '</div>',
+        (isAscord ? [
+          '<div class="app-swal-field-group">',
+          '<label class="form-label" for="swalMessengerRoomCategory">카테고리</label>',
+          '<input id="swalMessengerRoomCategory" class="form-control app-swal-field" maxlength="60" placeholder="예: PROJECT HUB, DESIGN, LIVE EVENTS">',
+          '<p class="messenger-room-permission-grid__foot">ASCORD 왼쪽 목록에서 같은 카테고리끼리 묶여 보입니다.</p>',
+          '</div>',
+          '<div class="app-swal-field-group">',
+          roomChannelModeSelectMarkup(currentChannelMode),
+          '</div>',
+          '<div class="app-swal-field-group">',
+          '<label class="form-label">ASCORD 통화 권한</label>',
+          '<div class="messenger-room-permission-grid">',
+          CALL_PERMISSION_FIELDS.map(function (field) {
+            return roomPermissionSelectMarkup(field, currentPermissions[field.key]);
+          }).join(""),
+          "</div>",
+          '<p class="messenger-room-permission-grid__foot">채널마다 통화 참여, 마이크, 카메라, 화면공유, 초대, 운영 권한을 따로 조정할 수 있습니다.</p>',
+          '</div>',
+        ].join("") : ""),
         '</div>',
       ].join(""),
       showCancelButton: true,
@@ -1035,6 +1121,7 @@
         if (nameInput) nameInput.value = currentName;
         if (topicInput) topicInput.value = currentTopic;
         if (categoryInput) categoryInput.value = currentCategory;
+        if (!isAscord) return;
         function syncModePreset(shouldApplyPreset) {
           const nextMode = normalizeChannelMode(modeSelect && modeSelect.value, currentChannelMode);
           const nextDefaults = defaultCallPermissionsForRoom(Object.assign({}, currentRoom, { channel_mode: nextMode }));
@@ -1079,20 +1166,22 @@
           window.Swal.showValidationMessage("대화방 설명은 120자 이하만 입력할 수 있습니다.");
           return false;
         }
-        if (nextCategory.length > 60) {
+        if (isAscord && nextCategory.length > 60) {
           window.Swal.showValidationMessage("카테고리 이름은 60자 이하만 입력할 수 있습니다.");
           return false;
         }
         const nextPermissions = {};
-        CALL_PERMISSION_FIELDS.forEach(function (field) {
-          const select = document.getElementById("swalMessengerPerm_" + field.key);
-          nextPermissions[field.key] = normalizeCallPermissionLevel(select && select.value, currentPermissions[field.key]);
-        });
+        if (isAscord) {
+          CALL_PERMISSION_FIELDS.forEach(function (field) {
+            const select = document.getElementById("swalMessengerPerm_" + field.key);
+            nextPermissions[field.key] = normalizeCallPermissionLevel(select && select.value, currentPermissions[field.key]);
+          });
+        }
         return {
           name: nextName,
           topic: nextTopic,
-          channel_category: nextCategory,
-          channel_mode: nextChannelMode,
+          channel_category: isAscord ? nextCategory : "",
+          channel_mode: isAscord ? nextChannelMode : "voice",
           call_permissions: nextPermissions,
         };
       },
@@ -1460,18 +1549,23 @@
   }
 
   function setCounts(counts) {
-    const roomTotal = Number((counts && counts.room_total) || 0);
-    const unreadTotal = Number((counts && counts.unread_total) || 0);
-    const unreadNotificationTotal = Number((counts && counts.unread_notification_total) || (state.notificationCounts && state.notificationCounts.unread_total) || 0);
+    const viewRooms = currentViewRooms();
+    const roomTotal = Number(viewRooms.length || 0);
+    const unreadTotal = Number(viewRooms.reduce(function (sum, room) {
+      return sum + Number(room.unread_count || 0);
+    }, 0));
+    const viewNotificationCounts = currentViewNotificationCounts();
+    const unreadNotificationTotal = Number(viewNotificationCounts.unread_total || 0);
     const launcherUnreadTotal = Math.max(unreadTotal, unreadNotificationTotal);
-    const ascordLiveCount = unseenAscordLiveRoomCount(state.rooms);
-    const ascordPendingStageCount = ascordPendingStageRequestCount(state.rooms);
+    const ascordRooms = currentViewRooms("ascord");
+    const ascordLiveCount = unseenAscordLiveRoomCount(ascordRooms);
+    const ascordPendingStageCount = ascordPendingStageRequestCount(ascordRooms);
     if (dom.roomTotal) dom.roomTotal.textContent = String(roomTotal);
     if (dom.unreadTotal) dom.unreadTotal.textContent = String(unreadTotal);
     if (dom.onlineContacts) dom.onlineContacts.textContent = String((counts && counts.online_contacts) || 0);
-    if (dom.channelCount) dom.channelCount.textContent = String((counts && counts.channel_total) || 0);
-    if (dom.groupCount) dom.groupCount.textContent = String((counts && counts.group_total) || 0);
-    if (dom.directCount) dom.directCount.textContent = String((counts && counts.direct_total) || 0);
+    if (dom.channelCount) dom.channelCount.textContent = String(viewRooms.filter(function (room) { return !!room.is_channel; }).length || 0);
+    if (dom.groupCount) dom.groupCount.textContent = String(viewRooms.filter(function (room) { return !!room.is_group; }).length || 0);
+    if (dom.directCount) dom.directCount.textContent = String(viewRooms.filter(function (room) { return !!room.is_direct; }).length || 0);
     if (dom.railUnreadBadge) {
       const badgeValue = state.viewMode === "ascord" ? ascordPendingStageCount : unreadTotal;
       if (badgeValue > 0) {
@@ -1641,6 +1735,7 @@
     const roomId = Number(payload.room_id || 0);
     if (roomId <= 0) return null;
     const room = findRoomById(roomId) || {};
+    if (room && !isTalkRoom(room)) return null;
     if (room && room.is_muted) return null;
     const kind = messageMentionsCurrentUser(payload.content) ? "mention" : "message";
     const senderDisplayName = normalizeText(payload.sender_display_name || payload.sender_name || payload.sender_user_id || "사용자");
@@ -1706,6 +1801,8 @@
     const payload = roomCall || {};
     const roomId = Number(payload.room_id || 0);
     if (roomId <= 0) return null;
+    const room = findRoomById(roomId);
+    if (room && !isAscordRoom(room)) return null;
     const kindValue = normalizeText(kind).toLowerCase() === "missed_call" ? "missed_call" : "call";
     const info = roomDisplayInfo(roomId);
     const primaryParticipant = callPrimaryParticipant(payload);
@@ -1735,7 +1832,7 @@
       summary: summary,
       created_at: new Date((Number(payload.updated_at || payload.started_at || 0) || (Date.now() / 1000)) * 1000).toISOString(),
       time_text: callTimeText(Number(payload.updated_at || payload.started_at || 0)),
-      action_type: kindValue === "missed_call" ? "open-room" : "join-call",
+      action_type: kindValue === "missed_call" ? "open-ascord" : "join-call",
       preferred_mode: callPreferredMode(payload),
     };
   }
@@ -1746,6 +1843,7 @@
     const roomId = Number((roomCall && roomCall.room_id) || (targetRoom && targetRoom.id) || 0);
     const requesterUserId = normalizeText(payload.user_id);
     if (roomId <= 0 || !requesterUserId) return null;
+    if (targetRoom && !isAscordRoom(targetRoom)) return null;
     const info = roomDisplayInfo(roomId);
     const profile = roomMemberProfile(targetRoom, requesterUserId, payload.display_name);
     const requesterName = normalizeText(profile.display_name || payload.display_name || requesterUserId || "참여자");
@@ -1790,11 +1888,16 @@
     const messageId = Number(payload.message_id || 0);
     if (roomId <= 0) return;
     const actionType = notificationActionType(payload);
+    const room = findRoomById(roomId);
     if (actionType === "join-call") {
       await acceptIncomingCall(roomId, normalizeText(payload.preferred_mode) === "video" ? "video" : "audio");
       return;
     }
     if (actionType === "open-ascord") {
+      await openAscordRoom(roomId);
+      return;
+    }
+    if (room && isAscordRoom(room)) {
       await openAscordRoom(roomId);
       return;
     }
@@ -1922,6 +2025,7 @@
     const roomId = Number((snapshot && snapshot.room_id) || 0);
     if (roomId <= 0) return null;
     const room = findRoomById(roomId) || {};
+    if (room && !isAscordRoom(room)) return null;
     if (room && room.is_muted) return null;
     const callId = normalizeText((snapshot && snapshot.call_id) || ("room-" + roomId));
     const existing = incomingInviteForRoom(roomId);
@@ -1949,10 +2053,16 @@
 
   function renderIncomingCallInvites() {
     if (!dom.callInviteStack) return;
+    if (state.viewMode !== "ascord") {
+      dom.callInviteStack.innerHTML = "";
+      dom.callInviteStack.classList.remove("is-visible");
+      return;
+    }
     const invites = Object.keys(state.call.incomingInvitesByRoomId || {}).map(function (key) {
       return state.call.incomingInvitesByRoomId[key];
     }).filter(function (invite) {
-      return invite && !invite.dismissed && !invite.joined && invite.roomCall;
+      const room = findRoomById(Number((invite && invite.roomId) || 0));
+      return invite && !invite.dismissed && !invite.joined && invite.roomCall && (!room || isAscordRoom(room));
     }).sort(function (a, b) {
       return Number((b && b.roomCall && b.roomCall.updated_at) || 0) - Number((a && a.roomCall && a.roomCall.updated_at) || 0);
     });
@@ -1981,7 +2091,7 @@
         '<div class="messenger-call-invite__actions">',
         '<button type="button" data-call-invite-action="join-audio" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-telephone-fill"></i><span>음성 참여</span></button>',
         '<button type="button" data-call-invite-action="join-video" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-camera-video-fill"></i><span>영상 참여</span></button>',
-        '<button type="button" data-call-invite-action="open-talk" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-chat-dots-fill"></i><span>ABBAS Talk</span></button>',
+        '<button type="button" data-call-invite-action="open-ascord" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-broadcast-pin"></i><span>채널 열기</span></button>',
         '<button type="button" class="is-dismiss" data-call-invite-action="dismiss" data-call-invite-room-id="' + invite.roomId + '"><i class="bi bi-x-lg"></i><span>거절</span></button>',
         "</div>",
         "</section>",
@@ -2048,14 +2158,15 @@
   }
 
   function recalcCounts() {
+    const viewRooms = currentViewRooms();
     setCounts({
-      room_total: state.rooms.length,
-      unread_total: state.rooms.reduce(function (sum, room) {
+      room_total: viewRooms.length,
+      unread_total: viewRooms.reduce(function (sum, room) {
         return sum + Number(room.unread_count || 0);
       }, 0),
-      channel_total: state.rooms.filter(function (room) { return !!room.is_channel; }).length,
-      group_total: state.rooms.filter(function (room) { return !!room.is_group; }).length,
-      direct_total: state.rooms.filter(function (room) { return !!room.is_direct; }).length,
+      channel_total: viewRooms.filter(function (room) { return !!room.is_channel; }).length,
+      group_total: viewRooms.filter(function (room) { return !!room.is_group; }).length,
+      direct_total: viewRooms.filter(function (room) { return !!room.is_direct; }).length,
       online_contacts: state.contacts.filter(function (contact) { return !!contact.is_online; }).length,
     });
   }
@@ -2074,13 +2185,15 @@
   }
 
   function renderNotifications() {
+    const visibleNotifications = currentViewNotificationItems();
     if (dom.notifyDot) {
-      const unreadTotal = Number((state.notificationCounts && state.notificationCounts.unread_total) || 0);
+      const unreadTotal = Number(notificationCountsFromItems(visibleNotifications).unread_total || 0);
       dom.notifyDot.classList.toggle("d-none", unreadTotal <= 0);
     }
     if (dom.notifyMeta) {
-      const unreadTotal = Number((state.notificationCounts && state.notificationCounts.unread_total) || 0);
-      const mentionTotal = Number((state.notificationCounts && state.notificationCounts.unread_mention_total) || 0);
+      const visibleCounts = notificationCountsFromItems(visibleNotifications);
+      const unreadTotal = Number(visibleCounts.unread_total || 0);
+      const mentionTotal = Number(visibleCounts.unread_mention_total || 0);
       if (unreadTotal > 0) {
         dom.notifyMeta.textContent = "확인할 알림 " + unreadTotal + "건" + (mentionTotal > 0 ? " · 멘션 " + mentionTotal + "건" : "");
       } else {
@@ -2088,7 +2201,7 @@
       }
     }
     if (!dom.notifyList) return;
-    if (!state.notifications.length) {
+    if (!visibleNotifications.length) {
       dom.notifyList.innerHTML = [
         '<div class="topbar-notify-empty">',
         '<i class="bi bi-bell-slash"></i>',
@@ -2099,7 +2212,7 @@
       return;
     }
 
-    dom.notifyList.innerHTML = state.notifications.map(function (item) {
+    dom.notifyList.innerHTML = visibleNotifications.map(function (item) {
       const avatar = item.sender_avatar_url
         ? '<img src="' + escapeHtml(item.sender_avatar_url) + '" alt="' + escapeHtml(item.sender_display_name || item.room_title) + '">'
         : escapeHtml(item.sender_avatar_initial || item.room_avatar_initial || "A");
@@ -2252,11 +2365,8 @@
     if (state.viewMode === "ascord") {
       state.sidebarMode = "rooms";
       state.filter = "all";
-      if (Number(state.activeRoomId || 0) <= 0) {
-        state.activeRoomId = Number(state.call.joinedRoomId || (state.rooms[0] && state.rooms[0].id) || 0);
-        state.activeRoom = currentRoom();
-      }
     }
+    ensureActiveRoomForCurrentView(state.activeRoomId);
     persistViewModePreference();
     applyViewModeChrome();
     recalcCounts();
@@ -2330,9 +2440,16 @@
         };
       }
     }
-    const unreadAlertCount = Number((state.notificationCounts && state.notificationCounts.unread_total) || 0);
-    const mentionCount = Number((state.notificationCounts && state.notificationCounts.unread_mention_total) || 0);
-    const recentCount = (state.roomHistory || []).length;
+    const visibleNotificationCounts = currentViewNotificationCounts();
+    const unreadAlertCount = Number(visibleNotificationCounts.unread_total || 0);
+    const mentionCount = Number(visibleNotificationCounts.unread_mention_total || 0);
+    const visibleRooms = currentViewRooms();
+    const visibleRoomIds = new Set(visibleRooms.map(function (room) {
+      return Number(room.id || 0);
+    }));
+    const recentCount = (state.roomHistory || []).filter(function (roomId) {
+      return visibleRoomIds.has(Number(roomId || 0));
+    }).length;
     if (mode === "inbox") {
       return {
         title: "수신함",
@@ -2345,7 +2462,7 @@
     if (mode === "unread") {
       return {
         title: "안 읽은 대화",
-        metaHtml: "<span>대화 <strong>" + state.rooms.filter(function (room) { return Number(room.unread_count || 0) > 0; }).length + "</strong></span>",
+        metaHtml: "<span>대화 <strong>" + visibleRooms.filter(function (room) { return Number(room.unread_count || 0) > 0; }).length + "</strong></span>",
         hideFilters: true,
         hideSummary: true,
         hideQuick: true,
@@ -2354,7 +2471,7 @@
     if (mode === "starred_shortcut") {
       return {
         title: "즐겨찾기",
-        metaHtml: "<span>즐겨찾기 <strong>" + state.rooms.filter(function (room) { return !!room.is_starred; }).length + "</strong></span>",
+        metaHtml: "<span>즐겨찾기 <strong>" + visibleRooms.filter(function (room) { return !!room.is_starred; }).length + "</strong></span>",
         hideFilters: true,
         hideSummary: true,
         hideQuick: true,
@@ -2398,7 +2515,7 @@
     }
     return {
       title: "채팅 목록",
-      metaHtml: '<span>채널 <strong id="messengerChannelCount">' + String(state.rooms.filter(function (room) { return !!room.is_channel; }).length) + '</strong></span><span>그룹 <strong id="messengerGroupCount">' + String(state.rooms.filter(function (room) { return !!room.is_group; }).length) + '</strong></span>',
+      metaHtml: '<span>채널 <strong id="messengerChannelCount">' + String(visibleRooms.filter(function (room) { return !!room.is_channel; }).length) + '</strong></span><span>그룹 <strong id="messengerGroupCount">' + String(visibleRooms.filter(function (room) { return !!room.is_group; }).length) + '</strong></span>',
       hideFilters: false,
       hideSummary: false,
       hideQuick: false,
@@ -2461,7 +2578,7 @@
 
   function filteredRooms() {
     const search = state.search.toLowerCase();
-    return state.rooms.filter(function (room) {
+    return currentViewRooms().filter(function (room) {
       const filter = state.filter;
       if (filter === "starred" && !room.is_starred) return false;
       if (filter === "channel" && !room.is_channel) return false;
@@ -2481,7 +2598,7 @@
 
   function filteredNotifications() {
     const search = state.search.toLowerCase();
-    return (state.notifications || []).filter(function (item) {
+    return currentViewNotificationItems().filter(function (item) {
       if (!search) return true;
       const haystack = [
         item.room_title,
@@ -3058,7 +3175,7 @@
         '<div class="messenger-empty-state">',
         '<i class="bi bi-broadcast-pin"></i>',
         "<strong>표시할 ASCORD 채널이 없습니다.</strong>",
-        "<span>검색 조건을 바꾸거나 ABBAS Talk에서 새 대화를 만들어보세요.</span>",
+        "<span>검색 조건을 바꾸거나 새 ASCORD 채널을 만들어보세요.</span>",
         "</div>",
       ].join("");
       return;
@@ -3085,7 +3202,6 @@
       '<span>채널 카드를 누르면 먼저 선택되고, 음성 입장 버튼을 누르면 실제 통화에 연결됩니다. 카메라와 화면공유는 오른쪽 컨트롤에서 이어서 켤 수 있습니다.</span>',
       '<div class="messenger-side-card--actions">',
       '<button type="button" data-room-create="group"><i class="bi bi-plus-circle"></i><span>새 채널 만들기</span></button>',
-      '<button type="button" data-room-create="dm"><i class="bi bi-person-plus"></i><span>빠른 1:1</span></button>',
       '</div>',
       '</section>',
     ].join(""));
@@ -3310,7 +3426,7 @@
         pieces.push([
           '<div class="messenger-system-message-row" data-message-id="' + Number(message.id || 0) + '">',
           '<div class="messenger-system-message">',
-          '<span class="messenger-system-message__badge"><i class="bi bi-shield-check"></i><span>ASCORD LOG</span></span>',
+          '<span class="messenger-system-message__badge"><i class="bi bi-shield-check"></i><span>' + escapeHtml(message.system_badge_label || "SYSTEM") + '</span></span>',
           '<div class="messenger-system-message__body">' + renderMessageBubbleContent(message) + "</div>",
           '<div class="messenger-system-message__foot"><span>' + escapeHtml(message.time_text || "") + "</span></div>",
           "</div>",
@@ -4307,7 +4423,7 @@
       state.rooms[index] = Object.assign({}, state.rooms[index], room);
     }
     sortRooms();
-    state.activeRoom = currentRoom();
+    ensureActiveRoomForCurrentView(state.activeRoomId || room.id);
     enforceJoinedRoomPermissions(findRoomById(state.call.joinedRoomId) || room).catch(function () {});
     recalcCounts();
     renderRoomList();
@@ -4333,8 +4449,7 @@
     });
     persistRecentRooms();
     if (Number(state.activeRoomId || 0) === targetRoomId) {
-      state.activeRoomId = state.rooms.length ? Number(state.rooms[0].id || 0) : 0;
-      state.activeRoom = currentRoom();
+      ensureActiveRoomForCurrentView(0);
       if (state.activeRoom) {
         loadRoomMessages(state.activeRoom.id);
       } else {
@@ -4360,19 +4475,16 @@
     sortRooms();
     updateNotificationState(data.notifications || {}, data.counts || {});
     renderQuickContacts();
+    const nextRoomId = ensureActiveRoomForCurrentView(Number(data.active_room_id || state.activeRoomId || 0));
     renderRoomList();
     renderMentionPicker();
-
-    const nextRoomId = Number(data.active_room_id || state.activeRoomId || 0);
-    state.activeRoomId = nextRoomId;
-    state.activeRoom = currentRoom();
     enforceJoinedRoomPermissions(findRoomById(state.call.joinedRoomId)).catch(function () {});
     renderHeader();
     renderInspector();
     renderMessages();
-    if (state.activeRoomId > 0) {
-      await loadRoomMessages(state.activeRoomId);
-      sendSocket({ type: "call_sync", room_id: state.activeRoomId });
+    if (nextRoomId > 0) {
+      await loadRoomMessages(nextRoomId);
+      sendSocket({ type: "call_sync", room_id: nextRoomId });
     }
     renderContactPicker();
   }
@@ -4437,8 +4549,14 @@
 
   async function selectRoom(roomId) {
     const targetRoomId = Number(roomId || 0);
+    const targetRoom = findRoomById(targetRoomId);
+    if (targetRoom) {
+      state.viewMode = isAscordRoom(targetRoom) ? "ascord" : "talk";
+      persistViewModePreference();
+      applyViewModeChrome();
+    }
     if (targetRoomId <= 0 || Number(state.activeRoomId || 0) === targetRoomId) {
-      state.activeRoom = currentRoom();
+      ensureActiveRoomForCurrentView(targetRoomId);
       if (state.viewMode === "ascord") {
         markLiveRoomSeen(targetRoomId, callForRoom(targetRoomId));
         recalcCounts();
@@ -4468,10 +4586,16 @@
   async function openRoom(roomId, messageId) {
     const targetRoomId = Number(roomId || 0);
     if (targetRoomId <= 0) return;
+    const targetRoom = findRoomById(targetRoomId);
     state.highlightMessageId = Number(messageId || 0);
     setNotificationMenuOpen(false);
     if (!state.initialized) {
       await init();
+    }
+    if (targetRoom && isAscordRoom(targetRoom)) {
+      setViewMode("ascord");
+    } else {
+      setViewMode("talk");
     }
     setPopupOpen(true);
     await selectRoom(targetRoomId);
@@ -6235,6 +6359,7 @@
   function renderCallUi() {
     if (!dom.callStrip || !dom.callStage || !dom.callStatusBadge || !dom.callStatusTitle || !dom.callStatusMeta) return;
     const room = state.activeRoom;
+    const supportsCalls = !!room && roomSupportsCalls(room);
     const roomCall = activeRoomCall();
     const joinedRoomId = Number(state.call.joinedRoomId || 0);
     const joinedHere = !!room && joinedRoomId > 0 && joinedRoomId === Number(room.id || 0);
@@ -6256,9 +6381,9 @@
     const pendingStageRequests = stageMode ? Number((roomCall && roomCall.speaker_request_count) || 0) : 0;
     const startCallRequirement = callPermissionLabel(roomCallPermissions(room).start_call);
 
-    dom.callStrip.classList.toggle("d-none", !room);
-    dom.callStage.classList.toggle("d-none", !room || (!isAscord && !roomCall && !amInRoomCall));
-    if (!room) {
+    dom.callStrip.classList.toggle("d-none", !supportsCalls);
+    dom.callStage.classList.toggle("d-none", !supportsCalls);
+    if (!supportsCalls) {
       return;
     }
 
@@ -6385,6 +6510,10 @@
     const roomId = Number((roomCall && roomCall.room_id) || 0);
     if (roomId <= 0) return;
     const roomMeta = findRoomById(roomId) || (Number(state.activeRoomId || 0) === roomId ? state.activeRoom : null);
+    if (roomMeta && !isAscordRoom(roomMeta)) {
+      await handleCallCleared(roomId);
+      return;
+    }
     const previousCall = snapshotRoomCall(state.call.callSnapshotsByRoomId[roomId] || state.call.roomCallsById[roomId]);
     const nextCall = snapshotRoomCall(roomCall);
     state.call.roomCallsById[roomId] = roomCall;
@@ -6484,9 +6613,10 @@
   async function handleCallCleared(roomId) {
     const targetRoomId = Number(roomId || 0);
     if (targetRoomId <= 0) return;
+    const roomMeta = findRoomById(targetRoomId) || (Number(state.activeRoomId || 0) === targetRoomId ? state.activeRoom : null);
     const previousCall = snapshotRoomCall(state.call.callSnapshotsByRoomId[targetRoomId] || state.call.roomCallsById[targetRoomId]);
     const invite = incomingInviteForRoom(targetRoomId);
-    if (invite && !invite.joined) {
+    if (invite && !invite.joined && (!roomMeta || isAscordRoom(roomMeta))) {
       const missedItem = buildCallNotificationItem((invite && invite.roomCall) || previousCall, "missed_call");
       if (missedItem) {
         upsertNotificationItem(missedItem);
@@ -7213,7 +7343,7 @@
   }
 
   function setModalMode(mode) {
-    state.modalMode = mode === "group" ? "group" : "dm";
+    state.modalMode = state.viewMode === "ascord" ? "group" : (mode === "group" ? "group" : "dm");
     state.selectedContacts.clear();
     if (dom.groupNameWrap) dom.groupNameWrap.classList.toggle("d-none", state.modalMode !== "group");
     if (dom.groupTopicWrap) dom.groupTopicWrap.classList.toggle("d-none", state.modalMode !== "group");
@@ -7224,11 +7354,16 @@
     }
     if (dom.newRoomMode) {
       Array.prototype.forEach.call(dom.newRoomMode.querySelectorAll("[data-mode]"), function (button) {
-        button.classList.toggle("is-active", normalizeText(button.getAttribute("data-mode")) === state.modalMode);
+        const buttonMode = normalizeText(button.getAttribute("data-mode"));
+        const hidden = state.viewMode === "ascord" && buttonMode === "dm";
+        button.classList.toggle("d-none", hidden);
+        button.classList.toggle("is-active", !hidden && buttonMode === state.modalMode);
       });
     }
     if (dom.createRoomSubmitBtn) {
-      dom.createRoomSubmitBtn.textContent = state.modalMode === "group" ? "그룹방 만들기" : "대화 시작";
+      dom.createRoomSubmitBtn.textContent = state.modalMode === "group"
+        ? (state.viewMode === "ascord" ? "채널 만들기" : "그룹방 만들기")
+        : "대화 시작";
     }
     renderContactPicker();
   }
@@ -7295,6 +7430,7 @@
       });
       const roomId = Number((payload && payload.room_id) || (payload.room && payload.room.id) || 0);
       if (roomId > 0) {
+        setViewMode("talk");
         await loadBootstrap(roomId);
       }
     } catch (error) {
@@ -7304,7 +7440,8 @@
 
   async function submitCreateRoom() {
     const selected = Array.from(state.selectedContacts);
-    if (!selected.length) {
+    const creatingAscordRoom = state.viewMode === "ascord";
+    if (!selected.length && !creatingAscordRoom) {
       await showWarning("대화할 사용자를 선택해주세요.");
       return;
     }
@@ -7327,7 +7464,8 @@
         payload = await api("/api/messenger/rooms", {
           method: "POST",
           body: JSON.stringify({
-            mode: "group",
+            mode: creatingAscordRoom ? "channel" : "group",
+            app_domain: creatingAscordRoom ? "ascord" : "talk",
             name: name,
             topic: topic,
             channel_category: channelCategory,
@@ -7442,9 +7580,9 @@
       updateNotificationState(data.notifications || {}, data.counts || {});
       recalcCounts();
       renderQuickContacts();
+      ensureActiveRoomForCurrentView(Number(data.active_room_id || state.activeRoomId || 0));
       renderRoomList();
       renderMentionPicker();
-      state.activeRoom = currentRoom();
       enforceJoinedRoomPermissions(findRoomById(state.call.joinedRoomId)).catch(function () {});
       renderHeader();
       renderInspector();
@@ -7828,10 +7966,10 @@
           });
           return;
         }
-        if (action === "open-talk") {
-          setViewMode("talk");
-          openRoom(roomId, 0).catch(function (error) {
-            showError(error.message || "대화방을 열지 못했습니다.");
+        if (action === "open-ascord") {
+          setViewMode("ascord");
+          openAscordRoom(roomId).catch(function (error) {
+            showError(error.message || "ASCORD 채널을 열지 못했습니다.");
           });
           return;
         }

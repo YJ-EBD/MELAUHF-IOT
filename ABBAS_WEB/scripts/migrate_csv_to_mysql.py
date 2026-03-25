@@ -81,20 +81,27 @@ def migrate_users(project_root: Path) -> int:
             name = (r.get("NAME") or "").strip()
             nickname = (r.get("NICKNAME") or "").strip()
             join_date = (r.get("JOIN_DATE") or "").strip()
+            role = (r.get("ROLE") or "user").strip() or "user"
+            approval_status = (r.get("APPROVAL_STATUS") or "approved").strip() or "approved"
+            approved_at = (r.get("APPROVED_AT") or "").strip()
+            approved_by = (r.get("APPROVED_BY") or "").strip()
             if not user_id:
                 continue
-            ok, _ = user_repo.create_user_row(
+            user_repo.create_user_row(
                 user_id=user_id,
                 pw_hash=pw_hash,
                 email=email,
                 birth=birth,
                 name=name,
                 nickname=nickname,
+                role=role,
+                approval_status=approval_status,
                 join_date=join_date,
+                approved_at=approved_at,
+                approved_by=approved_by,
                 email_verified=True,
             )
-            if ok:
-                n += 1
+            n += 1
         except Exception as e:
             print(f"[users] fail: {p.name} -> {e}")
     print(f"[users] migrated: {n}")

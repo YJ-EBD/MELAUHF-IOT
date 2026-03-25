@@ -7,7 +7,7 @@ from core.env_loader import load_settings_env
 # sudo ss -lntp | grep :8000
 # sudo kill -9 
 
-# pkill -f "uvicor"
+# pkill -f "uvicorn"
 # nohup ./venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
 # sudo systemctl restart redis-server
 # cd ~/Desktop/ABBAS_WEB && source venv/bin/activate
@@ -74,8 +74,11 @@ async def on_startup() -> None:
         nas_repo.ensure_schema()
         chat_repo.ensure_schema()
         chat_repo.ensure_default_rooms()
-        synced_room_total = chat_repo.sync_all_room_backups()
-        print(f"[TALK_BACKUP] Talk_BackUp 동기화 완료: {synced_room_total}개 대화방")
+        try:
+            synced_room_total = chat_repo.sync_stale_room_backups()
+            print(f"[TALK_BACKUP] Talk_BackUp 변경분 동기화 완료: {synced_room_total}개 대화방")
+        except Exception as backup_exc:
+            print(f"[TALK_BACKUP] Talk_BackUp 동기화 경고: {backup_exc}")
         print("[DB] MySQL/MariaDB 연결 OK")
     except Exception as e:
         # 운영 중 CSV로 저장/조회하는 fallback은 허용되지 않습니다.

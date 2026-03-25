@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, Form, Request
 from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse, JSONResponse
@@ -26,6 +27,15 @@ import time
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 _FAVICON_PATH = Path(__file__).resolve().parents[1] / "logo" / "abbas_favicon.ico"
+_LOGIN_FAIL_WINDOW_SEC = 600
+_LOGIN_FAIL_LIMIT = 8
+_LOGIN_LOCK_SEC = 300
+_EMAIL_SEND_WINDOW_SEC = 600
+_EMAIL_SEND_LIMIT = 5
+_EMAIL_SEND_COOLDOWN_SEC = 60
+_EMAIL_VERIFY_FAIL_WINDOW_SEC = 900
+_EMAIL_VERIFY_FAIL_LIMIT = 8
+_EMAIL_VERIFY_LOCK_SEC = 600
 
 
 def _wants_json_response(request: Request) -> bool:
@@ -62,6 +72,76 @@ def _login_template_response(
     )
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+def _request_client_ip(request: Request) -> str:
+    forwarded = (request.headers.get("x-forwarded-for", "") or "").split(",", 1)[0].strip()
+    if forwarded:
+        return forwarded
+    client = getattr(request, "client", None)
+    return str(getattr(client, "host", "") or "").strip() or "unknown"
+
+
+def _safe_next_url(value: str, default: str = "/") -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return default
+    parsed = urlsplit(candidate)
+    if parsed.scheme or parsed.netloc:
+        return default
+    if not candidate.startswith("/") or candidate.startswith("//") or "\\" in candidate:
+        return default
+    return candidate
+
+
+def _redis_exists(redis_client, key: str) -> bool:
+    try:
+        return bool(redis_client.exists(key))
+    except Exception:
+        return False
+
+
+def _redis_delete(redis_client, *keys: str) -> None:
+    filtered = [str(key or "").strip() for key in keys if str(key or "").strip()]
+    if not filtered:
+        return
+    try:
+        redis_client.delete(*filtered)
+    except Exception:
+        pass
+
+
+def _redis_retry_after(redis_client, key: str, fallback: int = 1) -> int:
+    try:
+        ttl = int(redis_client.execute("TTL", key))
+        if ttl > 0:
+            return ttl
+    except Exception:
+        pass
+    return max(int(fallback or 1), 1)
+
+
+def _redis_increment_window(redis_client, key: str, window_sec: int) -> tuple[int, int]:
+    try:
+        count = int(redis_client.execute("INCR", key))
+        if count == 1:
+            redis_client.execute("EXPIRE", key, int(window_sec))
+        ttl = _redis_retry_after(redis_client, key, window_sec)
+        return count, ttl
+    except Exception:
+        return 0, max(int(window_sec or 1), 1)
+
+
+def _json_too_many(detail: str, retry_after_sec: int) -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": False,
+            "detail": detail,
+            "retry_after_sec": max(int(retry_after_sec or 1), 1),
+        },
+        status_code=429,
+        headers={"Retry-After": str(max(int(retry_after_sec or 1), 1)), "Cache-Control": "no-store"},
+    )
 
 
 def _login_error_response(
@@ -112,10 +192,11 @@ def favicon():
 def login_page(request: Request, next: str = "/"):
     # 이미 로그인 상태에서 뒤로가기로 /login에 접근하면
     # 강제로 대시보드로 보내서 '로그인 화면으로 돌아가는' 버그를 방지합니다.
+    next_url = _safe_next_url(next)
     sid = request.cookies.get(SESSION_COOKIE_NAME, "") or ""
     if sid and read_session_user(sid):
-        return RedirectResponse(url=next or "/", status_code=302)
-    return _login_template_response(request, next_url=next, status_code=200)
+        return RedirectResponse(url=next_url, status_code=302)
+    return _login_template_response(request, next_url=next_url, status_code=200)
 
 
 @router.get("/signup", response_class=HTMLResponse)
@@ -243,6 +324,23 @@ def api_send_email_code(request: Request, payload: dict = Body(default={})):  # 
     if r is None:
         return JSONResponse({"ok": False, "detail": "Redis 미구성 상태입니다."}, status_code=500)
 
+    normalized_email = email.lower()
+    client_ip = _request_client_ip(request)
+    cooldown_key = f"auth:email:send:cooldown:{normalized_email}"
+    if _redis_exists(r, cooldown_key):
+        retry_after = _redis_retry_after(r, cooldown_key, _EMAIL_SEND_COOLDOWN_SEC)
+        return _json_too_many(f"인증 메일은 잠시 후 다시 요청해주세요. ({retry_after}초 후 재시도)", retry_after)
+
+    email_count, email_ttl = _redis_increment_window(r, f"auth:email:send:email:{normalized_email}", _EMAIL_SEND_WINDOW_SEC)
+    ip_count, ip_ttl = _redis_increment_window(r, f"auth:email:send:ip:{client_ip}", _EMAIL_SEND_WINDOW_SEC)
+    if email_count > _EMAIL_SEND_LIMIT or ip_count > _EMAIL_SEND_LIMIT:
+        retry_after = max(email_ttl, ip_ttl, _EMAIL_SEND_COOLDOWN_SEC)
+        try:
+            r.set(cooldown_key, "1", ex=retry_after)
+        except Exception:
+            pass
+        return _json_too_many("이메일 인증 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.", retry_after)
+
     code = f"{secrets.randbelow(1_000_000):06d}"
     now = int(time.time())
 
@@ -265,6 +363,11 @@ def api_send_email_code(request: Request, payload: dict = Body(default={})):  # 
             status_code=500,
         )
 
+    try:
+        r.set(cooldown_key, "1", ex=_EMAIL_SEND_COOLDOWN_SEC)
+    except Exception:
+        pass
+
     return JSONResponse({"ok": True})
 
 
@@ -279,8 +382,16 @@ def api_verify_email_code(request: Request, payload: dict = Body(default={})):  
     if r is None:
         return JSONResponse({"ok": False, "detail": "Redis 미구성 상태입니다."}, status_code=500)
 
+    normalized_email = email.lower()
+    client_ip = _request_client_ip(request)
+    lock_key = f"auth:email:verify:lock:{normalized_email}:{client_ip}"
+    fail_key = f"auth:email:verify:fail:{normalized_email}:{client_ip}"
+    if _redis_exists(r, lock_key):
+        retry_after = _redis_retry_after(r, lock_key, _EMAIL_VERIFY_LOCK_SEC)
+        return _json_too_many("이메일 인증 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.", retry_after)
+
     try:
-        v = r.get_str(f"email:code:{email.lower()}") or ""
+        v = r.get_str(f"email:code:{normalized_email}") or ""
     except Exception:
         v = ""
 
@@ -293,19 +404,27 @@ def api_verify_email_code(request: Request, payload: dict = Body(default={})):  
         saved_code = v
 
     if saved_code != code:
+        fail_count, fail_ttl = _redis_increment_window(r, fail_key, _EMAIL_VERIFY_FAIL_WINDOW_SEC)
+        if fail_count >= _EMAIL_VERIFY_FAIL_LIMIT:
+            try:
+                r.set(lock_key, "1", ex=_EMAIL_VERIFY_LOCK_SEC)
+            except Exception:
+                pass
+            return _json_too_many("이메일 인증 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.", max(fail_ttl, _EMAIL_VERIFY_LOCK_SEC))
         return JSONResponse({"ok": False, "detail": "인증 코드가 올바르지 않습니다."}, status_code=400)
 
     verify_token = secrets.token_urlsafe(24)
     try:
-        r.set(f"email:verify_token:{verify_token}", email.lower(), ex=900)  # 15분
+        r.set(f"email:verify_token:{verify_token}", normalized_email, ex=900)  # 15분
         # 사용된 코드 삭제
-        r.execute("DEL", f"email:code:{email.lower()}")
+        r.execute("DEL", f"email:code:{normalized_email}")
     except Exception as e:
         print(f"[AUTH] email verify token save failed: {e}")
         return JSONResponse(
             {"ok": False, "detail": "이메일 인증 확인을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."},
             status_code=500,
         )
+    _redis_delete(r, fail_key, lock_key)
 
     return JSONResponse({"ok": True, "verify_token": verify_token})
 
@@ -320,22 +439,63 @@ def login_action(
     auto_login: str = Form("", alias="auto_login"),
     force_login: str = Form("", alias="force_login"),
 ):
+    next_url = _safe_next_url(next)
+    user_id_value = (user_id or "").strip()
+    client_ip = _request_client_ip(request)
+    normalized_login_id = user_id_value.lower()
+    redis_client = getattr(request.app.state, "redis", None)
+    login_lock_key = f"auth:login:lock:{normalized_login_id}:{client_ip}"
+    login_fail_key = f"auth:login:fail:{normalized_login_id}:{client_ip}"
+    if redis_client is not None and normalized_login_id and _redis_exists(redis_client, login_lock_key):
+        retry_after = _redis_retry_after(redis_client, login_lock_key, _LOGIN_LOCK_SEC)
+        detail = f"로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요. ({retry_after}초 후 재시도)"
+        if _wants_json_response(request):
+            return _json_too_many(detail, retry_after)
+        return _login_error_response(
+            request,
+            next_url=next_url,
+            status_code=429,
+            user_id_value=user_id_value,
+            error=detail,
+            swal_error_title="잠시 후 다시 시도",
+            swal_error_text=detail,
+        )
+
     ok, auth_status = authenticate_with_status(user_id, password)
     if not ok:
         if auth_status == "pending":
             pending_msg = "관리자 승인대기중 입니다"
             return _login_error_response(
                 request,
-                next_url=next,
+                next_url=next_url,
                 status_code=403,
                 user_id_value=user_id,
                 error=pending_msg,
                 swal_error_title="승인 대기",
                 swal_error_text=pending_msg,
             )
+        if redis_client is not None and normalized_login_id:
+            fail_count, fail_ttl = _redis_increment_window(redis_client, login_fail_key, _LOGIN_FAIL_WINDOW_SEC)
+            if fail_count >= _LOGIN_FAIL_LIMIT:
+                try:
+                    redis_client.set(login_lock_key, "1", ex=_LOGIN_LOCK_SEC)
+                except Exception:
+                    pass
+                too_many_msg = "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요."
+                if _wants_json_response(request):
+                    return _json_too_many(too_many_msg, max(fail_ttl, _LOGIN_LOCK_SEC))
+                return _login_error_response(
+                    request,
+                    next_url=next_url,
+                    status_code=429,
+                    user_id_value=user_id_value,
+                    error=too_many_msg,
+                    swal_error_title="로그인 차단",
+                    swal_error_text=too_many_msg,
+                )
         return _login_error_response(
             request,
-            next_url=next,
+            next_url=next_url,
             status_code=400,
             user_id_value=user_id,
             error="아이디 또는 비밀번호가 올바르지 않습니다.",
@@ -349,7 +509,7 @@ def login_action(
         live_msg = "현재 활성 세션이 감지되었습니다. 기존 세션을 종료하고 이 브라우저에서 다시 로그인할 수 있습니다."
         return _login_error_response(
             request,
-            next_url=next,
+            next_url=next_url,
             status_code=409,
             user_id_value=user_id,
             error=live_msg,
@@ -360,21 +520,24 @@ def login_action(
     except (RedisError, Exception):
         return _login_error_response(
             request,
-            next_url=next,
+            next_url=next_url,
             status_code=500,
             user_id_value=user_id,
             error="Redis 연결 실패로 로그인할 수 없습니다. (REDIS_HOST/PORT/PASSWORD 확인)",
         )
 
-    redirect_url = next or "/"
+    if redis_client is not None:
+        _redis_delete(redis_client, login_fail_key, login_lock_key)
+
+    redirect_url = next_url or "/"
     if _wants_json_response(request):
         resp = JSONResponse({"ok": True, "redirect_url": redirect_url}, headers={"Cache-Control": "no-store"})
-        set_session_cookie(resp, sid, auto_login=auto)
+        set_session_cookie(resp, sid, auto_login=auto, request=request)
         _ = remember_id
         return resp
 
     resp = RedirectResponse(url=redirect_url, status_code=302)
-    set_session_cookie(resp, sid, auto_login=auto)
+    set_session_cookie(resp, sid, auto_login=auto, request=request)
 
     # remember_id: handled by client(localStorage). Server does not alter session.
     _ = remember_id

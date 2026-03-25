@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from .runtime import get_mysql
@@ -33,6 +34,20 @@ def _bootstrap_admin_user_ids() -> list[str]:
     if not raw:
         return []
     return [token for token in {part.strip() for part in raw.split(",")} if token]
+
+
+def _normalize_datetime_value(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, pattern)
+        except ValueError:
+            continue
+    return None
 
 
 def _ensure_schema_with_cur(cur) -> None:
@@ -201,6 +216,9 @@ def create_user_row(
     nickname: str,
     role: str = "user",
     approval_status: str = "approved",
+    join_date: Any = None,
+    approved_at: Any = None,
+    approved_by: str = "",
     email_verified: bool = True,
 ) -> None:
     """Insert a new user.
@@ -210,6 +228,11 @@ def create_user_row(
     uid = (user_id or "").strip()
     role_value = _normalize_role(role)
     approval_value = _normalize_approval_status(approval_status)
+    join_date_value = _normalize_datetime_value(join_date) or datetime.now()
+    approved_at_value = _normalize_datetime_value(approved_at)
+    if approval_value == "approved" and approved_at_value is None:
+        approved_at_value = join_date_value
+    approved_by_value = (approved_by or "").strip() if approval_value == "approved" else ""
     db = get_mysql()
     with db.conn() as conn:
         with conn.cursor() as cur:
@@ -223,8 +246,8 @@ def create_user_row(
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s,
-                    %s, CASE WHEN %s='approved' THEN NOW() ELSE NULL END, '',
-                    NOW(), %s, NOW(), NOW()
+                    %s, %s, %s,
+                    %s, %s, NOW(), NOW()
                 )
                 """,
                 (
@@ -236,7 +259,9 @@ def create_user_row(
                     nickname,
                     role_value,
                     approval_value,
-                    approval_value,
+                    approved_at_value,
+                    approved_by_value,
+                    join_date_value,
                     1 if email_verified else 0,
                 ),
             )

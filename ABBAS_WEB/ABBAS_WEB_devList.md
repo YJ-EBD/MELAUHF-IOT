@@ -575,3 +575,34 @@
 - 간단한 설명
   - `messenger-popup-window`를 `ASCORD` 전용 음성채널 화면으로 확장하고, VOICE/STAGE 모드, 발언 요청/승격, 수신 통화/부재중, 권한 매트릭스, 운영 로그, 장치 선택, PTT, 개별 볼륨, 카메라 타일 그리드까지 디스코드식 통화 UX를 한 흐름으로 정리했다.
   - self-hosted LiveKit의 WSS/TURN/TLS/릴레이 설정과 메신저 웹소켓 재연결, 읽음 처리, 채널 입장, 알림 배지, 통화 상태 동기화 버그를 함께 보정해서 외부망 실사용 점검이 가능한 기준까지 맞췄다.
+
+## 60. WEB 보안/운영 보강과 메신저·플랫폼 모듈 분리 정리
+- 수정코드
+  - `.gitignore`
+  - `DB/chat_repo.py`
+  - `DB/user_repo.py`
+  - `core/auth_middleware.py`
+  - `main.py`
+  - `redis/session.py`
+  - `redis/simple_redis.py`
+  - `router/auth.py`
+  - `router/pages.py`
+  - `router/messenger_access.py`
+  - `router/messenger_api.py`
+  - `router/messenger_events.py`
+  - `router/messenger_payloads.py`
+  - `router/messenger_runtime.py`
+  - `router/messenger_views.py`
+  - `router/messenger_ws.py`
+  - `router/platform_api.py`
+  - `router/integrated_admin_api.py`
+  - `router/page_routes.py`
+  - `scripts/migrate_csv_to_mysql.py`
+  - `services/user_store.py`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+  - 삭제 정리: `router/web.py`, `router/mainPage.py`, `storage/user_store.py`, `utils/smtp_utils.py`, `redis/simple_redis.py.bak`
+- 간단한 설명
+  - 로그인 `next` 안전화, 인증 rate limit, 세션/Redis 처리 보강, 레거시 user store/migration 정합화, 채팅 백업 startup 처리 보정 등 운영 안정성과 보안 측면을 먼저 정리했다.
+  - 메신저 REST/WebSocket/runtime/payload/view/access 계층과 플랫폼/통합관리/일반 페이지 라우트를 별도 모듈로 분리해 `router/pages.py` 결합도를 낮추고, 미사용 파일은 Source Control에 남지 않게 정리했다.
+  - 이번 채팅 기준 검증은 `python3 -m compileall -q . -x 'venv'`, `git diff --check`, 1st-party JS `node --check`, `venv` 기반 라우터 로드 확인까지 완료했다.

@@ -16,6 +16,7 @@ class RedisConfig:
     host: str = "127.0.0.1"
     port: int = 6379
     db: int = 0
+    username: str = ""
     password: str = ""
     timeout_sec: float = 2.5
 
@@ -25,9 +26,10 @@ def config_from_env() -> RedisConfig:
     host = os.getenv("REDIS_HOST", "127.0.0.1")
     port = int(os.getenv("REDIS_PORT", "6379"))
     db = int(os.getenv("REDIS_DB", "0"))
+    username = os.getenv("REDIS_USERNAME", "")
     password = os.getenv("REDIS_PASSWORD", "")
     timeout_sec = float(os.getenv("REDIS_TIMEOUT_SEC", "2.5"))
-    return RedisConfig(host=host, port=port, db=db, password=password, timeout_sec=timeout_sec)
+    return RedisConfig(host=host, port=port, db=db, username=username, password=password, timeout_sec=timeout_sec)
 
 
 def _to_bytes(v: Any) -> bytes:
@@ -114,7 +116,10 @@ class SimpleRedis:
         try:
             # AUTH (if required)
             if self.cfg.password:
-                r = self._execute_no_retry_locked(["AUTH", self.cfg.password])
+                if self.cfg.username:
+                    r = self._execute_no_retry_locked(["AUTH", self.cfg.username, self.cfg.password])
+                else:
+                    r = self._execute_no_retry_locked(["AUTH", self.cfg.password])
                 if str(r).upper() != "OK":
                     raise RedisError(f"redis AUTH failed: {r!r}")
 
@@ -128,6 +133,7 @@ class SimpleRedis:
             raise
         except Exception as e:
             raise RedisError(f"redis AUTH/SELECT failed: {e}")
+
     def _read_line_locked(self) -> bytes:
         if self._file is None:
             raise RedisError("redis not connected")

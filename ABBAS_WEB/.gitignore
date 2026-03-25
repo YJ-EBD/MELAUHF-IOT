@@ -2,4 +2,11 @@ Talk_BackUp/
 bin/
 livekit.log
 livekit.pid
+uvicorn.log
 uvicorn.pid
+venv/
+__pycache__/
+.pytest_cache/
+static/uploads/
+storage/device_logs/
+Trashcan/

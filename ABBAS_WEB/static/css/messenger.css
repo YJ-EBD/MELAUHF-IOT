@@ -3525,6 +3525,136 @@ html[data-bs-theme="dark"] .messenger-room-avatar-preset {
   border-color: rgba(129, 152, 192, 0.16);
 }
 
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-shell {
+  background:
+    radial-gradient(circle at top left, rgba(67, 96, 156, 0.2), transparent 22%),
+    linear-gradient(180deg, rgba(9, 14, 23, 0.98), rgba(8, 12, 19, 0.98));
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-sidebar {
+  background: linear-gradient(180deg, rgba(10, 16, 25, 0.98), rgba(11, 17, 27, 0.96));
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-conversation {
+  background:
+    radial-gradient(circle at top right, rgba(53, 84, 138, 0.16), transparent 24%),
+    linear-gradient(180deg, rgba(9, 15, 24, 0.98), rgba(8, 13, 20, 0.98));
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-side-card--ascord-hero,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-strip,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card.is-active,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card.is-joined {
+  background:
+    linear-gradient(135deg, rgba(34, 49, 79, 0.92), rgba(22, 33, 51, 0.96));
+  border-color: rgba(96, 120, 168, 0.2);
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-room-hero,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-room-notes__item,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-call-history__item {
+  background: rgba(15, 22, 34, 0.98);
+  border-color: rgba(92, 113, 153, 0.18);
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card.is-live:not(.is-active):not(.is-joined) {
+  border-color: rgba(89, 145, 112, 0.26);
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card__title-line strong,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-room-hero__copy strong,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-room-notes__item strong,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-call-history__head strong,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-call-history__body strong {
+  color: #d7e0ee;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card__subtitle,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card__meta,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-room-hero__copy span,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-room-notes__item span,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-call-history__head span,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-call-history__body span,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-call-history__meta span {
+  color: #8f9fb9;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card__badge,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card__aside,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card__icon {
+  background: rgba(56, 78, 120, 0.24);
+  color: #9db5da;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card__join {
+  background: rgba(47, 69, 108, 0.32);
+  border-color: rgba(95, 122, 174, 0.26);
+  color: #b8c7de;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-room-card__join:hover:not(:disabled) {
+  background: rgba(61, 86, 134, 0.34);
+  border-color: rgba(109, 140, 196, 0.32);
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__placeholder {
+  background:
+    radial-gradient(circle at top, rgba(74, 103, 154, 0.28), transparent 40%),
+    linear-gradient(180deg, rgba(9, 14, 22, 0.98), rgba(7, 11, 18, 0.98));
+  color: #cfd8e8;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__meta {
+  background: rgba(5, 9, 16, 0.72);
+  color: #d5deed;
+  border: 1px solid rgba(80, 102, 142, 0.18);
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__identity strong {
+  color: #dbe4f1;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__identity span {
+  color: #8e9db8;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill {
+  background: rgba(39, 54, 81, 0.72);
+  color: #a2b2ca;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-strip__badge.is-live,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-call-history__status.is-active,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-member__chip.is-on,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.is-on {
+  background: rgba(70, 116, 88, 0.28);
+  color: #77b08d;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-member__chip.is-screen,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.is-screen {
+  background: rgba(56, 84, 116, 0.3);
+  color: #8fb3d2;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-member__chip.is-speaking {
+  background: rgba(108, 92, 50, 0.3);
+  color: #c6b07c;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-member.is-speaking {
+  border-color: rgba(110, 123, 82, 0.28);
+  box-shadow: 0 0 0 1px rgba(110, 123, 82, 0.14);
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-voice-member__chip.is-admin,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-call-history__status.is-missed,
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.is-off {
+  background: rgba(110, 60, 72, 0.28);
+  color: #cf95a1;
+}
+
 @media (max-width: 1380px) {
   .messenger-shell {
     grid-template-columns: 70px 300px minmax(0, 1fr) 286px;

@@ -91,6 +91,11 @@ def _verify_password(password: str, stored: str) -> bool:
         return False
 
 
+def verify_password(password: str, stored: str) -> bool:
+    """Public compatibility wrapper for legacy imports."""
+    return _verify_password(password, stored)
+
+
 def read_user(user_id: str) -> Optional[Dict[str, str]]:
     if not is_valid_user_id(user_id):
         return None

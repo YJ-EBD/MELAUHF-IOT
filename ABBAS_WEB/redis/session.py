@@ -36,6 +36,7 @@ class RedisSettings:
     host: str
     port: int
     db: int
+    username: str
     password: str
     timeout_sec: float
 
@@ -45,6 +46,7 @@ def redis_settings_from_env() -> RedisSettings:
         host=_env("REDIS_HOST", "127.0.0.1"),
         port=int(_env("REDIS_PORT", "6379")),
         db=int(_env("REDIS_DB", "0")),
+        username=_env("REDIS_USERNAME", ""),
         password=_env("REDIS_PASSWORD", ""),
         timeout_sec=float(_env("REDIS_TIMEOUT_SEC", "2.5")),
     )
@@ -71,6 +73,7 @@ class RedisClient:
         cfg.host = s.host
         cfg.port = s.port
         cfg.db = s.db
+        cfg.username = s.username
         cfg.password = s.password
         cfg.timeout_sec = s.timeout_sec
         self._client = SimpleRedis(cfg)
@@ -108,6 +111,35 @@ class RedisClient:
             return int(self._client.execute("TTL", key))
         except Exception:
             return -2
+
+    def sadd(self, key: str, *members: str) -> int:
+        try:
+            return int(self._client.execute("SADD", key, *members))
+        except Exception:
+            return 0
+
+    def srem(self, key: str, *members: str) -> int:
+        try:
+            return int(self._client.execute("SREM", key, *members))
+        except Exception:
+            return 0
+
+    def smembers(self, key: str) -> list[str]:
+        try:
+            raw = self._client.execute("SMEMBERS", key)
+        except Exception:
+            return []
+        if not isinstance(raw, list):
+            return []
+        members: list[str] = []
+        for item in raw:
+            if item is None:
+                continue
+            if isinstance(item, bytes):
+                members.append(item.decode("utf-8", errors="replace"))
+            else:
+                members.append(str(item))
+        return members
 
 
 class ActiveSessionExistsError(Exception):
@@ -203,7 +235,9 @@ def get_boot_id() -> str:
 
 SESSION_COOKIE_NAME = "sid"
 USER_SESSION_PREFIX = "for_rnd_web:user_sess"
+USER_SESSION_SET_PREFIX = "for_rnd_web:user_sessions"
 LIVE_PRESENCE_PREFIX = "for_rnd_web:presence"
+SESSION_PRESENCE_PREFIX = "for_rnd_web:session_presence"
 LIVE_PRESENCE_TTL_SEC = max(int(_env("LIVE_PRESENCE_TTL_SEC", "20")), 5)
 
 # Default TTLs (override via settings.env or OS env)
@@ -219,6 +253,126 @@ def _user_sess_key(user_id: str) -> str:
     return f"{USER_SESSION_PREFIX}:{(user_id or '').strip()}"
 
 
+def _user_session_set_key(user_id: str) -> str:
+    return f"{USER_SESSION_SET_PREFIX}:{(user_id or '').strip()}"
+
+
+def _session_presence_key(sid: str) -> str:
+    return f"{SESSION_PRESENCE_PREFIX}:{(sid or '').strip()}"
+
+
+def _session_payload(user_id: str, *, auto_login: bool) -> str:
+    return json.dumps(
+        {
+            "user_id": (user_id or "").strip(),
+            "auto_login": bool(auto_login),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _parse_session_payload(value: Any) -> dict[str, Any]:
+    raw = str(value or "").strip()
+    if not raw:
+        return {"user_id": "", "auto_login": False}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        payload = raw
+    if isinstance(payload, dict):
+        return {
+            "user_id": str(payload.get("user_id") or "").strip(),
+            "auto_login": bool(payload.get("auto_login")),
+        }
+    return {"user_id": raw, "auto_login": False}
+
+
+def _session_user_id(value: Any) -> str:
+    return str(_parse_session_payload(value).get("user_id") or "").strip()
+
+
+def _session_auto_login(value: Any) -> bool:
+    return bool(_parse_session_payload(value).get("auto_login"))
+
+
+def _session_ttl_for_value(value: Any) -> int:
+    return AUTO_LOGIN_TTL_SEC if _session_auto_login(value) else DEFAULT_SESSION_TTL_SEC
+
+
+def _read_session_value(r: RedisClient, sid: str) -> Optional[str]:
+    return r.get(_sess_key(sid))
+
+
+def _sync_user_session_indexes(r: RedisClient, user_id: str, sid: str, ttl: int) -> None:
+    user = (user_id or "").strip()
+    session_id = (sid or "").strip()
+    if not user or not session_id or ttl <= 0:
+        return
+    try:
+        r.setex(_user_sess_key(user), ttl, session_id)
+    except Exception:
+        pass
+    try:
+        r.sadd(_user_session_set_key(user), session_id)
+        r.expire(_user_session_set_key(user), ttl)
+    except Exception:
+        pass
+
+
+def _drop_user_session_indexes(r: RedisClient, user_id: str, sid: str) -> None:
+    user = (user_id or "").strip()
+    session_id = (sid or "").strip()
+    if not user or not session_id:
+        return
+    try:
+        r.srem(_user_session_set_key(user), session_id)
+    except Exception:
+        pass
+    active_sid = str(r.get(_user_sess_key(user)) or "").strip()
+    if active_sid == session_id:
+        try:
+            r.delete(_user_sess_key(user))
+        except Exception:
+            pass
+
+
+def _repair_user_session_index(r: RedisClient, user_id: str) -> None:
+    user = (user_id or "").strip()
+    if not user:
+        return
+    candidate_session_ids: list[str] = []
+    seen: set[str] = set()
+    for sid in r.smembers(_user_session_set_key(user)):
+        normalized_sid = str(sid or "").strip()
+        if not normalized_sid or normalized_sid in seen:
+            continue
+        seen.add(normalized_sid)
+        candidate_session_ids.append(normalized_sid)
+    active_sid = str(r.get(_user_sess_key(user)) or "").strip()
+    if active_sid and active_sid not in seen:
+        candidate_session_ids.insert(0, active_sid)
+    for sid in candidate_session_ids:
+        session_value = _read_session_value(r, sid)
+        if _session_user_id(session_value) != user:
+            _drop_user_session_indexes(r, user, sid)
+            continue
+        ttl = r.ttl(_sess_key(sid))
+        if ttl <= 0:
+            _drop_user_session_indexes(r, user, sid)
+            continue
+        _sync_user_session_indexes(r, user, sid, ttl)
+        return
+    try:
+        r.delete(_user_sess_key(user))
+    except Exception:
+        pass
+    try:
+        r.delete(_user_session_set_key(user))
+    except Exception:
+        pass
+
+
 def _find_existing_session_id(r: RedisClient, user_id: str) -> Optional[str]:
     user = (user_id or "").strip()
     if not user:
@@ -226,7 +380,8 @@ def _find_existing_session_id(r: RedisClient, user_id: str) -> Optional[str]:
 
     for sess_key in r.scan_iter(match="for_rnd_web:sess:*"):
         try:
-            if r.get(sess_key) != user:
+            session_value = r.get(sess_key)
+            if _session_user_id(session_value) != user:
                 continue
         except Exception:
             continue
@@ -234,10 +389,7 @@ def _find_existing_session_id(r: RedisClient, user_id: str) -> Optional[str]:
         sid = sess_key.rsplit(":", 1)[-1]
         ttl = r.ttl(sess_key)
         if ttl > 0:
-            try:
-                r.setex(_user_sess_key(user), ttl, sid)
-            except Exception:
-                pass
+            _sync_user_session_indexes(r, user, sid, ttl)
         return sid
     return None
 
@@ -269,22 +421,29 @@ def _list_session_ids_for_user(r: RedisClient, user_id: str) -> list[str]:
     session_ids: list[str] = []
     seen: set[str] = set()
     indexed_sid = str(r.get(_user_sess_key(user)) or "").strip()
-    if indexed_sid and r.get(_sess_key(indexed_sid)) == user:
-        session_ids.append(indexed_sid)
-        seen.add(indexed_sid)
+    if indexed_sid:
+        session_value = _read_session_value(r, indexed_sid)
+        if _session_user_id(session_value) == user and r.ttl(_sess_key(indexed_sid)) > 0:
+            session_ids.append(indexed_sid)
+            seen.add(indexed_sid)
+        else:
+            _drop_user_session_indexes(r, user, indexed_sid)
 
-    for sess_key in r.scan_iter(match="for_rnd_web:sess:*"):
-        try:
-            if r.get(sess_key) != user:
-                continue
-        except Exception:
+    for sid in r.smembers(_user_session_set_key(user)):
+        normalized_sid = str(sid or "").strip()
+        if not normalized_sid or normalized_sid in seen:
             continue
+        session_value = _read_session_value(r, normalized_sid)
+        if _session_user_id(session_value) != user or r.ttl(_sess_key(normalized_sid)) <= 0:
+            _drop_user_session_indexes(r, user, normalized_sid)
+            continue
+        session_ids.append(normalized_sid)
+        seen.add(normalized_sid)
 
-        sid = sess_key.rsplit(":", 1)[-1]
-        if sid in seen:
-            continue
-        session_ids.append(sid)
-        seen.add(sid)
+    if not session_ids:
+        legacy_sid = _find_existing_session_id(r, user)
+        if legacy_sid:
+            session_ids.append(legacy_sid)
     return session_ids
 
 
@@ -295,18 +454,36 @@ def _list_presence_keys_for_session(r: RedisClient, user_id: str, sid: str) -> l
         return []
 
     keys: list[str] = []
-    for presence_key in r.scan_iter(match=f"{LIVE_PRESENCE_PREFIX}:{user}:*"):
+    indexed_keys = [str(item or "").strip() for item in r.smembers(_session_presence_key(session_id))]
+    indexed_keys = [item for item in indexed_keys if item]
+    if not indexed_keys:
+        indexed_keys = list(r.scan_iter(match=f"{LIVE_PRESENCE_PREFIX}:{user}:*"))
+    for presence_key in indexed_keys:
         try:
             raw = r.get(presence_key)
             if not raw:
+                try:
+                    r.srem(_session_presence_key(session_id), presence_key)
+                except Exception:
+                    pass
                 continue
             data = json.loads(raw)
             if str(data.get("user_id") or "").strip() != user:
                 continue
             if str(data.get("sid") or "").strip() != session_id:
                 continue
-            if r.ttl(presence_key) <= 0:
+            ttl = r.ttl(presence_key)
+            if ttl <= 0:
+                try:
+                    r.srem(_session_presence_key(session_id), presence_key)
+                except Exception:
+                    pass
                 continue
+            try:
+                r.sadd(_session_presence_key(session_id), presence_key)
+                r.expire(_session_presence_key(session_id), ttl)
+            except Exception:
+                pass
             keys.append(presence_key)
         except Exception:
             continue
@@ -315,10 +492,13 @@ def _list_presence_keys_for_session(r: RedisClient, user_id: str, sid: str) -> l
 
 def _delete_presence_for_session(r: RedisClient, user_id: str, sid: str) -> None:
     keys = _list_presence_keys_for_session(r, user_id, sid)
-    if not keys:
-        return
     try:
-        r.delete_many(keys)
+        if keys:
+            r.delete_many(keys)
+    except Exception:
+        pass
+    try:
+        r.delete(_session_presence_key(sid))
     except Exception:
         pass
 
@@ -382,9 +562,9 @@ def create_session(*, user_id: str, auto_login: bool, force_replace: bool = Fals
         _delete_user_sessions(r, user, session_ids)
 
     # If Redis is down, login must fail clearly (do not silently create a dead session).
-    r.setex(_sess_key(sid), ttl, user)
+    r.setex(_sess_key(sid), ttl, _session_payload(user, auto_login=auto_login))
     if user:
-        r.setex(_user_sess_key(user), ttl, sid)
+        _sync_user_session_indexes(r, user, sid, ttl)
     return sid
 
 
@@ -394,7 +574,8 @@ def read_session_user(sid: str) -> Optional[str]:
         return None
     try:
         r = get_redis()
-        user = r.get(_sess_key(sid))
+        session_value = _read_session_value(r, sid)
+        user = _session_user_id(session_value)
         if not user:
             return None
 
@@ -406,22 +587,27 @@ def read_session_user(sid: str) -> Optional[str]:
             except Exception:
                 pass
             return None
+        if not active_sid:
+            ttl = r.ttl(_sess_key(sid))
+            if ttl > 0:
+                _sync_user_session_indexes(r, user, sid, ttl)
         return user
     except Exception:
         return None
 
 
-def refresh_session(sid: str, *, auto_login: bool = False) -> None:
+def refresh_session(sid: str, *, auto_login: bool | None = None) -> None:
     """Sliding TTL refresh. If key missing, does nothing."""
     sid = (sid or "").strip()
     if not sid:
         return
-    ttl = AUTO_LOGIN_TTL_SEC if auto_login else DEFAULT_SESSION_TTL_SEC
     try:
         r = get_redis()
-        user = r.get(_sess_key(sid))
+        session_value = _read_session_value(r, sid)
+        user = _session_user_id(session_value)
         if not user:
             return
+        ttl = AUTO_LOGIN_TTL_SEC if (auto_login if auto_login is not None else _session_auto_login(session_value)) else DEFAULT_SESSION_TTL_SEC
 
         active_sid = r.get(_user_sess_key(user))
         if active_sid and active_sid != sid:
@@ -436,7 +622,11 @@ def refresh_session(sid: str, *, auto_login: bool = False) -> None:
             r.expire(_user_sess_key(user), ttl)
         elif not active_sid:
             # One-time backfill for sessions created before user->sid indexing existed.
-            r.setex(_user_sess_key(user), ttl, sid)
+            _sync_user_session_indexes(r, user, sid, ttl)
+        try:
+            r.expire(_user_session_set_key(user), ttl)
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -447,14 +637,14 @@ def delete_session(sid: str) -> None:
         return
     try:
         r = get_redis()
-        user = r.get(_sess_key(sid))
+        session_value = _read_session_value(r, sid)
+        user = _session_user_id(session_value)
         r.delete(_sess_key(sid))
 
         if user:
             _delete_presence_for_session(r, user, sid)
-            active_sid = r.get(_user_sess_key(user))
-            if active_sid == sid:
-                r.delete(_user_sess_key(user))
+            _drop_user_session_indexes(r, user, sid)
+            _repair_user_session_index(r, user)
     except Exception:
         return
 
@@ -488,7 +678,7 @@ def touch_live_presence(*, user_id: str, client_id: str, sid: str, state: Any, p
     }
     try:
         r = get_redis()
-        if r.get(_sess_key(session_id)) != user:
+        if _session_user_id(_read_session_value(r, session_id)) != user:
             try:
                 r.delete(_presence_key(user, client))
             except Exception:
@@ -503,7 +693,13 @@ def touch_live_presence(*, user_id: str, client_id: str, sid: str, state: Any, p
                 pass
             return
 
-        r.setex(_presence_key(user, client), LIVE_PRESENCE_TTL_SEC, json.dumps(payload, ensure_ascii=False))
+        presence_key = _presence_key(user, client)
+        r.setex(presence_key, LIVE_PRESENCE_TTL_SEC, json.dumps(payload, ensure_ascii=False))
+        try:
+            r.sadd(_session_presence_key(session_id), presence_key)
+            r.expire(_session_presence_key(session_id), LIVE_PRESENCE_TTL_SEC)
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -514,7 +710,22 @@ def clear_live_presence(*, user_id: str, client_id: str) -> None:
     if not user or not client:
         return
     try:
-        get_redis().delete(_presence_key(user, client))
+        r = get_redis()
+        presence_key = _presence_key(user, client)
+        raw = r.get(presence_key)
+        sid = ""
+        if raw:
+            try:
+                payload = json.loads(raw)
+                sid = str(payload.get("sid") or "").strip()
+            except Exception:
+                sid = ""
+        r.delete(presence_key)
+        if sid:
+            try:
+                r.srem(_session_presence_key(sid), presence_key)
+            except Exception:
+                pass
     except Exception:
         return
 
@@ -538,7 +749,7 @@ def list_live_presence() -> list[dict[str, Any]]:
             if not user_id or not client_id or not sid:
                 continue
 
-            if r.get(_sess_key(sid)) != user_id:
+            if _session_user_id(_read_session_value(r, sid)) != user_id:
                 try:
                     r.delete(presence_key)
                 except Exception:
@@ -582,7 +793,7 @@ def list_active_sessions() -> list[dict[str, Any]]:
     sessions: list[dict[str, Any]] = []
     for sess_key in r.scan_iter(match="for_rnd_web:sess:*"):
         try:
-            user_id = str(r.get(sess_key) or "").strip()
+            user_id = _session_user_id(r.get(sess_key))
             if not user_id:
                 continue
             sid = sess_key.rsplit(":", 1)[-1]
@@ -604,8 +815,24 @@ def list_active_sessions() -> list[dict[str, Any]]:
     return sessions
 
 
-def set_session_cookie(response, sid: str, *, auto_login: bool) -> None:
+def _should_use_secure_cookie(request: Any = None) -> bool:
+    setting = _env("SESSION_COOKIE_SECURE", "auto").strip().lower()
+    if setting in {"1", "true", "yes", "on"}:
+        return True
+    if setting in {"0", "false", "no", "off"}:
+        return False
+    if request is None:
+        return False
+    forwarded_proto = str(getattr(request, "headers", {}).get("x-forwarded-proto", "") or "").split(",", 1)[0].strip().lower()
+    if forwarded_proto:
+        return forwarded_proto == "https"
+    scheme = str(getattr(getattr(request, "url", None), "scheme", "") or "").strip().lower()
+    return scheme == "https"
+
+
+def set_session_cookie(response, sid: str, *, auto_login: bool, request: Any = None) -> None:
     """Set host-only cookie (no Domain attribute)."""
+    secure = _should_use_secure_cookie(request)
     if auto_login:
         response.set_cookie(
             key=SESSION_COOKIE_NAME,
@@ -613,7 +840,7 @@ def set_session_cookie(response, sid: str, *, auto_login: bool) -> None:
             max_age=AUTO_LOGIN_TTL_SEC,
             httponly=True,
             samesite="lax",
-            secure=False,
+            secure=secure,
             path="/",
         )
     else:
@@ -622,7 +849,7 @@ def set_session_cookie(response, sid: str, *, auto_login: bool) -> None:
             value=sid,
             httponly=True,
             samesite="lax",
-            secure=False,
+            secure=secure,
             path="/",
         )
 

@@ -300,3 +300,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 ASCORD 음성채널/STAGE, 수신 통화/권한/운영 UX, LiveKit WSS/TURN/TLS 정리와 포트포워딩 점검을 진행한 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
   - Arduino 디렉토리는 기존 Wi-Fi/OTA/UART 연동 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 추가했다.
+
+## 40. ABBAS_WEB 보안·모듈 분리 작업에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 인증/세션/Redis 보강, 메신저/플랫폼/통합관리/페이지 라우트 분리, 미사용 파일 정리와 Source Control 정리를 진행한 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
+  - Arduino 디렉토리는 기존 `@SUB|`, `@ENG|`, `@OTA|`, `@WIFI|` 연동 구조와 디바이스 통신/OTA 동작을 그대로 유지한 채 `_devList` 기록만 갱신했다.

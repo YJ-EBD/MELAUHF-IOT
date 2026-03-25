@@ -40,6 +40,18 @@ def _norm_room_type(value: Any) -> str:
     return "group"
 
 
+def _norm_app_domain(value: Any, *, room_type: Any = None, room_key: Any = None) -> str:
+    normalized = _norm_text(value).lower()
+    if normalized in {"talk", "ascord"}:
+        return normalized
+    normalized_room_key = _norm_text(room_key).lower()
+    if normalized_room_key.startswith("ascord:"):
+        return "ascord"
+    if _norm_room_type(room_type) == "dm":
+        return "talk"
+    return "talk"
+
+
 def _norm_channel_mode(value: Any) -> str:
     mode = _norm_text(value).lower()
     if mode == "stage":
@@ -61,6 +73,19 @@ def _room_slug_token(value: Any) -> str:
     normalized = re.sub(r"\s+", " ", text)
     digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()
     return digest[:16]
+
+
+def normalize_app_domain(value: Any, *, room_type: Any = None, room_key: Any = None) -> str:
+    return _norm_app_domain(value, room_type=room_type, room_key=room_key)
+
+
+def room_supports_calls(room: dict[str, Any] | None) -> bool:
+    item = dict(room or {})
+    return _norm_app_domain(
+        item.get("app_domain"),
+        room_type=item.get("room_type"),
+        room_key=item.get("room_key"),
+    ) == "ascord"
 
 
 _CALL_PERMISSION_KEYS = (
@@ -631,19 +656,18 @@ def ensure_default_rooms() -> None:
     if not approved_rows:
         return
 
-    company_members = [(_norm_user_id(row.get("ID")), "member") for row in approved_rows]
-    department_map: dict[str, list[tuple[str, str]]] = {}
-    leadership_members: list[tuple[str, str]] = []
+    ascord_members: list[tuple[str, str]] = []
     touched_room_ids: list[int] = []
 
     for row in approved_rows:
         user_id = _norm_user_id(row.get("ID"))
         role = str(row.get("ROLE") or "").strip().lower()
-        department = _norm_text(row.get("DEPARTMENT"))
-        if department:
-            department_map.setdefault(department, []).append((user_id, "member"))
-        if role in {"admin", "superuser"}:
-            leadership_members.append((user_id, "admin" if role == "admin" else "owner"))
+        member_role = "member"
+        if role == "admin":
+            member_role = "admin"
+        elif role == "superuser":
+            member_role = "owner"
+        ascord_members.append((user_id, member_role))
 
     db = get_mysql()
     with db.conn() as conn:
@@ -653,48 +677,16 @@ def ensure_default_rooms() -> None:
             room_id = _ensure_room_with_cur(
                 cur,
                 room_type="channel",
-                room_key="channel:company",
+                room_key="ascord:global",
                 name="전체 채널",
-                topic="ABBAS_WEB 구성원 전체가 참여하는 공용 채널",
-                channel_category="WORKSPACE",
+                topic="ASCORD 구성원 전체가 참여하는 기본 음성 채널",
+                channel_category="LOBBY",
                 channel_mode="voice",
                 created_by="system",
             )
             if room_id > 0:
                 touched_room_ids.append(room_id)
-            _upsert_room_members_with_cur(cur, room_id, company_members)
-
-            if leadership_members:
-                leadership_room_id = _ensure_room_with_cur(
-                    cur,
-                    room_type="channel",
-                    room_key="channel:leadership",
-                    name="운영 리더 채널",
-                    topic="관리자와 슈퍼유저를 위한 운영 협업 채널",
-                    channel_category="OPERATIONS",
-                    channel_mode="stage",
-                    created_by="system",
-                )
-                if leadership_room_id > 0:
-                    touched_room_ids.append(leadership_room_id)
-                _upsert_room_members_with_cur(cur, leadership_room_id, leadership_members)
-
-            for department, members in department_map.items():
-                if not members:
-                    continue
-                department_room_id = _ensure_room_with_cur(
-                    cur,
-                    room_type="channel",
-                    room_key=f"channel:dept:{_room_slug_token(department)}",
-                    name=f"{department} 채널",
-                    topic=f"{department} 팀 협업용 기본 채널",
-                    channel_category="DEPARTMENTS",
-                    channel_mode="voice",
-                    created_by="system",
-                )
-                if department_room_id > 0:
-                    touched_room_ids.append(department_room_id)
-                _upsert_room_members_with_cur(cur, department_room_id, members)
+            _upsert_room_members_with_cur(cur, room_id, ascord_members)
     for room_id in sorted({room_id for room_id in touched_room_ids if room_id > 0}):
         sync_room_backup(room_id, sync_reason="default_room_sync")
 
@@ -810,6 +802,11 @@ def list_rooms_for_user(user_id: str) -> list[dict[str, Any]]:
                 "id": room_id,
                 "room_type": room_type,
                 "room_key": _norm_text(row.get("room_key")),
+                "app_domain": _norm_app_domain(
+                    None,
+                    room_type=room_type,
+                    room_key=row.get("room_key"),
+                ),
                 "name": _norm_text(row.get("name")),
                 "topic": _norm_text(row.get("topic")),
                 "avatar_path": _norm_text(row.get("avatar_path")),
@@ -1098,9 +1095,12 @@ def list_call_logs_for_room(room_id: int, *, limit: int = 8) -> list[dict[str, A
                   COALESCE(u.name, '') AS started_by_name,
                   COALESCE(u.department, '') AS started_by_department
                 FROM chat_call_logs log
+                INNER JOIN chat_rooms r
+                  ON r.id = log.room_id
                 LEFT JOIN users u
                   ON u.user_id = log.started_by_user_id
                 WHERE log.room_id=%s
+                  AND COALESCE(r.room_key, '') LIKE 'ascord:%'
                 ORDER BY
                   COALESCE(log.ended_at, log.updated_at, log.started_at) DESC,
                   log.id DESC
@@ -1381,6 +1381,11 @@ def get_room_by_id(room_id: int) -> dict[str, Any] | None:
         "id": int(row.get("id") or 0),
         "room_type": room_type,
         "room_key": _norm_text(row.get("room_key")),
+        "app_domain": _norm_app_domain(
+            None,
+            room_type=room_type,
+            room_key=row.get("room_key"),
+        ),
         "name": _norm_text(row.get("name")),
         "topic": _norm_text(row.get("topic")),
         "avatar_path": _norm_text(row.get("avatar_path")),
@@ -1533,6 +1538,11 @@ def _build_room_backup_snapshot_with_cur(cur, room_id: int) -> dict[str, Any] | 
         "room_type": room_type,
         "room_type_label": _room_type_label(room_row.get("room_type")),
         "room_key": _norm_text(room_row.get("room_key")),
+        "app_domain": _norm_app_domain(
+            None,
+            room_type=room_type,
+            room_key=room_row.get("room_key"),
+        ),
         "name": _norm_text(room_row.get("name")),
         "display_name": _room_display_name(room_row, members),
         "topic": _norm_text(room_row.get("topic")),
@@ -1591,6 +1601,11 @@ def _upsert_talk_backup_manifest(snapshot: dict[str, Any], *, room_deleted: bool
     rooms_by_id[room_id] = {
         "room_id": room_id,
         "room_type": _norm_room_type(room.get("room_type")),
+        "app_domain": _norm_app_domain(
+            room.get("app_domain"),
+            room_type=room.get("room_type"),
+            room_key=room.get("room_key"),
+        ),
         "room_type_label": _room_type_label(room.get("room_type")),
         "room_name": _norm_text(room.get("display_name")) or _room_display_name(room, members),
         "name": _norm_text(room.get("name")),
@@ -1622,6 +1637,12 @@ def _write_room_backup_snapshot(snapshot: dict[str, Any], *, sync_reason: str = 
         room = dict(snapshot.get("room") or {})
         room_id = int(room.get("id") or 0)
         if room_id <= 0:
+            return
+        if _norm_app_domain(
+            room.get("app_domain"),
+            room_type=room.get("room_type"),
+            room_key=room.get("room_key"),
+        ) != "talk":
             return
 
         _ensure_talk_backup_dirs()
@@ -1663,6 +1684,13 @@ def sync_room_backup(room_id: int, *, sync_reason: str = "sync") -> bool:
             snapshot = _build_room_backup_snapshot_with_cur(cur, target_room_id)
     if not snapshot:
         return False
+    room = dict(snapshot.get("room") or {})
+    if _norm_app_domain(
+        room.get("app_domain"),
+        room_type=room.get("room_type"),
+        room_key=room.get("room_key"),
+    ) != "talk":
+        return False
     _write_room_backup_snapshot(snapshot, sync_reason=sync_reason)
     return True
 
@@ -1675,12 +1703,79 @@ def sync_all_room_backups() -> int:
     with db.conn() as conn:
         with conn.cursor() as cur:
             _ensure_schema_with_cur(cur)
-            cur.execute("SELECT id FROM chat_rooms ORDER BY id ASC")
+            cur.execute(
+                """
+                SELECT id
+                FROM chat_rooms
+                WHERE COALESCE(room_key, '') NOT LIKE 'ascord:%'
+                ORDER BY id ASC
+                """
+            )
             room_ids = [int(row.get("id") or 0) for row in (cur.fetchall() or []) if int(row.get("id") or 0) > 0]
             for room_id in room_ids:
                 snapshot = _build_room_backup_snapshot_with_cur(cur, room_id)
                 if snapshot:
                     snapshots.append(snapshot)
+    for snapshot in snapshots:
+        _write_room_backup_snapshot(snapshot, sync_reason="startup_sync")
+    return len(snapshots)
+
+
+def sync_stale_room_backups() -> int:
+    _ensure_talk_backup_dirs()
+    manifest = _load_talk_backup_manifest()
+    manifest_map: dict[int, dict[str, Any]] = {}
+    for item in list(manifest.get("rooms") or []):
+        try:
+            room_id = int(item.get("room_id") or 0)
+        except Exception:
+            room_id = 0
+        if room_id <= 0:
+            continue
+        manifest_map[room_id] = dict(item)
+
+    db = get_mysql()
+    snapshots: list[dict[str, Any]] = []
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                SELECT
+                  id,
+                  COALESCE(room_type, 'group') AS room_type,
+                  COALESCE(room_key, '') AS room_key,
+                  COALESCE(last_message_id, 0) AS last_message_id,
+                  COALESCE(DATE_FORMAT(updated_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS updated_at
+                FROM chat_rooms
+                WHERE COALESCE(room_key, '') NOT LIKE 'ascord:%'
+                ORDER BY id ASC
+                """
+            )
+            rows = cur.fetchall() or []
+            for row in rows:
+                room_id = int(row.get("id") or 0)
+                if room_id <= 0:
+                    continue
+                manifest_item = dict(manifest_map.get(room_id) or {})
+                room_type = _norm_room_type(row.get("room_type"))
+                room_key = _norm_text(row.get("room_key"))
+                if (
+                    int(manifest_item.get("last_message_id") or 0) == int(row.get("last_message_id") or 0)
+                    and _norm_text(manifest_item.get("updated_at")) == _norm_text(row.get("updated_at"))
+                    and _norm_room_type(manifest_item.get("room_type")) == room_type
+                    and _norm_text(manifest_item.get("room_key")) == room_key
+                    and _norm_app_domain(
+                        manifest_item.get("app_domain"),
+                        room_type=manifest_item.get("room_type"),
+                        room_key=manifest_item.get("room_key"),
+                    ) == "talk"
+                ):
+                    continue
+                snapshot = _build_room_backup_snapshot_with_cur(cur, room_id)
+                if snapshot:
+                    snapshots.append(snapshot)
+
     for snapshot in snapshots:
         _write_room_backup_snapshot(snapshot, sync_reason="startup_sync")
     return len(snapshots)
@@ -1876,6 +1971,8 @@ def list_recent_notifications_for_user(user_id: str, limit: int = 20) -> list[di
                     ELSE 0
                   END AS is_unread
                 FROM chat_room_members m
+                INNER JOIN chat_rooms r
+                  ON r.id = m.room_id
                 INNER JOIN chat_messages msg
                   ON msg.room_id = m.room_id
                  AND msg.deleted_at IS NULL
@@ -1885,6 +1982,7 @@ def list_recent_notifications_for_user(user_id: str, limit: int = 20) -> list[di
                   ON u.user_id = msg.sender_user_id
                 WHERE m.user_id = %s
                   AND COALESCE(m.is_muted, 0) = 0
+                  AND COALESCE(r.room_key, '') NOT LIKE 'ascord:%'
                 ORDER BY msg.id DESC
                 LIMIT %s
                 """,
@@ -1939,9 +2037,14 @@ def insert_message(room_id: int, sender_user_id: str, content: str, message_type
             _ensure_schema_with_cur(cur)
             cur.execute(
                 """
-                SELECT 1 AS ok
-                FROM chat_room_members
-                WHERE room_id=%s AND user_id=%s
+                SELECT
+                  1 AS ok,
+                  COALESCE(r.room_type, 'group') AS room_type,
+                  COALESCE(r.room_key, '') AS room_key
+                FROM chat_room_members m
+                INNER JOIN chat_rooms r
+                  ON r.id = m.room_id
+                WHERE m.room_id=%s AND m.user_id=%s
                 LIMIT 1
                 """,
                 (target_room_id, sender_id),
@@ -1949,6 +2052,12 @@ def insert_message(room_id: int, sender_user_id: str, content: str, message_type
             row = cur.fetchone() or {}
             if not row.get("ok"):
                 raise PermissionError("room access denied")
+            if _norm_app_domain(
+                None,
+                room_type=row.get("room_type"),
+                room_key=row.get("room_key"),
+            ) == "ascord":
+                raise ValueError("ASCORD 채널은 텍스트 메시지를 지원하지 않습니다.")
 
             cur.execute(
                 """
@@ -2147,13 +2256,30 @@ def update_room_details(
     with db.conn() as conn:
         with conn.cursor() as cur:
             _ensure_schema_with_cur(cur)
-            cur.execute("SELECT room_type FROM chat_rooms WHERE id=%s LIMIT 1", (target_room_id,))
+            cur.execute(
+                """
+                SELECT
+                  room_type,
+                  COALESCE(room_key, '') AS room_key
+                FROM chat_rooms
+                WHERE id=%s
+                LIMIT 1
+                """,
+                (target_room_id,),
+            )
             room_row = cur.fetchone() or {}
             room_type = _norm_room_type(room_row.get("room_type"))
+            room_app_domain = _norm_app_domain(
+                None,
+                room_type=room_type,
+                room_key=room_row.get("room_key"),
+            )
+            stored_channel_category = normalized_channel_category if room_app_domain == "ascord" else ""
+            stored_channel_mode = normalized_channel_mode if room_app_domain == "ascord" else "voice"
             serialized_call_permissions = serialize_call_permissions(
-                room_type,
-                call_permissions,
-                channel_mode=normalized_channel_mode,
+                room_type if room_app_domain != "ascord" else "channel",
+                call_permissions if room_app_domain == "ascord" else None,
+                channel_mode=stored_channel_mode,
             )
             cur.execute(
                 """
@@ -2171,8 +2297,8 @@ def update_room_details(
                 (
                     normalized_name,
                     normalized_topic,
-                    normalized_channel_category,
-                    normalized_channel_mode,
+                    stored_channel_category,
+                    stored_channel_mode,
                     serialized_call_permissions,
                     target_room_id,
                 ),
@@ -2330,12 +2456,14 @@ def create_group_room(
     member_ids: list[str],
     topic: str = "",
     *,
+    app_domain: str = "talk",
     channel_category: str = "",
     channel_mode: str = "voice",
     call_permissions: Any = None,
 ) -> int:
     room_name = _norm_text(name)
     creator_user_id = _norm_user_id(created_by)
+    normalized_app_domain = _norm_app_domain(app_domain)
     normalized_channel_category = _norm_channel_category(channel_category)
     normalized_channel_mode = _norm_channel_mode(channel_mode)
     if not creator_user_id:
@@ -2352,10 +2480,25 @@ def create_group_room(
         seen.add(uid)
         unique_members.append(uid)
 
-    if len(unique_members) < 2:
+    if normalized_app_domain != "ascord" and len(unique_members) < 2:
         raise ValueError("그룹방에는 최소 2명 이상이 필요합니다.")
 
-    room_key = f"group:{_room_slug_token(room_name)}:{hashlib.sha1(('|'.join(unique_members)).encode('utf-8')).hexdigest()[:12]}"
+    if normalized_app_domain == "ascord":
+        room_type = "channel"
+        room_key = f"ascord:{_room_slug_token(room_name)}:{hashlib.sha1(('|'.join(unique_members)).encode('utf-8')).hexdigest()[:12]}"
+        stored_channel_category = normalized_channel_category
+        stored_channel_mode = normalized_channel_mode
+        serialized_call_permissions = serialize_call_permissions(
+            "channel",
+            call_permissions,
+            channel_mode=stored_channel_mode,
+        )
+    else:
+        room_type = "group"
+        room_key = f"group:{_room_slug_token(room_name)}:{hashlib.sha1(('|'.join(unique_members)).encode('utf-8')).hexdigest()[:12]}"
+        stored_channel_category = ""
+        stored_channel_mode = "voice"
+        serialized_call_permissions = serialize_call_permissions("group", None, channel_mode="voice")
 
     db = get_mysql()
     with db.conn() as conn:
@@ -2369,18 +2512,18 @@ def create_group_room(
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 """,
                 (
-                    "group",
+                    room_type,
                     room_key,
                     room_name,
                     _norm_text(topic),
-                    normalized_channel_category,
-                    normalized_channel_mode,
+                    stored_channel_category,
+                    stored_channel_mode,
                     creator_user_id,
-                    serialize_call_permissions("group", call_permissions, channel_mode=normalized_channel_mode),
+                    serialized_call_permissions,
                 ),
             )
             room_id = int(cur.lastrowid or 0)
             member_rows = [(creator_user_id, "owner")] + [(uid, "member") for uid in unique_members if uid != creator_user_id]
             _upsert_room_members_with_cur(cur, room_id, member_rows)
-    sync_room_backup(room_id, sync_reason="group_room_created")
+    sync_room_backup(room_id, sync_reason="group_room_created" if normalized_app_domain != "ascord" else "ascord_room_created")
     return room_id
