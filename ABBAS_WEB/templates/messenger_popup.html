@@ -94,13 +94,37 @@
 
         <aside class="messenger-sidebar">
           <div class="messenger-sidebar__chrome">
-            <div class="messenger-sidebar__workspace">
-              <strong>{{ current_user_name or current_user_id }}</strong>
-              <span>{{ current_user_role_label or 'USER' }} · ABBAS Workspace</span>
+            <div class="messenger-sidebar__workspace-wrap">
+              <button class="messenger-sidebar__workspace" id="messengerAscordWorkspaceBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="messengerAscordServerMenu">
+                <span class="messenger-sidebar__workspace-copy">
+                  <strong>{{ current_user_name or current_user_id }}</strong>
+                  <span>{{ current_user_role_label or 'USER' }} · ABBAS Workspace</span>
+                </span>
+                <i class="bi bi-chevron-down"></i>
+              </button>
+              <div class="messenger-ascord-server-menu" id="messengerAscordServerMenu" aria-hidden="true">
+                <button type="button" data-ascord-server-action="server-boost"><i class="bi bi-gem"></i><span>서버 부스트</span></button>
+                <button type="button" data-ascord-server-action="invite"><i class="bi bi-person-plus"></i><span>서버에 초대하기</span></button>
+                <button type="button" data-ascord-server-action="server-settings"><i class="bi bi-gear"></i><span>서버 설정</span></button>
+                <button type="button" data-ascord-server-action="create-channel"><i class="bi bi-plus-circle"></i><span>채널 만들기</span></button>
+                <button type="button" data-ascord-server-action="create-category"><i class="bi bi-folder-plus"></i><span>카테고리 만들기</span></button>
+                <button type="button" data-ascord-server-action="create-event"><i class="bi bi-calendar-event"></i><span>이벤트 만들기</span></button>
+                <button type="button" data-ascord-server-action="app-directory"><i class="bi bi-grid-3x3-gap"></i><span>App 디렉터리</span></button>
+                <button type="button" data-ascord-server-action="notification-settings"><i class="bi bi-bell"></i><span>알림 설정</span></button>
+                <button type="button" data-ascord-server-action="privacy-settings"><i class="bi bi-shield-lock"></i><span>개인정보 보호 설정</span></button>
+                <button type="button" data-ascord-server-action="edit-profile"><i class="bi bi-pencil-square"></i><span>서버별 프로필 수정하기</span></button>
+                <button type="button" data-ascord-server-action="toggle-hide-muted"><i class="bi bi-eye-slash"></i><span>알림 끈 채널 숨기기</span></button>
+                <button type="button" class="is-danger" data-ascord-server-action="leave-server"><i class="bi bi-box-arrow-left"></i><span>서버 나가기</span></button>
+              </div>
             </div>
-            <button class="messenger-sidebar__icon" id="messengerSidebarSearchBtn" type="button" aria-label="검색">
-              <i class="bi bi-search"></i>
-            </button>
+            <div class="messenger-sidebar__chrome-actions">
+              <button class="messenger-sidebar__icon" id="messengerAscordInviteBtn" type="button" aria-label="초대하기">
+                <i class="bi bi-person-plus-fill"></i>
+              </button>
+              <button class="messenger-sidebar__icon" id="messengerSidebarSearchBtn" type="button" aria-label="검색">
+                <i class="bi bi-search"></i>
+              </button>
+            </div>
           </div>
 
           <div class="messenger-search">
@@ -157,6 +181,8 @@
               </div>
             </div>
           </section>
+
+          <section class="messenger-ascord-voice-dock d-none" id="messengerAscordVoiceDock" aria-live="polite"></section>
         </aside>
 
         <section class="messenger-conversation" id="messengerConversationSection">
@@ -265,6 +291,8 @@
             </div>
             <div class="d-none" id="messengerCallAudioSink" aria-hidden="true"></div>
           </section>
+
+          <section class="messenger-ascord-call-dock d-none" id="messengerAscordCallDock" aria-live="polite"></section>
 
           <div class="messenger-message-scroll" id="messengerMessageScroll">
             <div class="messenger-empty-state messenger-empty-state--large" id="messengerConversationEmpty">
@@ -397,6 +425,24 @@
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button>
         <button type="button" class="btn btn-primary" id="messengerCreateRoomSubmitBtn">대화 시작</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="messenger-call-fullscreen d-none" id="messengerCallFullscreen" aria-hidden="true">
+  <div class="messenger-call-fullscreen__scrim" data-call-fullscreen-close="true"></div>
+  <div class="messenger-call-fullscreen__panel">
+    <div class="messenger-call-fullscreen__head">
+      <div class="messenger-call-fullscreen__copy">
+        <strong id="messengerCallFullscreenTitle">전체 화면</strong>
+        <span id="messengerCallFullscreenMeta">선택한 참여자 화면이 크게 표시됩니다.</span>
+      </div>
+      <button class="messenger-call-fullscreen__close" id="messengerCallFullscreenCloseBtn" type="button" aria-label="전체화면 닫기">
+        <i class="bi bi-x-lg"></i>
+      </button>
+    </div>
+    <div class="messenger-call-fullscreen__body">
+      <div class="messenger-call-fullscreen__media" id="messengerCallFullscreenMedia"></div>
     </div>
   </div>
 </div>

@@ -1100,7 +1100,7 @@ def list_call_logs_for_room(room_id: int, *, limit: int = 8) -> list[dict[str, A
                 LEFT JOIN users u
                   ON u.user_id = log.started_by_user_id
                 WHERE log.room_id=%s
-                  AND COALESCE(r.room_key, '') LIKE 'ascord:%'
+                  AND COALESCE(r.room_key, '') LIKE 'ascord:%%'
                 ORDER BY
                   COALESCE(log.ended_at, log.updated_at, log.started_at) DESC,
                   log.id DESC
@@ -1707,7 +1707,7 @@ def sync_all_room_backups() -> int:
                 """
                 SELECT id
                 FROM chat_rooms
-                WHERE COALESCE(room_key, '') NOT LIKE 'ascord:%'
+                WHERE COALESCE(room_key, '') NOT LIKE 'ascord:%%'
                 ORDER BY id ASC
                 """
             )
@@ -1748,7 +1748,7 @@ def sync_stale_room_backups() -> int:
                   COALESCE(last_message_id, 0) AS last_message_id,
                   COALESCE(DATE_FORMAT(updated_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS updated_at
                 FROM chat_rooms
-                WHERE COALESCE(room_key, '') NOT LIKE 'ascord:%'
+                WHERE COALESCE(room_key, '') NOT LIKE 'ascord:%%'
                 ORDER BY id ASC
                 """
             )
@@ -1982,7 +1982,7 @@ def list_recent_notifications_for_user(user_id: str, limit: int = 20) -> list[di
                   ON u.user_id = msg.sender_user_id
                 WHERE m.user_id = %s
                   AND COALESCE(m.is_muted, 0) = 0
-                  AND COALESCE(r.room_key, '') NOT LIKE 'ascord:%'
+                  AND COALESCE(r.room_key, '') NOT LIKE 'ascord:%%'
                 ORDER BY msg.id DESC
                 LIMIT %s
                 """,

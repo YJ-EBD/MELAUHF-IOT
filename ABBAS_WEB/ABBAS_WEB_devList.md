@@ -606,3 +606,15 @@
   - 로그인 `next` 안전화, 인증 rate limit, 세션/Redis 처리 보강, 레거시 user store/migration 정합화, 채팅 백업 startup 처리 보정 등 운영 안정성과 보안 측면을 먼저 정리했다.
   - 메신저 REST/WebSocket/runtime/payload/view/access 계층과 플랫폼/통합관리/일반 페이지 라우트를 별도 모듈로 분리해 `router/pages.py` 결합도를 낮추고, 미사용 파일은 Source Control에 남지 않게 정리했다.
   - 이번 채팅 기준 검증은 `python3 -m compileall -q . -x 'venv'`, `git diff --check`, 1st-party JS `node --check`, `venv` 기반 라우터 로드 확인까지 완료했다.
+
+## 61. ASCORD 디스코드형 음성채널 UI 재구성과 로그 500 원인 패치
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `DB/chat_repo.py`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+  - `templates/messenger_popup.html`
+- 간단한 설명
+  - ASCORD 음성채널 화면을 디스코드 스크린샷 기준으로 다시 정리하면서 서버 드롭다운, 초대 모달, 좌측 음성 도크, 하단 콜 도크, 전체화면, 채널 생성 모달, 화면공유 선택 UI, hover 메타/버튼 노출, speaking 강조, 라이트·다크 테마 전환까지 한 흐름으로 재구성했다.
+  - `uvicorn.log`에 남아 있던 메신저 bootstrap 500 오류는 `DB/chat_repo.py`의 SQL `LIKE 'ascord:%'` 패턴이 PyMySQL `%` 포맷과 충돌하던 문제로 확인했고, `%%` 이스케이프 처리로 수정했다.
+  - 이번 채팅 기준 검증은 `python -m py_compile`, Chromium 기반 JS 파싱 확인, CSS 계산값 확인, `list_call_logs_for_room()` 직접 호출, `/login` HTTP 응답 확인까지 진행했다.
