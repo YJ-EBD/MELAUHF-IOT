@@ -126,6 +126,7 @@ def register_messenger_ws_routes(router: APIRouter) -> None:
                     sanitized_audio_enabled = _payload_bool(payload.get("audio_enabled"), True) and can_speak
                     sanitized_video_enabled = _payload_bool(payload.get("video_enabled"), False) and can_use_video
                     sanitized_sharing_screen = _payload_bool(payload.get("sharing_screen"), False) and can_share_screen
+                    sanitized_deafened = _payload_bool(payload.get("deafened"), False)
                     sanitized_media_mode = "video" if (
                         sanitized_video_enabled
                         or sanitized_sharing_screen
@@ -139,6 +140,7 @@ def register_messenger_ws_routes(router: APIRouter) -> None:
                         audio_enabled=sanitized_audio_enabled,
                         video_enabled=sanitized_video_enabled,
                         sharing_screen=sanitized_sharing_screen,
+                        deafened=sanitized_deafened,
                         source=sanitized_source,
                         stage_role=stage_role,
                     )
@@ -203,12 +205,15 @@ def register_messenger_ws_routes(router: APIRouter) -> None:
                     next_audio_enabled = None
                     next_video_enabled = None
                     next_sharing_screen = None
+                    next_deafened = None
                     if "audio_enabled" in payload:
                         next_audio_enabled = _payload_bool(payload.get("audio_enabled"), False) and can_speak
                     if "video_enabled" in payload:
                         next_video_enabled = _payload_bool(payload.get("video_enabled"), False) and can_use_video
                     if "sharing_screen" in payload:
                         next_sharing_screen = _payload_bool(payload.get("sharing_screen"), False) and can_share_screen
+                    if "deafened" in payload:
+                        next_deafened = _payload_bool(payload.get("deafened"), False)
                     resolved_video_enabled = bool(current_participant.get("video_enabled")) if next_video_enabled is None else bool(next_video_enabled)
                     resolved_sharing_screen = bool(current_participant.get("sharing_screen")) if next_sharing_screen is None else bool(next_sharing_screen)
                     next_media_mode = None
@@ -228,6 +233,7 @@ def register_messenger_ws_routes(router: APIRouter) -> None:
                         audio_enabled=next_audio_enabled,
                         video_enabled=next_video_enabled,
                         sharing_screen=next_sharing_screen,
+                        deafened=next_deafened,
                         media_mode=next_media_mode,
                         source=next_source,
                     )

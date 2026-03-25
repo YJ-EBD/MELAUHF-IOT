@@ -91,6 +91,7 @@ class _MessengerCallHub:
             "audio_enabled": bool(row.get("audio_enabled")),
             "video_enabled": bool(row.get("video_enabled")),
             "sharing_screen": bool(row.get("sharing_screen")),
+            "deafened": bool(row.get("deafened")),
             "source": str(row.get("source") or "camera"),
             "server_muted": bool(row.get("server_muted")),
             "stage_role": "speaker" if str(row.get("stage_role") or "").strip().lower() == "speaker" else "audience",
@@ -135,6 +136,7 @@ class _MessengerCallHub:
         audio_enabled: bool = True,
         video_enabled: bool = False,
         sharing_screen: bool = False,
+        deafened: bool = False,
         source: Any = "camera",
         stage_role: Any = "speaker",
     ) -> dict[str, Any] | None:
@@ -167,6 +169,7 @@ class _MessengerCallHub:
                 "audio_enabled": False if bool(previous.get("server_muted")) else bool(audio_enabled),
                 "video_enabled": bool(video_enabled),
                 "sharing_screen": bool(sharing_screen),
+                "deafened": bool(deafened),
                 "source": self._normalize_source(source),
                 "server_muted": bool(previous.get("server_muted")),
                 "stage_role": resolved_stage_role,
@@ -183,6 +186,7 @@ class _MessengerCallHub:
         audio_enabled: Any = None,
         video_enabled: Any = None,
         sharing_screen: Any = None,
+        deafened: Any = None,
         media_mode: Any = None,
         source: Any = None,
     ) -> dict[str, Any] | None:
@@ -205,6 +209,8 @@ class _MessengerCallHub:
                 participant["video_enabled"] = bool(video_enabled)
             if sharing_screen is not None:
                 participant["sharing_screen"] = bool(sharing_screen)
+            if deafened is not None:
+                participant["deafened"] = bool(deafened)
             if media_mode is not None:
                 participant["media_mode"] = self._normalize_mode(media_mode)
             if source is not None:

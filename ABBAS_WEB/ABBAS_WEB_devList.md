@@ -618,3 +618,15 @@
   - ASCORD 음성채널 화면을 디스코드 스크린샷 기준으로 다시 정리하면서 서버 드롭다운, 초대 모달, 좌측 음성 도크, 하단 콜 도크, 전체화면, 채널 생성 모달, 화면공유 선택 UI, hover 메타/버튼 노출, speaking 강조, 라이트·다크 테마 전환까지 한 흐름으로 재구성했다.
   - `uvicorn.log`에 남아 있던 메신저 bootstrap 500 오류는 `DB/chat_repo.py`의 SQL `LIKE 'ascord:%'` 패턴이 PyMySQL `%` 포맷과 충돌하던 문제로 확인했고, `%%` 이스케이프 처리로 수정했다.
   - 이번 채팅 기준 검증은 `python -m py_compile`, Chromium 기반 JS 파싱 확인, CSS 계산값 확인, `list_call_logs_for_room()` 직접 호출, `/login` HTTP 응답 확인까지 진행했다.
+
+## 62. ASCORD 음성채널 실시간 상태 동기화와 테마/UI 후속 보정
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `router/messenger_runtime.py`
+  - `router/messenger_ws.py`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+- 간단한 설명
+  - ASCORD 음성채널 참가자 렌더링을 후속 보정해서 캠/화면공유 카드와 오디오 전용 네임카드가 함께 보이도록 정리했고, 채널 목록의 통화 경과시간이 실시간으로 갱신되며 다른 음성채널의 참가자와 마이크 음소거·헤드셋 상태도 라이브로 노출되게 보정했다.
+  - 라이트/다크 모드별 네임카드 배경·텍스트·메타·버튼 대비를 다시 잡고, 공유 모달 선택 상태 표시, 유틸리티 카드 버튼 배치, 빈 ASCORD 통화 화면의 전체 폭 정렬, LiveKit 영상 카드 초기 흰색 깜빡임 완화까지 함께 정리했다.
+  - 메신저 부트스트랩/웹소켓 재연결 시 모든 ASCORD 음성채널에 `call_sync`를 보내도록 바꿔 새로고침 직후에도 채널 클릭 없이 라이브 멤버 정보가 채워지게 했고, 검증은 `git diff --check`, `python -m py_compile`, Chromium 기반 JS/CSS 계산값 확인으로 점검했다.
