@@ -630,3 +630,17 @@
   - ASCORD 음성채널 참가자 렌더링을 후속 보정해서 캠/화면공유 카드와 오디오 전용 네임카드가 함께 보이도록 정리했고, 채널 목록의 통화 경과시간이 실시간으로 갱신되며 다른 음성채널의 참가자와 마이크 음소거·헤드셋 상태도 라이브로 노출되게 보정했다.
   - 라이트/다크 모드별 네임카드 배경·텍스트·메타·버튼 대비를 다시 잡고, 공유 모달 선택 상태 표시, 유틸리티 카드 버튼 배치, 빈 ASCORD 통화 화면의 전체 폭 정렬, LiveKit 영상 카드 초기 흰색 깜빡임 완화까지 함께 정리했다.
   - 메신저 부트스트랩/웹소켓 재연결 시 모든 ASCORD 음성채널에 `call_sync`를 보내도록 바꿔 새로고침 직후에도 채널 클릭 없이 라이브 멤버 정보가 채워지게 했고, 검증은 `git diff --check`, `python -m py_compile`, Chromium 기반 JS/CSS 계산값 확인으로 점검했다.
+
+## 63. ASCORD 워크스페이스/음성채널 운영 UX 보강과 정렬·빈화면 후속 수정
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `DB/chat_repo.py`
+  - `router/messenger_api.py`
+  - `router/messenger_views.py`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+  - `templates/messenger_popup.html`
+- 간단한 설명
+  - ASCORD 전용으로 워크스페이스명을 `ABBA-S Korea`로 고정하고, 불필요한 서버 메뉴를 제거했으며, 설정 패널 토글 동작, 라이트·다크 모드별 수신함/공유 모달 대비, 채널 멤버 상태 아이콘 위치, 도크 버튼 구성, 입장 효과음, 빈 음성채널 화면 커버 영역까지 디스코드식 운영 UX에 맞춰 후속 보정했다.
+  - ASCORD 음성채널은 `channel_sort_order` 기반으로 위치가 고정되게 바꾸고, `admin`/`superuser`만 드래그앤드롭으로 순서를 바꿀 수 있도록 저장 API와 DB 정렬 필드를 추가했다. 동시에 마이크 음소거/헤드셋 상태 변경 시 참가자 카드 순서가 흔들리지 않도록 룸별 참여자 순서를 고정 캐시하도록 정리했다.
+  - 이후 사용자 피드백으로 헤드셋 버튼 복구, 정렬 저장 검증 완화, 빈 ASCORD 스테이지의 스크롤/높이 맞춤까지 추가 보정했고, 이번 채팅 기준 검증은 `git diff --check`, `python3 -m py_compile`, Chromium 기반 JS 로드 확인, `uvicorn.log` 최근 구간 점검으로 마무리했다.

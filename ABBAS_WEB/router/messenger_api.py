@@ -443,6 +443,49 @@ def register_messenger_api_routes(router: APIRouter) -> None:
         room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
         return JSONResponse({"ok": True, "room": room_payload})
 
+    @router.post("/api/messenger/rooms/ascord/voice-order")
+    async def api_messenger_reorder_ascord_voice_channels(
+        request: Request,
+        payload: dict[str, Any] = Body(default={}),
+    ):
+        current_user_id = _messenger_require_user_id(request)
+        current_user_role = str(_request_user_role(request) or "").strip().lower()
+        if current_user_role not in {"admin", "superuser"}:
+            return _messenger_json_error("ADMIN 또는 SuperUser만 음성채널 순서를 조정할 수 있습니다.", 403)
+
+        raw_room_ids = payload.get("room_ids")
+        if not isinstance(raw_room_ids, list):
+            return _messenger_json_error("room_ids 배열이 필요합니다.", 400)
+
+        normalized_room_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for raw_room_id in raw_room_ids:
+            room_id_value = _payload_int(raw_room_id)
+            if room_id_value <= 0 or room_id_value in seen_ids:
+                continue
+            room = await asyncio.to_thread(chat_repo.get_room_for_user, room_id_value, current_user_id)
+            if not room or not _messenger_is_ascord_room(room) or not _messenger_supports_calls(room):
+                return _messenger_json_error("ASCORD 음성채널만 순서를 조정할 수 있습니다.", 400)
+            seen_ids.add(room_id_value)
+            normalized_room_ids.append(room_id_value)
+        if not normalized_room_ids:
+            return _messenger_json_error("순서를 저장할 음성채널이 없습니다.", 400)
+
+        try:
+            await asyncio.to_thread(chat_repo.reorder_ascord_voice_channels, normalized_room_ids)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "detail": f"음성채널 순서 저장 실패: {exc}"}, status_code=500)
+
+        room_payloads: list[dict[str, Any]] = []
+        for room_id in normalized_room_ids:
+            await _messenger_refresh_room_state(room_id, notify=True)
+            room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
+            if room_payload:
+                room_payloads.append(room_payload)
+        return JSONResponse({"ok": True, "rooms": room_payloads})
+
     @router.delete("/api/messenger/rooms/{room_id}")
     async def api_messenger_delete_room(
         request: Request,

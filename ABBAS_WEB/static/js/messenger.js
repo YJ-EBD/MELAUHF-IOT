@@ -58,6 +58,7 @@
     dragRectTop: 0,
     dragRectWidth: 0,
     dragRectHeight: 0,
+    ascordVoiceDragRoomId: 0,
     call: {
       roomCallsById: {},
       joinedRoomId: 0,
@@ -100,8 +101,10 @@
       remoteStreamsByUserId: {},
       pendingSignalsByUserId: {},
       lastRenderItems: [],
+      participantOrderByRoomId: {},
       fullscreenTrackId: "",
       sharePickerMode: "application",
+      uiAudioContext: null,
     },
   };
 
@@ -2683,6 +2686,107 @@
     ].join("");
   }
 
+  async function persistAscordVoiceChannelOrder(roomIds) {
+    const payload = await api("/api/messenger/rooms/ascord/voice-order", {
+      method: "POST",
+      body: JSON.stringify({ room_ids: roomIds }),
+    });
+    const rooms = Array.isArray(payload && payload.rooms) ? payload.rooms : [];
+    rooms.forEach(function (room) {
+      if (!room || !room.id) return;
+      const index = state.rooms.findIndex(function (item) {
+        return Number(item.id || 0) === Number(room.id || 0);
+      });
+      if (index === -1) return;
+      state.rooms[index] = Object.assign({}, state.rooms[index], room);
+    });
+    renderRoomList();
+    renderHeader();
+    renderInspector();
+  }
+
+  function applyLocalAscordVoiceChannelOrder(roomIds) {
+    const orderMap = {};
+    (Array.isArray(roomIds) ? roomIds : []).forEach(function (roomId, index) {
+      orderMap[Number(roomId || 0)] = index + 1;
+    });
+    state.rooms = (state.rooms || []).map(function (room) {
+      const roomId = Number((room && room.id) || 0);
+      if (!Object.prototype.hasOwnProperty.call(orderMap, roomId)) return room;
+      return Object.assign({}, room, { channel_sort_order: orderMap[roomId] });
+    });
+  }
+
+  function bindAscordVoiceChannelReorder() {
+    if (!dom.roomList || state.viewMode !== "ascord" || state.sidebarMode !== "rooms" || !isAscordVoiceReorderAllowed()) {
+      state.ascordVoiceDragRoomId = 0;
+      return;
+    }
+    const wrappers = Array.prototype.slice.call(dom.roomList.querySelectorAll("[data-ascord-voice-room-id]"));
+    if (!wrappers.length) return;
+    const orderedIds = stableAscordVoiceRooms(currentViewRooms("ascord").filter(function (room) {
+      return roomSupportsCalls(room);
+    })).map(function (room) {
+      return Number(room.id || 0);
+    }).filter(function (roomId) {
+      return roomId > 0;
+    });
+    wrappers.forEach(function (wrapper) {
+      const roomId = Number(wrapper.getAttribute("data-ascord-voice-room-id") || 0);
+      if (roomId <= 0) return;
+      wrapper.addEventListener("dragstart", function (event) {
+        state.ascordVoiceDragRoomId = roomId;
+        wrapper.classList.add("is-dragging");
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", String(roomId));
+        }
+      });
+      wrapper.addEventListener("dragend", function () {
+        state.ascordVoiceDragRoomId = 0;
+        wrappers.forEach(function (item) {
+          item.classList.remove("is-dragging", "is-drop-before", "is-drop-after");
+        });
+      });
+      wrapper.addEventListener("dragover", function (event) {
+        if (!state.ascordVoiceDragRoomId || state.ascordVoiceDragRoomId === roomId) return;
+        event.preventDefault();
+        const rect = wrapper.getBoundingClientRect();
+        const after = Number(event.clientY || 0) > rect.top + rect.height / 2;
+        wrappers.forEach(function (item) {
+          if (item === wrapper) {
+            item.classList.toggle("is-drop-before", !after);
+            item.classList.toggle("is-drop-after", after);
+            return;
+          }
+          item.classList.remove("is-drop-before", "is-drop-after");
+        });
+      });
+      wrapper.addEventListener("drop", function (event) {
+        if (!state.ascordVoiceDragRoomId || state.ascordVoiceDragRoomId === roomId) return;
+        event.preventDefault();
+        const rect = wrapper.getBoundingClientRect();
+        const after = Number(event.clientY || 0) > rect.top + rect.height / 2;
+        const movingId = Number(state.ascordVoiceDragRoomId || 0);
+        const nextOrder = orderedIds.filter(function (value) {
+          return value !== movingId;
+        });
+        const targetIndex = nextOrder.indexOf(roomId);
+        if (targetIndex < 0) return;
+        nextOrder.splice(after ? targetIndex + 1 : targetIndex, 0, movingId);
+        const previousOrder = orderedIds.slice();
+        state.ascordVoiceDragRoomId = 0;
+        applyLocalAscordVoiceChannelOrder(nextOrder);
+        renderRoomList();
+        persistAscordVoiceChannelOrder(nextOrder).catch(function (error) {
+          applyLocalAscordVoiceChannelOrder(previousOrder);
+          renderRoomList();
+          showError((error && error.message) || "음성채널 순서를 저장하지 못했습니다.");
+        });
+      });
+    });
+  }
+
   function bindRoomListInteractions() {
     if (!dom.roomList) return;
     Array.prototype.forEach.call(dom.roomList.querySelectorAll("[data-room-id]"), function (button) {
@@ -2833,6 +2937,7 @@
         showRoomContextMenu(event, findRoomById(Number(button.getAttribute("data-inbox-room-id") || 0)));
       });
     });
+    bindAscordVoiceChannelReorder();
   }
 
   function renderInboxList(items, emptyTitle, emptyCopy) {
@@ -3080,6 +3185,7 @@
   function roomTypeLabel(room) {
     const targetRoom = room || {};
     if (targetRoom.is_direct) return "DM";
+    if (isAscordRoom(targetRoom)) return "CHANNEL";
     if (targetRoom.is_channel) return "CHANNEL";
     return "GROUP";
   }
@@ -3089,13 +3195,13 @@
     const explicitCategory = roomChannelCategory(targetRoom);
     if (explicitCategory) return explicitCategory;
     if (targetRoom.is_direct) return "DIRECT CALLS";
-    if (targetRoom.is_channel) return "WORKSPACE";
-    return "PRIVATE CHANNELS";
+    return "WORKSPACE";
   }
 
   function ascordPrivacyLabel(room) {
     const targetRoom = room || {};
     if (targetRoom.is_direct) return "DM";
+    if (isAscordRoom(targetRoom)) return "CHANNEL";
     if (targetRoom.is_channel) return "PUBLIC";
     return "PRIVATE";
   }
@@ -3114,9 +3220,122 @@
   }
 
   function ascordWorkspaceName() {
-    const room = currentAscordWorkspaceRoom();
-    const currentUser = state.currentUser || {};
-    return normalizeText((room && room.channel_category) || currentUser.department || "ASCORD");
+    return "ABBA-S Korea";
+  }
+
+  function isAscordVoiceReorderAllowed() {
+    const role = normalizeText((state.currentUser && state.currentUser.role) || "").toLowerCase();
+    return role === "admin" || role === "superuser";
+  }
+
+  function ascordVoiceSortOrder(room) {
+    const explicit = Number((room && room.channel_sort_order) || 0);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    return Number((room && room.id) || 0);
+  }
+
+  function stableAscordVoiceRooms(rooms) {
+    return (Array.isArray(rooms) ? rooms.slice() : []).sort(function (a, b) {
+      return ascordVoiceSortOrder(a) - ascordVoiceSortOrder(b)
+        || Number((a && a.id) || 0) - Number((b && b.id) || 0);
+    });
+  }
+
+  function stableParticipantSummariesByCallOrder(room, roomCall, summaries) {
+    const targetRoom = room || state.activeRoom;
+    const targetRoomId = Number((targetRoom && targetRoom.id) || 0);
+    const call = roomCall || callForRoom(targetRoom && targetRoom.id);
+    const previousOrder = targetRoomId > 0 && Array.isArray(state.call.participantOrderByRoomId[targetRoomId])
+      ? state.call.participantOrderByRoomId[targetRoomId].slice()
+      : [];
+    const liveIds = new Set((Array.isArray(summaries) ? summaries : []).map(function (summary) {
+      return normalizeText(summary && summary.userId);
+    }).filter(Boolean));
+    const participants = Array.isArray(call && call.participants) ? call.participants : [];
+    const nextOrder = previousOrder.filter(function (userId) {
+      return liveIds.has(userId);
+    });
+    participants.forEach(function (participant) {
+      const userId = normalizeText((participant || {}).user_id);
+      if (!userId || !liveIds.has(userId) || nextOrder.indexOf(userId) !== -1) return;
+      nextOrder.push(userId);
+    });
+    (Array.isArray(summaries) ? summaries : []).forEach(function (summary) {
+      const userId = normalizeText(summary && summary.userId);
+      if (!userId || nextOrder.indexOf(userId) !== -1) return;
+      nextOrder.push(userId);
+    });
+    if (targetRoomId > 0) {
+      if (nextOrder.length) {
+        state.call.participantOrderByRoomId[targetRoomId] = nextOrder.slice();
+      } else {
+        delete state.call.participantOrderByRoomId[targetRoomId];
+      }
+    }
+    const orderMap = {};
+    nextOrder.forEach(function (userId, index) {
+      orderMap[userId] = index;
+    });
+    return (Array.isArray(summaries) ? summaries.slice() : []).sort(function (a, b) {
+      const orderA = Object.prototype.hasOwnProperty.call(orderMap, normalizeText(a && a.userId))
+        ? Number(orderMap[normalizeText(a && a.userId)])
+        : Number.MAX_SAFE_INTEGER;
+      const orderB = Object.prototype.hasOwnProperty.call(orderMap, normalizeText(b && b.userId))
+        ? Number(orderMap[normalizeText(b && b.userId)])
+        : Number.MAX_SAFE_INTEGER;
+      return orderA - orderB
+        || Number(!!b.isLocal) - Number(!!a.isLocal)
+        || normalizeText((a && a.displayName) || "").localeCompare(normalizeText((b && b.displayName) || ""), "ko");
+    });
+  }
+
+  function toggleAscordSettingsSidebar() {
+    if (state.viewMode !== "ascord") {
+      setSidebarMode("settings");
+      return;
+    }
+    setSidebarMode(state.sidebarMode === "settings" ? "rooms" : "settings");
+  }
+
+  function ensureAscordUiAudioContext() {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    if (!state.call.uiAudioContext) {
+      try {
+        state.call.uiAudioContext = new AudioContextCtor();
+      } catch (_) {
+        state.call.uiAudioContext = null;
+      }
+    }
+    const context = state.call.uiAudioContext;
+    if (context && context.state === "suspended" && typeof context.resume === "function") {
+      context.resume().catch(function () {});
+    }
+    return context || null;
+  }
+
+  function playAscordJoinSound() {
+    const context = ensureAscordUiAudioContext();
+    if (!context) return;
+    const notes = [
+      { frequency: 783.99, start: 0, duration: 0.085, gain: 0.045 },
+      { frequency: 1046.5, start: 0.095, duration: 0.11, gain: 0.055 },
+    ];
+    notes.forEach(function (note) {
+      try {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "triangle";
+        oscillator.frequency.setValueAtTime(note.frequency, context.currentTime + note.start);
+        gain.gain.setValueAtTime(0.0001, context.currentTime + note.start);
+        gain.gain.exponentialRampToValueAtTime(note.gain, context.currentTime + note.start + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + note.start + note.duration);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(context.currentTime + note.start);
+        oscillator.stop(context.currentTime + note.start + note.duration + 0.02);
+      } catch (_) {}
+    });
   }
 
   function workspaceInviteLink(room) {
@@ -3355,20 +3574,17 @@
         const avatar = summary.profileImageUrl
           ? '<img src="' + escapeAttribute(summary.profileImageUrl) + '" alt="' + escapeAttribute(summary.displayName || summary.userId || "참여자") + '">'
           : escapeHtml(summary.avatarInitial || avatarInitialFor(summary.displayName, summary.userId || "U"));
-        const statusIcons = [
+        const rightIcons = [
           (!summary.audioEnabled || summary.serverMuted) ? '<i class="bi bi-mic-mute-fill" title="마이크 음소거"></i>' : "",
           summary.deafened ? '<i class="bi bi-headphones" title="소리 안 듣기"></i>' : "",
-        ].join("");
-        const mediaIcons = [
           summary.sharingScreen ? '<i class="bi bi-display-fill" title="화면 공유"></i>' : "",
           (summary.videoEnabled && !summary.sharingScreen) ? '<i class="bi bi-camera-video-fill" title="카메라"></i>' : "",
         ].join("");
         return [
           '<button class="messenger-ascord-channel-member' + (summary.isSpeaking ? ' is-speaking' : '') + '" type="button" data-room-participant-user-id="' + escapeAttribute(summary.userId || "") + '">',
-          '<span class="messenger-ascord-channel-member__flags">' + statusIcons + "</span>",
           '<span class="messenger-ascord-channel-member__avatar">' + avatar + "</span>",
           '<span class="messenger-ascord-channel-member__label">' + escapeHtml(summary.displayName || summary.userId || "참여자") + "</span>",
-          '<span class="messenger-ascord-channel-member__media">' + mediaIcons + "</span>",
+          '<span class="messenger-ascord-channel-member__media">' + rightIcons + "</span>",
           "</button>",
         ].join("");
       }).join(""),
@@ -3383,6 +3599,7 @@
     const activeClass = Number(targetRoom.id || 0) === Number(state.activeRoomId || 0) ? " is-active" : "";
     const joinedClass = roomState.joinedHere ? " is-joined" : "";
     const liveClass = roomState.live ? " is-live" : "";
+    const canReorder = isAscordVoiceReorderAllowed();
     const joinedElsewhere = Number(state.call.joinedRoomId || 0) > 0 && !roomState.joinedHere;
     const elapsedText = roomCall && roomState.live ? callElapsedText(roomCall.started_at) : "";
     const rightMeta = elapsedText
@@ -3407,7 +3624,7 @@
       : "";
     const showChildren = roomState.live || roomState.joinedHere || (Number(state.activeRoomId || 0) === Number(targetRoom.id || 0) && roomState.participantCount > 0);
     return [
-      '<div class="messenger-ascord-channel-wrap' + activeClass + joinedClass + liveClass + (showChildren ? ' is-expanded' : '') + '">',
+      '<div class="messenger-ascord-channel-wrap' + activeClass + joinedClass + liveClass + (showChildren ? ' is-expanded' : '') + (canReorder ? ' is-reorderable' : '') + '" data-ascord-voice-room-id="' + Number(targetRoom.id || 0) + '"' + (canReorder ? ' draggable="true"' : '') + '>',
       '<div class="messenger-ascord-channel-row messenger-ascord-channel-row--voice' + activeClass + joinedClass + liveClass + '">',
       '<button class="messenger-ascord-channel-row__main" type="button" data-room-id="' + Number(targetRoom.id || 0) + '">',
       '<span class="messenger-ascord-channel-row__icon"><i class="bi ' + escapeAttribute(roomVoiceIcon(targetRoom)) + '"></i></span>',
@@ -3484,7 +3701,7 @@
 
   function renderAscordRoomList() {
     if (!dom.roomList) return;
-    const rooms = sortAscordRooms(filteredRooms());
+    const rooms = filteredRooms();
     if (!rooms.length) {
       dom.roomList.innerHTML = [
         '<div class="messenger-empty-state">',
@@ -3495,18 +3712,17 @@
       ].join("");
       return;
     }
-    const textRooms = rooms.filter(function (room) {
+    const textRooms = sortAscordRooms(rooms.filter(function (room) {
       return !roomSupportsCalls(room);
-    });
-    const voiceRooms = rooms.filter(function (room) {
+    }));
+    const voiceRooms = stableAscordVoiceRooms(rooms.filter(function (room) {
       return roomSupportsCalls(room);
-    });
+    }));
 
     dom.roomList.innerHTML = [
       '<div class="messenger-ascord-sidebar-list">',
       '<div class="messenger-ascord-sidebar-shortcuts">',
       ascordSidebarShortcutMarkup("events", "bi-calendar-event-fill", "이벤트"),
-      ascordSidebarShortcutMarkup("boost", "bi-gem", "서버 부스트"),
       "</div>",
       '<div class="messenger-ascord-sidebar-divider"></div>',
       renderAscordChannelSection("채팅 채널", "text", textRooms),
@@ -4506,8 +4722,11 @@
       return;
     }
     if (targetAction === "notification-settings") {
-      setSidebarMode("settings");
-      await showToast("success", "ASCORD 설정 패널에서 알림 동작을 조정할 수 있습니다.");
+      const shouldOpen = state.sidebarMode !== "settings";
+      toggleAscordSettingsSidebar();
+      if (shouldOpen) {
+        await showToast("success", "ASCORD 설정 패널에서 알림 동작을 조정할 수 있습니다.");
+      }
       return;
     }
     if (targetAction === "privacy-settings") {
@@ -4592,7 +4811,6 @@
       "</span>",
       '<div class="messenger-ascord-voice-dock__profile-actions">',
       '<button type="button" data-ascord-dock-action="toggle-mic"' + (!joinedHere ? " disabled" : "") + '><i class="bi ' + (state.call.requestedAudioEnabled ? "bi-mic-fill" : "bi-mic-mute-fill") + '"></i></button>',
-      '<button type="button" data-ascord-dock-action="toggle-deafen"' + (!joinedHere ? " disabled" : "") + '><i class="bi ' + (state.call.deafened ? "bi-headset-vr" : "bi-headphones") + '"></i></button>',
       '<button type="button" data-ascord-dock-action="settings"><i class="bi bi-gear-fill"></i></button>',
       "</div>",
       "</div>",
@@ -4619,8 +4837,7 @@
       "</div>",
       '<button type="button" class="messenger-ascord-call-dock__leave" data-ascord-call-dock-action="leave"><i class="bi bi-telephone-x-fill"></i></button>',
       '<div class="messenger-ascord-call-dock__group">',
-      '<button type="button" class="' + (state.call.deafened ? "is-active" : "") + '" data-ascord-call-dock-action="toggle-deafen"><i class="bi ' + (state.call.deafened ? "bi-volume-mute-fill" : "bi-headphones") + '"></i></button>',
-      '<button type="button" class="' + (state.call.pushToTalk ? "is-active" : "") + '" data-ascord-call-dock-action="toggle-ptt"><i class="bi bi-broadcast-pin"></i></button>',
+      '<button type="button" class="' + (state.call.deafened ? "is-active" : "") + '" data-ascord-call-dock-action="toggle-deafen"><i class="bi bi-headset"></i></button>',
       '</div>',
     ].join("");
   }
@@ -4774,7 +4991,7 @@
       return;
     }
     if (targetAction === "settings") {
-      setSidebarMode("settings");
+      toggleAscordSettingsSidebar();
       return;
     }
     if (targetAction === "layout") {
@@ -5390,6 +5607,7 @@
   async function joinAscordVoiceChannel(roomId) {
     const targetRoomId = Number(roomId || 0);
     if (targetRoomId <= 0) return;
+    ensureAscordUiAudioContext();
     if (!state.initialized) {
       await init();
     }
@@ -5461,7 +5679,7 @@
     const joinedHere = !!targetRoom && !!liveRoom && Number(state.call.joinedRoomId || 0) === Number(targetRoom.id || 0);
     const roomCallParticipants = Array.isArray(roomCall && roomCall.participants) ? roomCall.participants : [];
     if (joinedHere) {
-      return livekitParticipantSummaries(liveRoom, targetRoom).map(function (summary) {
+      return stableParticipantSummariesByCallOrder(targetRoom, roomCall, livekitParticipantSummaries(liveRoom, targetRoom).map(function (summary) {
         const participant = roomCallParticipants.find(function (item) {
           return normalizeText((item || {}).user_id) === normalizeText(summary.userId);
         }) || {};
@@ -5474,10 +5692,10 @@
           deafened: !!participant.deafened || (summary.isLocal && !!state.call.deafened),
           statusText: participantStatus || summary.statusText,
         });
-      });
+      }));
     }
     if (!roomCall || !Array.isArray(roomCall.participants)) return [];
-    return (roomCall.participants || []).map(function (participant) {
+    return stableParticipantSummariesByCallOrder(targetRoom, roomCall, (roomCall.participants || []).map(function (participant) {
       const userId = normalizeText((participant || {}).user_id);
       const profile = roomMemberProfile(targetRoom, userId, participant.display_name);
       return {
@@ -5501,7 +5719,7 @@
         serverMuted: !!participant.server_muted,
         statusText: callPreviewSubtitle(participant, targetRoom),
       };
-    });
+    }));
   }
 
   async function refreshCallDevices() {
@@ -6269,6 +6487,10 @@
   function renderCallPrompt(roomCall) {
     if (!dom.callGrid) return;
     state.call.lastRenderItems = [];
+    dom.callGrid.classList.remove("is-empty-ascord");
+    if (dom.callStage) {
+      dom.callStage.classList.remove("is-empty-ascord");
+    }
     const room = state.activeRoom;
     const count = callParticipantCount(roomCall);
     const isAscord = state.viewMode === "ascord";
@@ -6278,6 +6500,10 @@
     dom.callGrid.setAttribute("data-density", "default");
     dom.callGrid.setAttribute("data-layout", sanitizeCallLayout(state.call.layoutMode));
     if (isAscord) {
+      dom.callGrid.classList.add("is-empty-ascord");
+      if (dom.callStage) {
+        dom.callStage.classList.add("is-empty-ascord");
+      }
       const joinLabel = roomChannelMode(room) === "stage"
         ? (count > 0 ? "스테이지 참가하기" : "스테이지 시작하기")
         : (Number(state.call.joinedRoomId || 0) > 0 && !joinedHere ? "이 채널로 전환하기" : "음성 채널 참가하기");
@@ -6884,6 +7110,9 @@
         source: state.call.sharingScreen ? "screen" : "camera",
       });
       sendSocket({ type: "call_sync", room_id: targetRoomId });
+      if (isAscordRoom(room)) {
+        playAscordJoinSound();
+      }
     } catch (error) {
       await showError(formatLivekitConnectionError(error), "통화 준비 실패");
       await cleanupLocalCallSession();
@@ -7039,6 +7268,10 @@
 
   function renderCallGrid(roomCall) {
     if (!dom.callGrid) return;
+    dom.callGrid.classList.remove("is-empty-ascord");
+    if (dom.callStage) {
+      dom.callStage.classList.remove("is-empty-ascord");
+    }
     const call = roomCall || null;
     const liveRoom = currentLiveRoom();
     const joinedHere = !!liveRoom && Number(state.call.joinedRoomId || 0) === Number((state.activeRoom && state.activeRoom.id) || 0);
@@ -7848,7 +8081,7 @@
     const selectedUserIds = new Set();
     const inviteLink = workspaceInviteLink(targetRoom);
     const result = await fireDialog({
-      title: "친구를 " + ascordWorkspaceName() + " 그룹으로 초대하기",
+      title: "친구를 " + ascordWorkspaceName() + " 워크스페이스로 초대하기",
       width: "42rem",
       customClass: {
         popup: "app-swal-popup messenger-discord-invite-modal",
@@ -8164,6 +8397,14 @@
         modalTitle.textContent = state.viewMode === "ascord"
           ? "채널 만들기"
           : (state.modalMode === "group" ? "새 그룹방 만들기" : "새 대화 시작");
+      }
+      const groupModeButton = modalElement.querySelector('[data-mode="group"]');
+      const groupNameLabel = modalElement.querySelector('label[for="messengerGroupNameInput"]');
+      if (groupModeButton) {
+        groupModeButton.textContent = state.viewMode === "ascord" ? "채널" : "그룹방";
+      }
+      if (groupNameLabel) {
+        groupNameLabel.textContent = state.viewMode === "ascord" ? "채널 이름" : "그룹방 이름";
       }
     }
     if (dom.groupNameWrap) dom.groupNameWrap.classList.toggle("d-none", state.modalMode !== "group");
@@ -8661,6 +8902,10 @@
 
     if (dom.railSettingsBtn) {
       dom.railSettingsBtn.addEventListener("click", function () {
+        if (state.viewMode === "ascord") {
+          toggleAscordSettingsSidebar();
+          return;
+        }
         setSidebarMode("settings");
       });
     }

@@ -833,6 +833,7 @@ def _messenger_room_view(
         "channel_category": channel_category,
         "channel_mode": channel_mode,
         "channel_mode_label": _messenger_channel_mode_label(channel_mode),
+        "channel_sort_order": int(room.get("channel_sort_order") or 0),
         "avatar_initial": avatar_initial,
         "avatar_url": avatar_url,
         "avatar_path": str(room.get("avatar_path") or "").strip(),

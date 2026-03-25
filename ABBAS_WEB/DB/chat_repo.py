@@ -88,6 +88,19 @@ def room_supports_calls(room: dict[str, Any] | None) -> bool:
     ) == "ascord"
 
 
+def _next_ascord_channel_sort_order_with_cur(cur) -> int:
+    cur.execute(
+        """
+        SELECT COALESCE(MAX(channel_sort_order), 0) + 1 AS next_order
+        FROM chat_rooms
+        WHERE COALESCE(room_key, '') LIKE 'ascord:%%'
+          AND COALESCE(room_type, 'group') = 'channel'
+        """
+    )
+    row = cur.fetchone() or {}
+    return max(int(row.get("next_order") or 1), 1)
+
+
 _CALL_PERMISSION_KEYS = (
     "connect",
     "start_call",
@@ -452,6 +465,7 @@ def _ensure_schema_with_cur(cur) -> None:
           avatar_path VARCHAR(255) NOT NULL DEFAULT '',
           channel_category VARCHAR(80) NOT NULL DEFAULT '',
           channel_mode VARCHAR(16) NOT NULL DEFAULT 'voice',
+          channel_sort_order INT NOT NULL DEFAULT 0,
           call_permissions_json LONGTEXT NULL,
           created_by VARCHAR(64) NOT NULL DEFAULT '',
           last_message_id BIGINT UNSIGNED NULL,
@@ -529,8 +543,19 @@ def _ensure_schema_with_cur(cur) -> None:
         cur.execute("ALTER TABLE chat_rooms ADD COLUMN channel_category VARCHAR(80) NOT NULL DEFAULT '' AFTER avatar_path")
     if "channel_mode" not in room_cols:
         cur.execute("ALTER TABLE chat_rooms ADD COLUMN channel_mode VARCHAR(16) NOT NULL DEFAULT 'voice' AFTER channel_category")
+    if "channel_sort_order" not in room_cols:
+        cur.execute("ALTER TABLE chat_rooms ADD COLUMN channel_sort_order INT NOT NULL DEFAULT 0 AFTER channel_mode")
     if "call_permissions_json" not in room_cols:
-        cur.execute("ALTER TABLE chat_rooms ADD COLUMN call_permissions_json LONGTEXT NULL AFTER channel_mode")
+        cur.execute("ALTER TABLE chat_rooms ADD COLUMN call_permissions_json LONGTEXT NULL AFTER channel_sort_order")
+    cur.execute(
+        """
+        UPDATE chat_rooms
+        SET channel_sort_order = id
+        WHERE channel_sort_order = 0
+          AND COALESCE(room_key, '') LIKE 'ascord:%%'
+          AND COALESCE(room_type, 'group') = 'channel'
+        """
+    )
 
     try:
         cur.execute("SHOW COLUMNS FROM chat_room_members")
@@ -568,6 +593,8 @@ def _ensure_room_with_cur(
 ) -> int:
     normalized_channel_category = _norm_channel_category(channel_category)
     normalized_channel_mode = _norm_channel_mode(channel_mode)
+    normalized_app_domain = _norm_app_domain(None, room_type=room_type, room_key=room_key)
+    channel_sort_order = _next_ascord_channel_sort_order_with_cur(cur) if normalized_app_domain == "ascord" else 0
     call_permissions_json = serialize_call_permissions(
         room_type,
         call_permissions,
@@ -576,9 +603,9 @@ def _ensure_room_with_cur(
     cur.execute(
         """
         INSERT INTO chat_rooms (
-          room_type, room_key, name, topic, avatar_path, channel_category, channel_mode, created_by, call_permissions_json, created_at, updated_at
+          room_type, room_key, name, topic, avatar_path, channel_category, channel_mode, channel_sort_order, created_by, call_permissions_json, created_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, '', %s, %s, %s, %s, NOW(), NOW())
+        VALUES (%s, %s, %s, %s, '', %s, %s, %s, %s, %s, NOW(), NOW())
         ON DUPLICATE KEY UPDATE
           room_type=VALUES(room_type),
           name=CASE WHEN TRIM(VALUES(name))='' THEN name ELSE VALUES(name) END,
@@ -604,6 +631,7 @@ def _ensure_room_with_cur(
             topic,
             normalized_channel_category,
             normalized_channel_mode,
+            channel_sort_order,
             created_by,
             call_permissions_json,
         ),
@@ -755,6 +783,7 @@ def list_rooms_for_user(user_id: str) -> list[dict[str, Any]]:
                   COALESCE(r.avatar_path, '') AS avatar_path,
                   COALESCE(r.channel_category, '') AS channel_category,
                   COALESCE(r.channel_mode, 'voice') AS channel_mode,
+                  COALESCE(r.channel_sort_order, 0) AS channel_sort_order,
                   COALESCE(r.call_permissions_json, '') AS call_permissions_json,
                   COALESCE(r.created_by, '') AS created_by,
                   COALESCE(m.member_role, 'member') AS member_role,
@@ -812,6 +841,7 @@ def list_rooms_for_user(user_id: str) -> list[dict[str, Any]]:
                 "avatar_path": _norm_text(row.get("avatar_path")),
                 "channel_category": _norm_channel_category(row.get("channel_category")),
                 "channel_mode": _norm_channel_mode(row.get("channel_mode")),
+                "channel_sort_order": int(row.get("channel_sort_order") or 0),
                 "call_permissions": normalize_call_permissions(
                     room_type,
                     row.get("call_permissions_json"),
@@ -1364,6 +1394,7 @@ def get_room_by_id(room_id: int) -> dict[str, Any] | None:
                   COALESCE(avatar_path, '') AS avatar_path,
                   COALESCE(channel_category, '') AS channel_category,
                   COALESCE(channel_mode, 'voice') AS channel_mode,
+                  COALESCE(channel_sort_order, 0) AS channel_sort_order,
                   COALESCE(call_permissions_json, '') AS call_permissions_json,
                   COALESCE(created_by, '') AS created_by,
                   COALESCE(last_message_id, 0) AS last_message_id
@@ -1391,6 +1422,7 @@ def get_room_by_id(room_id: int) -> dict[str, Any] | None:
         "avatar_path": _norm_text(row.get("avatar_path")),
         "channel_category": _norm_channel_category(row.get("channel_category")),
         "channel_mode": _norm_channel_mode(row.get("channel_mode")),
+        "channel_sort_order": int(row.get("channel_sort_order") or 0),
         "call_permissions": normalize_call_permissions(
             room_type,
             row.get("call_permissions_json"),
@@ -2309,6 +2341,56 @@ def update_room_details(
     return updated
 
 
+def reorder_ascord_voice_channels(room_ids: list[int]) -> list[int]:
+    normalized_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_room_id in list(room_ids or []):
+        try:
+            room_id = int(raw_room_id)
+        except Exception:
+            continue
+        if room_id <= 0 or room_id in seen:
+            continue
+        seen.add(room_id)
+        normalized_ids.append(room_id)
+    if not normalized_ids:
+        raise ValueError("room_ids required")
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            placeholders = ", ".join(["%s"] * len(normalized_ids))
+            cur.execute(
+                f"""
+                SELECT id, room_type, room_key
+                FROM chat_rooms
+                WHERE id IN ({placeholders})
+                """,
+                tuple(normalized_ids),
+            )
+            allowed_ids = {
+                int(row.get("id") or 0)
+                for row in (cur.fetchall() or [])
+                if _norm_app_domain(None, room_type=row.get("room_type"), room_key=row.get("room_key")) == "ascord"
+                and _norm_room_type(row.get("room_type")) != "dm"
+            }
+            if len(allowed_ids) != len(normalized_ids):
+                raise ValueError("ASCORD 음성채널만 순서를 조정할 수 있습니다.")
+            for index, room_id in enumerate(normalized_ids, start=1):
+                cur.execute(
+                    """
+                    UPDATE chat_rooms
+                    SET channel_sort_order=%s
+                    WHERE id=%s
+                    """,
+                    (index, room_id),
+                )
+    for room_id in normalized_ids:
+        sync_room_backup(room_id, sync_reason="ascord_voice_reordered")
+    return normalized_ids
+
+
 def delete_room(room_id: int) -> bool:
     try:
         target_room_id = int(room_id)
@@ -2507,9 +2589,9 @@ def create_group_room(
             cur.execute(
                 """
                 INSERT INTO chat_rooms (
-                  room_type, room_key, name, topic, channel_category, channel_mode, created_by, call_permissions_json, created_at, updated_at
+                  room_type, room_key, name, topic, channel_category, channel_mode, channel_sort_order, created_by, call_permissions_json, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 """,
                 (
                     room_type,
@@ -2518,6 +2600,7 @@ def create_group_room(
                     _norm_text(topic),
                     stored_channel_category,
                     stored_channel_mode,
+                    _next_ascord_channel_sort_order_with_cur(cur) if normalized_app_domain == "ascord" else 0,
                     creator_user_id,
                     serialized_call_permissions,
                 ),
