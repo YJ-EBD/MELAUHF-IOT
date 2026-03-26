@@ -9031,6 +9031,12 @@ html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card__util
   transform: translateX(2px);
 }
 
+.messenger-meeting-notes-browser__channel.is-deleted:hover,
+.messenger-meeting-notes-browser__channel.is-deleted.is-active {
+  border-color: rgba(237, 66, 69, 0.22);
+  background: rgba(237, 66, 69, 0.12);
+}
+
 .messenger-meeting-notes-browser__channel-icon {
   width: 36px;
   height: 36px;
@@ -9183,6 +9189,16 @@ html[data-bs-theme="light"] .messenger-meeting-notes-browser__channel-icon,
 html[data-bs-theme="light"] .messenger-meeting-notes-browser__note-icon {
   background: rgba(88, 101, 242, 0.1);
   color: #4f5dd5;
+}
+
+html[data-bs-theme="light"] .messenger-meeting-notes-browser__channel.is-deleted .messenger-meeting-notes-browser__channel-icon {
+  background: rgba(220, 38, 38, 0.12);
+  color: #d12d2d;
+}
+
+.messenger-meeting-notes-browser__channel.is-deleted .messenger-meeting-notes-browser__channel-icon {
+  background: rgba(237, 66, 69, 0.14);
+  color: #ffb4b6;
 }
 
 @media (max-width: 920px) {

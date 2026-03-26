@@ -438,6 +438,7 @@ def register_messenger_api_routes(router: APIRouter) -> None:
                 for room in (rooms or [])
                 if _messenger_is_ascord_room(room) and _messenger_supports_calls(room)
             ],
+            current_user_id,
         )
         return JSONResponse({"ok": True, "channels": channels})
 
@@ -456,7 +457,7 @@ def register_messenger_api_routes(router: APIRouter) -> None:
             if _messenger_is_ascord_room(room) and _messenger_supports_calls(room)
         }
         try:
-            note_payload = await asyncio.to_thread(meeting_notes.read_note, note_id, allowed_room_ids)
+            note_payload = await asyncio.to_thread(meeting_notes.read_note, note_id, allowed_room_ids, current_user_id)
         except PermissionError as exc:
             return _messenger_json_error(str(exc) or "이 회의록을 볼 권한이 없습니다.", 403)
         except FileNotFoundError:
@@ -809,6 +810,17 @@ def register_messenger_api_routes(router: APIRouter) -> None:
         deleted = await asyncio.to_thread(chat_repo.delete_room, room_id)
         if not deleted:
             return JSONResponse({"ok": False, "detail": "대화방 삭제에 실패했습니다."}, status_code=500)
+
+        try:
+            await asyncio.to_thread(
+                meeting_notes.mark_room_deleted,
+                room_id,
+                str(room.get("name") or room.get("title") or "채널").strip() or "채널",
+                participant_ids,
+                deleted_at=time.time(),
+            )
+        except Exception:
+            pass
 
         if previous_avatar_path:
             _delete_managed_messenger_room_avatar(previous_avatar_path)

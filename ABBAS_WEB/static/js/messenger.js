@@ -6393,7 +6393,7 @@
 
   function meetingNotesChannelByRoomId(roomId) {
     const targetRoomId = Number(roomId || 0);
-    if (targetRoomId <= 0) return null;
+    if (targetRoomId === 0) return null;
     return meetingNotesChannels().find(function (channel) {
       return Number((channel || {}).room_id || 0) === targetRoomId;
     }) || null;
@@ -6410,7 +6410,7 @@
   function setMeetingNotesActiveRoom(roomId) {
     const nextRoomId = Number(roomId || 0);
     if (nextRoomId === Number(state.meetingNotes.activeRoomId || 0)) return;
-    state.meetingNotes.activeRoomId = nextRoomId > 0 ? nextRoomId : 0;
+    state.meetingNotes.activeRoomId = nextRoomId !== 0 ? nextRoomId : 0;
     renderMeetingNotesBrowser();
   }
 
@@ -6437,13 +6437,19 @@
           const targetChannel = channel || {};
           const roomId = Number(targetChannel.room_id || 0);
           const noteCount = Number(targetChannel.note_count || 0);
-          const activeClass = roomId > 0 && roomId === Number(state.meetingNotes.activeRoomId || 0) ? " is-active" : "";
+          const activeClass = roomId === Number(state.meetingNotes.activeRoomId || 0) ? " is-active" : "";
+          const deletedBucket = !!targetChannel.deleted_bucket;
+          const iconClass = deletedBucket ? "bi-trash3-fill" : "bi-volume-up-fill";
           return [
-            '<button class="messenger-meeting-notes-browser__channel' + activeClass + '" type="button" data-meeting-room-id="' + roomId + '">',
-            '<span class="messenger-meeting-notes-browser__channel-icon"><i class="bi bi-volume-up-fill"></i></span>',
+            '<button class="messenger-meeting-notes-browser__channel' + activeClass + (deletedBucket ? " is-deleted" : "") + '" type="button" data-meeting-room-id="' + roomId + '">',
+            '<span class="messenger-meeting-notes-browser__channel-icon"><i class="bi ' + iconClass + '"></i></span>',
             '<span class="messenger-meeting-notes-browser__channel-copy">',
             '<strong>' + escapeHtml(targetChannel.room_title || "채널") + '</strong>',
-            '<span>' + escapeHtml(noteCount > 0 ? ("회의록 " + noteCount + "개") : "저장된 회의록 없음") + '</span>',
+            '<span>' + escapeHtml(
+              deletedBucket
+                ? ("삭제된 채널 회의록 " + noteCount + "개")
+                : (noteCount > 0 ? ("회의록 " + noteCount + "개") : "저장된 회의록 없음")
+            ) + '</span>',
             '</span>',
             '<i class="bi bi-chevron-right"></i>',
             '</button>',
@@ -6470,19 +6476,22 @@
     dom.meetingNotesNotes.innerHTML = [
       '<div class="messenger-meeting-notes-browser__notes-head">',
       '<strong>' + escapeHtml(activeChannel.room_title || "채널") + '</strong>',
-      '<span>날짜별 회의록</span>',
+      '<span>' + escapeHtml(activeChannel.deleted_bucket ? "삭제된 채널 회의록" : "날짜별 회의록") + '</span>',
       '</div>',
       notes.length
         ? [
             '<div class="messenger-meeting-notes-browser__note-list">',
             notes.map(function (note) {
               const targetNote = note || {};
+              const noteSubtext = activeChannel.deleted_bucket
+                ? ((normalizeText(targetNote.channel_name) || "삭제된 채널") + " · " + (targetNote.file_name || "회의록.txt"))
+                : (targetNote.file_name || "회의록.txt");
               return [
                 '<button class="messenger-meeting-notes-browser__note" type="button" data-meeting-note-id="' + escapeAttribute(targetNote.note_id || "") + '">',
                 '<span class="messenger-meeting-notes-browser__note-icon"><i class="bi bi-file-earmark-text"></i></span>',
                 '<span class="messenger-meeting-notes-browser__note-copy">',
                 '<strong>' + escapeHtml(formatMeetingNoteTimestamp(targetNote.timestamp || "")) + '</strong>',
-                '<span>' + escapeHtml(targetNote.file_name || "회의록.txt") + '</span>',
+                '<span>' + escapeHtml(noteSubtext) + '</span>',
                 '</span>',
                 '</button>',
               ].join("");
@@ -6492,8 +6501,8 @@
         : [
             '<div class="messenger-meeting-notes-browser__empty is-inline-empty">',
             '<i class="bi bi-journal-x"></i>',
-            '<strong>이 채널에는 아직 저장된 회의록이 없습니다.</strong>',
-            '<span>Notiba AI 전사가 누적되면 날짜별 회의록이 여기에 생성됩니다.</span>',
+            '<strong>' + escapeHtml(activeChannel.deleted_bucket ? "삭제된 채널 회의록이 없습니다." : "이 채널에는 아직 저장된 회의록이 없습니다.") + '</strong>',
+            '<span>' + escapeHtml(activeChannel.deleted_bucket ? "삭제된 채널이 생기면 이 묶음에서 회의록을 계속 볼 수 있습니다." : "Notiba AI 전사가 누적되면 날짜별 회의록이 여기에 생성됩니다.") + '</span>',
             '</div>',
           ].join(""),
     ].join("");
@@ -11717,7 +11726,7 @@
         const target = event.target instanceof Element ? event.target.closest("[data-meeting-room-id]") : null;
         if (!target) return;
         const roomId = Number(target.getAttribute("data-meeting-room-id") || 0);
-        if (roomId <= 0) return;
+        if (roomId === 0) return;
         setMeetingNotesActiveRoom(roomId);
       });
       dom.meetingNotesChannels.addEventListener("click", function (event) {
@@ -11725,7 +11734,7 @@
         if (!target) return;
         event.preventDefault();
         const roomId = Number(target.getAttribute("data-meeting-room-id") || 0);
-        if (roomId <= 0) return;
+        if (roomId === 0) return;
         setMeetingNotesActiveRoom(roomId);
       });
     }

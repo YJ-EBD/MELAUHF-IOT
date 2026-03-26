@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import json
 import re
 import threading
 import time
@@ -12,6 +13,7 @@ _ROOT_DIR = Path(__file__).resolve().parents[1]
 _MEETING_DATA_DIR = _ROOT_DIR / "meeting_data"
 _FILENAME_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})")
 _ROOM_DIR_RE = re.compile(r"^room-(\d+)__")
+_ROOM_META_FILENAME = "__room_meta__.json"
 _ACTIVE_NOTE_PATHS: dict[tuple[int, str], Path] = {}
 _LOCK = threading.Lock()
 
@@ -36,6 +38,59 @@ def _safe_segment(value: Any, fallback: str) -> str:
 
 def _room_dir(room_id: int, channel_name: str) -> Path:
     return meeting_data_dir() / f"room-{int(room_id)}__{_safe_segment(channel_name, '채널')}"
+
+
+def _room_dirs(room_id: int) -> list[Path]:
+    target_room_id = int(room_id or 0)
+    if target_room_id <= 0:
+        return []
+    return sorted(
+        [
+            item
+            for item in meeting_data_dir().glob(f"room-{target_room_id}__*")
+            if item.is_dir()
+        ],
+        key=lambda item: item.name.lower(),
+    )
+
+
+def _room_meta_path(directory: Path) -> Path:
+    return directory / _ROOM_META_FILENAME
+
+
+def _channel_name_from_dir(directory: Path) -> str:
+    name = directory.name
+    match = _ROOM_DIR_RE.match(name)
+    if not match:
+        return "채널"
+    prefix = f"room-{match.group(1)}__"
+    return _safe_segment(name[len(prefix):], "채널")
+
+
+def _load_room_meta(directory: Path) -> dict[str, Any]:
+    meta_path = _room_meta_path(directory)
+    if not meta_path.exists():
+        return {}
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _can_read_deleted_room(directory: Path, current_user_id: str) -> bool:
+    meta = _load_room_meta(directory)
+    if str(meta.get("deleted") or "").lower() not in {"1", "true", "yes"} and meta.get("deleted") is not True:
+        return False
+    normalized_user_id = _norm_text(current_user_id)
+    if not normalized_user_id:
+        return False
+    allowed_ids = {
+        _norm_text(item)
+        for item in (meta.get("allowed_user_ids") or [])
+        if _norm_text(item)
+    }
+    return normalized_user_id in allowed_ids
 
 
 def _timestamp_text(raw_value: Any = None) -> str:
@@ -115,6 +170,40 @@ def append_transcript_entry(
     }
 
 
+def mark_room_deleted(
+    room_id: int,
+    channel_name: str,
+    allowed_user_ids: list[str] | set[str] | tuple[str, ...],
+    *,
+    deleted_at: Any = None,
+) -> bool:
+    target_room_id = int(room_id or 0)
+    if target_room_id <= 0:
+        return False
+    directories = _room_dirs(target_room_id)
+    if not directories:
+        return False
+    normalized_ids = sorted({
+        _norm_text(user_id)
+        for user_id in (allowed_user_ids or [])
+        if _norm_text(user_id)
+    })
+    payload = {
+        "room_id": target_room_id,
+        "channel_name": _norm_text(channel_name) or "채널",
+        "deleted": True,
+        "deleted_at": _timestamp_text(deleted_at),
+        "allowed_user_ids": normalized_ids,
+    }
+    with _LOCK:
+        for directory in directories:
+            _room_meta_path(directory).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    return True
+
+
 def _parse_room_id_from_relative(relative_path: str) -> int:
     parts = Path(relative_path).parts
     if not parts:
@@ -143,31 +232,38 @@ def _safe_note_path(note_id: str) -> Path:
     return target_path
 
 
-def list_notes_for_rooms(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def list_notes_for_rooms(rooms: list[dict[str, Any]], current_user_id: str = "") -> list[dict[str, Any]]:
     meeting_data_dir()
+    normalized_current_user_id = _norm_text(current_user_id)
     room_map = {
         int(room.get("id") or 0): dict(room or {})
         for room in (rooms or [])
         if int((room or {}).get("id") or 0) > 0
     }
     notes_by_room: dict[int, list[dict[str, Any]]] = {room_id: [] for room_id in room_map}
+    deleted_notes: list[dict[str, Any]] = []
     for note_path in sorted(_MEETING_DATA_DIR.rglob("*.txt"), key=lambda item: item.stat().st_mtime, reverse=True):
         relative_path = note_path.relative_to(_MEETING_DATA_DIR).as_posix()
         room_id = _parse_room_id_from_relative(relative_path)
-        if room_id <= 0 or room_id not in room_map:
+        if room_id <= 0:
             continue
         match = _FILENAME_TS_RE.match(note_path.name)
         timestamp_text = match.group(1) if match else ""
-        notes_by_room.setdefault(room_id, []).append(
-            {
-                "note_id": relative_path,
-                "file_name": note_path.name,
-                "timestamp": timestamp_text,
-                "display_timestamp": _display_timestamp(timestamp_text) if timestamp_text else note_path.name,
-                "size": int(note_path.stat().st_size or 0),
-                "updated_at": float(note_path.stat().st_mtime or 0),
-            }
-        )
+        room_meta = _load_room_meta(note_path.parent)
+        note_payload = {
+            "note_id": relative_path,
+            "file_name": note_path.name,
+            "timestamp": timestamp_text,
+            "display_timestamp": _display_timestamp(timestamp_text) if timestamp_text else note_path.name,
+            "size": int(note_path.stat().st_size or 0),
+            "updated_at": float(note_path.stat().st_mtime or 0),
+            "channel_name": _norm_text(room_meta.get("channel_name")) or _channel_name_from_dir(note_path.parent),
+        }
+        if room_id in room_map:
+            notes_by_room.setdefault(room_id, []).append(note_payload)
+            continue
+        if normalized_current_user_id and _can_read_deleted_room(note_path.parent, normalized_current_user_id):
+            deleted_notes.append(note_payload)
 
     channels: list[dict[str, Any]] = []
     for room_id, room in room_map.items():
@@ -183,16 +279,33 @@ def list_notes_for_rooms(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "notes": room_notes,
             }
         )
+    if deleted_notes:
+        deleted_notes.sort(key=lambda item: (-float(item.get("updated_at") or 0), _norm_text(item.get("channel_name"))))
+        channels.append(
+            {
+                "room_id": -1,
+                "room_title": "삭제된 채널",
+                "note_count": len(deleted_notes),
+                "latest_updated_at": float(deleted_notes[0].get("updated_at") or 0),
+                "notes": deleted_notes,
+                "deleted_bucket": True,
+            }
+        )
     channels.sort(key=lambda item: (-float(item.get("latest_updated_at") or 0), _norm_text(item.get("room_title"))))
+    deleted_bucket = [item for item in channels if item.get("deleted_bucket")]
+    live_channels = [item for item in channels if not item.get("deleted_bucket")]
+    channels = live_channels + deleted_bucket
     return channels
 
 
-def read_note(note_id: str, allowed_room_ids: set[int] | list[int]) -> dict[str, Any]:
+def read_note(note_id: str, allowed_room_ids: set[int] | list[int], current_user_id: str = "") -> dict[str, Any]:
     allowed_ids = {int(room_id or 0) for room_id in (allowed_room_ids or []) if int(room_id or 0) > 0}
     note_path = _safe_note_path(note_id)
     relative_path = note_path.relative_to(meeting_data_dir()).as_posix()
     room_id = _parse_room_id_from_relative(relative_path)
-    if room_id <= 0 or room_id not in allowed_ids:
+    if room_id <= 0:
+        raise PermissionError("이 회의록을 볼 권한이 없습니다.")
+    if room_id not in allowed_ids and not _can_read_deleted_room(note_path.parent, current_user_id):
         raise PermissionError("이 회의록을 볼 권한이 없습니다.")
     content = note_path.read_text(encoding="utf-8")
     lines = content.splitlines()
@@ -209,6 +322,7 @@ def read_note(note_id: str, allowed_room_ids: set[int] | list[int]) -> dict[str,
 __all__ = [
     "append_transcript_entry",
     "list_notes_for_rooms",
+    "mark_room_deleted",
     "meeting_data_dir",
     "read_note",
 ]
