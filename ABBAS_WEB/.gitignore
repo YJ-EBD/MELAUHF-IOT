@@ -9,4 +9,6 @@ __pycache__/
 .pytest_cache/
 static/uploads/
 storage/device_logs/
+storage/notiba_stt_models/
 Trashcan/
+meeting_data/

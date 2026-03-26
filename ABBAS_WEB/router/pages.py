@@ -64,7 +64,7 @@ from router.messenger_payloads import (
     _messenger_message_mentions_user,
     _messenger_notification_aliases,
 )
-from router.messenger_runtime import _MESSENGER_CALL_HUB, _MESSENGER_HUB
+from router.messenger_runtime import _MESSENGER_CALL_HUB, _MESSENGER_HUB, _MESSENGER_TRANSCRIPT_HUB
 from router.messenger_views import (
     _approved_user_rows,
     _build_messenger_user_directory,
@@ -124,6 +124,7 @@ from router.messenger_views import (
     _messenger_unique_user_ids,
     _messenger_user_view_from_row,
 )
+from services import notiba_stt
 from services.log_store import read_logs as db_read_logs
 from services.user_store import hash_password_for_storage, read_user
 from redis.session import (

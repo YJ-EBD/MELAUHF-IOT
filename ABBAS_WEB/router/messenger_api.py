@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, File, Request, UploadFile
+from fastapi import APIRouter, Body, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 
 def register_messenger_api_routes(router: APIRouter) -> None:
     from router import pages as pages_module
+    from services import meeting_notes
 
     asyncio = pages_module.asyncio
     chat_repo = pages_module.chat_repo
@@ -27,6 +28,7 @@ def register_messenger_api_routes(router: APIRouter) -> None:
     MESSENGER_UPLOAD_STORAGE_DIR = pages_module.MESSENGER_UPLOAD_STORAGE_DIR
     _MESSENGER_HUB = pages_module._MESSENGER_HUB
     _MESSENGER_CALL_HUB = pages_module._MESSENGER_CALL_HUB
+    _MESSENGER_TRANSCRIPT_HUB = pages_module._MESSENGER_TRANSCRIPT_HUB
     _approved_user_rows = pages_module._approved_user_rows
     _build_messenger_bootstrap_payload = pages_module._build_messenger_bootstrap_payload
     _build_messenger_room_messages_payload = pages_module._build_messenger_room_messages_payload
@@ -84,6 +86,7 @@ def register_messenger_api_routes(router: APIRouter) -> None:
     _request_user_role = pages_module._request_user_role
     _request_user_row = pages_module._request_user_row
     _store_messenger_room_avatar = pages_module._store_messenger_room_avatar
+    notiba_stt = pages_module.notiba_stt
 
     def _ascord_workspace_name() -> str:
         return "ABBA-S Korea"
@@ -137,6 +140,16 @@ def register_messenger_api_routes(router: APIRouter) -> None:
         if workspace_key != "ascord":
             return {}
         return payload
+
+    def _notiba_transcript_spoken_at(raw_value: Any) -> float:
+        try:
+            spoken_at = float(raw_value or 0) / 1000.0
+        except Exception:
+            spoken_at = 0.0
+        now_ts = time.time()
+        if spoken_at <= 0:
+            return now_ts
+        return min(now_ts + 2.0, max(now_ts - 180.0, spoken_at))
 
     @router.post("/api/messenger/rooms/{room_id}/call/session")
     async def api_messenger_room_call_session(
@@ -214,6 +227,243 @@ def register_messenger_api_routes(router: APIRouter) -> None:
                 },
             }
         )
+
+    @router.get("/api/messenger/rooms/{room_id}/call/transcripts")
+    async def api_messenger_room_call_transcripts(
+        request: Request,
+        room_id: int,
+    ):
+        _current_user_id, room, error_response = await _messenger_require_room_for_user(
+            request,
+            room_id,
+            not_found_detail="대화방에 접근할 수 없습니다.",
+        )
+        if error_response is not None:
+            return error_response
+        if not _messenger_supports_calls(room):
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "call_id": "",
+                    "entries": [],
+                    "settings": notiba_stt.notiba_stt_settings(),
+                }
+            )
+
+        room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+        call_id = str((room_call or {}).get("call_id") or "").strip()
+        entries = await _MESSENGER_TRANSCRIPT_HUB.sync_room_call(room_id, call_id)
+        return JSONResponse(
+            {
+                "ok": True,
+                "call_id": call_id,
+                "entries": entries,
+                "settings": notiba_stt.notiba_stt_settings(),
+            }
+        )
+
+    @router.post("/api/messenger/rooms/{room_id}/call/transcription/session")
+    async def api_messenger_room_call_transcription_session(
+        request: Request,
+        room_id: int,
+    ):
+        current_user_id, room, error_response = await _messenger_require_room_for_user(
+            request,
+            room_id,
+            not_found_detail="대화방에 접근할 수 없습니다.",
+        )
+        if error_response is not None:
+            return error_response
+        if not _messenger_supports_calls(room):
+            return _messenger_json_error("ASCORD 채널 음성통화에서만 Notiba AI를 사용할 수 있습니다.", 400)
+
+        room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+        current_call_id = str((room_call or {}).get("call_id") or "").strip()
+        if not current_call_id:
+            return _messenger_json_error("현재 진행 중인 음성통화가 없습니다.", 409)
+
+        participant = await _MESSENGER_CALL_HUB.get_participant(room_id, current_user_id)
+        if not participant:
+            return _messenger_json_error("이 통화에 참여 중인 사용자만 Notiba AI를 사용할 수 있습니다.", 403)
+
+        try:
+            client_secret = await asyncio.to_thread(notiba_stt.create_realtime_client_secret)
+        except Exception as exc:
+            return _messenger_json_error(f"Notiba AI Realtime 세션 생성 실패: {exc}", 503)
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "value": str(client_secret.get("value") or ""),
+                "expires_at": client_secret.get("expires_at"),
+                "session": client_secret.get("session") or notiba_stt.build_realtime_transcription_session(),
+                "settings": notiba_stt.notiba_stt_settings(),
+            }
+        )
+
+    @router.post("/api/messenger/rooms/{room_id}/call/transcript-event")
+    async def api_messenger_room_call_transcript_event(
+        request: Request,
+        room_id: int,
+        payload: dict[str, Any] = Body(default={}),
+    ):
+        current_user_id, room, error_response = await _messenger_require_room_for_user(
+            request,
+            room_id,
+            not_found_detail="대화방에 접근할 수 없습니다.",
+        )
+        if error_response is not None:
+            return error_response
+        if not _messenger_supports_calls(room):
+            return _messenger_json_error("ASCORD 채널 음성통화에서만 Notiba AI를 사용할 수 있습니다.", 400)
+
+        room_call = await _MESSENGER_CALL_HUB.get_room_call(room_id)
+        current_call_id = str((room_call or {}).get("call_id") or "").strip()
+        if not current_call_id:
+            return _messenger_json_error("현재 진행 중인 음성통화가 없습니다.", 409)
+        normalized_call_id = str(payload.get("call_id") or "").strip()
+        if normalized_call_id and normalized_call_id != current_call_id:
+            return _messenger_json_error("통화 세션이 변경되어 전사를 건너뜁니다.", 409)
+
+        participant = await _MESSENGER_CALL_HUB.get_participant(room_id, current_user_id)
+        if not participant:
+            return _messenger_json_error("이 통화에 참여 중인 사용자만 전사를 보낼 수 있습니다.", 403)
+        transcript_text = str(payload.get("text") or "").strip()
+        if not transcript_text:
+            return JSONResponse({"ok": True, "call_id": current_call_id, "entry": None})
+
+        current_user = _request_user_row(request)
+        display_name = str(current_user.get("NAME") or "").strip() or _display_user_name(current_user) or current_user_id
+        spoken_at = _notiba_transcript_spoken_at(payload.get("spoken_at_ms"))
+        source_item_id = str(payload.get("item_id") or "").strip()
+        transcript_state = str(payload.get("state") or "").strip().lower()
+        is_final = transcript_state == "final"
+        participant_ids = sorted(set(await asyncio.to_thread(chat_repo.list_room_user_ids, room_id)))
+
+        if not is_final:
+            partial_entry = {
+                "item_id": source_item_id,
+                "room_id": int(room_id),
+                "call_id": current_call_id,
+                "user_id": current_user_id,
+                "display_name": display_name,
+                "text": transcript_text,
+                "spoken_at": spoken_at,
+                "created_at": time.time(),
+            }
+            broadcast_payload = {
+                "type": "call_transcript_partial",
+                "room_id": int(room_id),
+                "call_id": current_call_id,
+                "entry": partial_entry,
+            }
+            await asyncio.gather(*[
+                _MESSENGER_HUB.send_to_user(participant_id, broadcast_payload)
+                for participant_id in participant_ids
+                if str(participant_id or "").strip()
+            ])
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "call_id": current_call_id,
+                    "entry": partial_entry,
+                    "settings": notiba_stt.notiba_stt_settings(),
+                }
+            )
+
+        await _MESSENGER_TRANSCRIPT_HUB.sync_room_call(room_id, current_call_id)
+        entry = await _MESSENGER_TRANSCRIPT_HUB.append_entry(
+            room_id,
+            current_call_id,
+            {
+                "user_id": current_user_id,
+                "display_name": display_name,
+                "source_item_id": source_item_id,
+                "text": transcript_text,
+                "spoken_at": spoken_at,
+                "created_at": time.time(),
+                "duration_ms": max(int(payload.get("duration_ms") or 0), 0),
+            },
+        )
+        if not entry:
+            return JSONResponse({"ok": True, "call_id": current_call_id, "entry": None})
+
+        try:
+            await asyncio.to_thread(
+                meeting_notes.append_transcript_entry,
+                room_id,
+                current_call_id,
+                str(room.get("name") or room.get("title") or "채널").strip() or "채널",
+                display_name,
+                transcript_text,
+                started_at=(room_call or {}).get("started_at"),
+                spoken_at=spoken_at,
+            )
+        except Exception:
+            pass
+
+        broadcast_payload = {
+            "type": "call_transcript",
+            "room_id": int(room_id),
+            "call_id": current_call_id,
+            "item_id": source_item_id,
+            "entry": entry,
+        }
+        await asyncio.gather(*[
+            _MESSENGER_HUB.send_to_user(participant_id, broadcast_payload)
+            for participant_id in participant_ids
+            if str(participant_id or "").strip()
+        ])
+        return JSONResponse(
+            {
+                "ok": True,
+                "call_id": current_call_id,
+                "entry": entry,
+                "settings": notiba_stt.notiba_stt_settings(),
+            }
+        )
+
+    @router.get("/api/messenger/meeting-notes")
+    async def api_messenger_meeting_notes(
+        request: Request,
+    ):
+        current_user_id, error_response = _messenger_require_user_id(request)
+        if error_response is not None:
+            return error_response
+        rooms = await asyncio.to_thread(chat_repo.list_rooms_for_user, current_user_id)
+        channels = await asyncio.to_thread(
+            meeting_notes.list_notes_for_rooms,
+            [
+                room
+                for room in (rooms or [])
+                if _messenger_is_ascord_room(room) and _messenger_supports_calls(room)
+            ],
+        )
+        return JSONResponse({"ok": True, "channels": channels})
+
+    @router.get("/api/messenger/meeting-notes/read")
+    async def api_messenger_meeting_note_read(
+        request: Request,
+        note_id: str = "",
+    ):
+        current_user_id, error_response = _messenger_require_user_id(request)
+        if error_response is not None:
+            return error_response
+        rooms = await asyncio.to_thread(chat_repo.list_rooms_for_user, current_user_id)
+        allowed_room_ids = {
+            int(room.get("id") or 0)
+            for room in (rooms or [])
+            if _messenger_is_ascord_room(room) and _messenger_supports_calls(room)
+        }
+        try:
+            note_payload = await asyncio.to_thread(meeting_notes.read_note, note_id, allowed_room_ids)
+        except PermissionError as exc:
+            return _messenger_json_error(str(exc) or "이 회의록을 볼 권한이 없습니다.", 403)
+        except FileNotFoundError:
+            return _messenger_json_error("회의록을 찾을 수 없습니다.", 404)
+        except ValueError as exc:
+            return _messenger_json_error(str(exc) or "회의록을 읽지 못했습니다.", 400)
+        return JSONResponse({"ok": True, "note": note_payload})
 
     @router.post("/api/messenger/rooms/{room_id}/call/moderate")
     async def api_messenger_room_call_moderate(

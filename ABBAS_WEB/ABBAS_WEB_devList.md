@@ -733,3 +733,21 @@
   - ABBAS Talk에서는 헤더 액션 전체를 숨기지 않고, `messenger-notiba-ai-icon messenger-notiba-ai-icon--button`을 사용하는 `messengerRoomLinkBtn`만 감추도록 범위를 다시 좁혔다.
   - ASCORD 음성채팅 중 하단 `messenger-ascord-call-dock`가 hover 해제 후 한 번씩 남아 있던 문제는 CSS 인접 hover 의존을 끊고, `pointerenter/pointerleave` 기반의 visible 클래스 동기화로 바꿔 안정적으로 내려가게 보강했다.
   - `Notiba AI` 창을 열었을 때는 `messengerRoomLinkBtn`에 남아 있던 focus 때문에 상단 `messenger-chat-header`가 자동으로 올라가지 않던 문제를 함께 정리해, 버튼 focus를 지우고 drawer 닫기 버튼으로 넘기도록 수정했다. 이번 채팅 기준 검증은 `git diff --check`까지 완료했다.
+
+## 71. Notiba AI OpenAI 실시간 전사 전환과 채널별 회의록 저장/브라우저 추가
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `.gitignore`
+  - `requirements.txt`
+  - `router/messenger_api.py`
+  - `router/messenger_runtime.py`
+  - `router/pages.py`
+  - `services/meeting_notes.py`
+  - `services/notiba_stt.py`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+  - `templates/messenger_popup.html`
+- 간단한 설명
+  - Notiba AI 전사 엔진을 라즈베리파이 로컬 추론 중심 구조에서 OpenAI Realtime 기반의 유저별 오디오 전사 구조로 전환해, ASCORD 음성채팅 참여자 각각의 발화를 더 빠르게 `A : ... / B : ...` 형식으로 누적 표시할 수 있게 정리했다. partial/final 전사 이벤트와 pending 표시, Realtime 세션 발급, 브라우저 직접 SDP 연결 흐름도 함께 보강했다.
+  - Notiba AI의 최종 전사 문장은 채널/통화별로 `/meeting_data` 아래에 `YYYY-MM-DD-HH-MM-SS OO채널 회의록.txt` 형식으로 자동 저장되도록 `meeting_notes` 서비스를 추가했다. 파일 내용은 첫 줄 저장 시각, 둘째 줄 채널명, 이후 `유저 : 내용` 줄 단위 누적으로 기록되며, 병렬 통화도 채널별로 따로 분리 저장되게 구성했다.
+  - ASCORD 좌측 사이드바의 `이벤트` 단축버튼은 `회의록`으로 교체했고, 누르면 채널별 회의록 브라우저 모달이 열리도록 확장했다. 채널 항목에 커서를 올리면 오른쪽에서 날짜별 회의록 목록이 슬라이드되며, 개별 회의록을 클릭하면 별도 뷰어 모달에서 전체 내용을 읽을 수 있게 했다. 함께 사용하지 않던 대용량 `한국인 피부상태 측정 데이터` 폴더도 정리했다. 이번 채팅 기준 검증은 `python3 -m py_compile`, `git diff --check`, 임시 경로 회의록 저장/조회 스모크 테스트까지 완료했다.

@@ -37,6 +37,35 @@
     roomMoreMenuOpen: false,
     contextMenuOpen: false,
     roomDrawerOpen: false,
+    meetingNotes: {
+      channels: [],
+      loading: false,
+      activeRoomId: 0,
+      pendingViewerNote: null,
+      viewerNote: null,
+    },
+    notiba: {
+      transcriptsByRoomId: {},
+      pendingByRoomId: {},
+      callIdByRoomId: {},
+      loadingByRoomId: {},
+      settings: null,
+      capture: {
+        starting: false,
+        roomId: 0,
+        callId: "",
+        deviceId: "",
+        stream: null,
+        peerConnection: null,
+        dataChannel: null,
+        sender: null,
+        reconnectTimer: 0,
+        itemTexts: {},
+        itemSpokenAtMs: {},
+        partialTimers: {},
+        error: "",
+      },
+    },
     ascordCallDockVisibilityTimer: 0,
     ascordServerMenuOpen: false,
     composerPopover: "",
@@ -189,6 +218,9 @@
     streamStart: "/sounds/ascord_stream_start.mp3",
     streamStop: "/sounds/ascord_stream_stop.mp3",
   };
+  const NOTIBA_STT_MERGE_WINDOW_MS = 5000;
+  const NOTIBA_STT_MERGE_MAX_CHARS = 220;
+  const NOTIBA_REALTIME_PARTIAL_PUSH_MS = 120;
 
   function $(id) {
     return document.getElementById(id);
@@ -215,6 +247,193 @@
     return new Promise(function (resolve) {
       window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
     });
+  }
+
+  function transcriptEntriesForRoom(roomId) {
+    return Array.isArray(state.notiba.transcriptsByRoomId[Number(roomId || 0)])
+      ? state.notiba.transcriptsByRoomId[Number(roomId || 0)].slice()
+      : [];
+  }
+
+  function sortTranscriptEntries(entries) {
+    return (Array.isArray(entries) ? entries.slice() : []).sort(function (a, b) {
+      return Number((a && a.spoken_at) || (a && a.created_at) || 0) - Number((b && b.spoken_at) || (b && b.created_at) || 0)
+        || Number((a && a.created_at) || 0) - Number((b && b.created_at) || 0)
+        || Number((a && a.id) || 0) - Number((b && b.id) || 0);
+    });
+  }
+
+  function mergedTranscriptEntries(entries) {
+    const sortedEntries = sortTranscriptEntries(entries);
+    const merged = [];
+    sortedEntries.forEach(function (entry) {
+      const payload = entry && typeof entry === "object" ? Object.assign({}, entry) : null;
+      if (!payload) return;
+      const text = normalizeText(payload.text);
+      if (!text) return;
+      const previous = merged.length ? merged[merged.length - 1] : null;
+      const previousUserId = normalizeText(previous && previous.user_id);
+      const nextUserId = normalizeText(payload.user_id);
+      const previousText = normalizeText(previous && previous.text);
+      const previousSpokenAt = Number((previous && previous._notiba_last_spoken_at) || (previous && previous.spoken_at) || (previous && previous.created_at) || 0);
+      const nextSpokenAt = Number(payload.spoken_at || payload.created_at || 0);
+      const shouldMerge = !!previous
+        && !!previousUserId
+        && previousUserId === nextUserId
+        && (nextSpokenAt <= 0 || previousSpokenAt <= 0 || ((nextSpokenAt - previousSpokenAt) * 1000) <= NOTIBA_STT_MERGE_WINDOW_MS)
+        && ((previousText + " " + text).trim().length <= NOTIBA_STT_MERGE_MAX_CHARS);
+      if (!shouldMerge) {
+        payload._notiba_last_spoken_at = nextSpokenAt;
+        merged.push(payload);
+        return;
+      }
+      previous.text = (previousText + " " + text).replace(/\s+/g, " ").trim();
+      previous.created_at = Math.max(Number(previous.created_at || 0), Number(payload.created_at || 0));
+      previous.spoken_at = Number(previous.spoken_at || 0) || nextSpokenAt;
+      previous._notiba_last_spoken_at = nextSpokenAt || previousSpokenAt;
+      previous.duration_ms = Number(previous.duration_ms || 0) + Number(payload.duration_ms || 0);
+    });
+    return merged;
+  }
+
+  function setRoomTranscriptEntries(roomId, callId, entries) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    state.notiba.callIdByRoomId[targetRoomId] = normalizeText(callId);
+    state.notiba.transcriptsByRoomId[targetRoomId] = sortTranscriptEntries(entries);
+    if (state.roomDrawerOpen && Number((state.activeRoom && state.activeRoom.id) || state.activeRoomId || 0) === targetRoomId) {
+      renderRoomDrawer();
+    }
+  }
+
+  function appendRoomTranscriptEntry(roomId, callId, entry) {
+    const targetRoomId = Number(roomId || 0);
+    const payload = entry && typeof entry === "object" ? Object.assign({}, entry) : null;
+    if (targetRoomId <= 0 || !payload) return;
+    const normalizedCallId = normalizeText(callId || payload.call_id);
+    const sourceItemId = normalizeText(payload.source_item_id || payload.item_id);
+    const entryUserId = normalizeText(payload.user_id);
+    const currentCallId = normalizeText(state.notiba.callIdByRoomId[targetRoomId]);
+    const existing = Array.isArray(state.notiba.transcriptsByRoomId[targetRoomId])
+      ? state.notiba.transcriptsByRoomId[targetRoomId].slice()
+      : [];
+    const nextEntries = currentCallId && normalizedCallId && currentCallId !== normalizedCallId
+      ? []
+      : existing.filter(function (item) {
+        return Number((item && item.id) || 0) !== Number((payload && payload.id) || 0);
+      });
+    nextEntries.push(payload);
+    setRoomTranscriptEntries(targetRoomId, normalizedCallId, nextEntries);
+    if (sourceItemId && entryUserId) {
+      clearPendingTranscriptEntry(targetRoomId, entryUserId, sourceItemId);
+    }
+  }
+
+  function clearRoomTranscriptEntries(roomId) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    delete state.notiba.callIdByRoomId[targetRoomId];
+    delete state.notiba.transcriptsByRoomId[targetRoomId];
+    delete state.notiba.pendingByRoomId[targetRoomId];
+    if (state.roomDrawerOpen && Number((state.activeRoom && state.activeRoom.id) || state.activeRoomId || 0) === targetRoomId) {
+      renderRoomDrawer();
+    }
+  }
+
+  function pendingTranscriptEntriesForRoom(roomId) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return [];
+    const pendingMap = state.notiba.pendingByRoomId[targetRoomId] || {};
+    return Object.keys(pendingMap).map(function (key) {
+      return Object.assign({}, pendingMap[key]);
+    }).sort(function (a, b) {
+      return Number((a && a.spoken_at) || (a && a.created_at) || 0) - Number((b && b.spoken_at) || (b && b.created_at) || 0)
+        || Number((a && a.created_at) || 0) - Number((b && b.created_at) || 0);
+    });
+  }
+
+  function pendingTranscriptKey(userId, itemId) {
+    return normalizeText(userId) + "::" + normalizeText(itemId);
+  }
+
+  function upsertPendingTranscriptEntry(roomId, callId, entry) {
+    const targetRoomId = Number(roomId || 0);
+    const payload = entry && typeof entry === "object" ? Object.assign({}, entry) : null;
+    if (targetRoomId <= 0 || !payload) return;
+    const normalizedCallId = normalizeText(callId || payload.call_id);
+    const currentCallId = normalizeText(state.notiba.callIdByRoomId[targetRoomId]);
+    if (currentCallId && normalizedCallId && currentCallId !== normalizedCallId) {
+      return;
+    }
+    if (normalizedCallId) {
+      state.notiba.callIdByRoomId[targetRoomId] = normalizedCallId;
+    }
+    const itemId = normalizeText(payload.item_id);
+    const userId = normalizeText(payload.user_id);
+    if (!itemId || !userId) return;
+    const nextPending = Object.assign({}, state.notiba.pendingByRoomId[targetRoomId] || {});
+    nextPending[pendingTranscriptKey(userId, itemId)] = {
+      item_id: itemId,
+      room_id: targetRoomId,
+      call_id: normalizedCallId,
+      user_id: userId,
+      display_name: normalizeText(payload.display_name || payload.user_id || "참여자"),
+      text: normalizeText(payload.text),
+      spoken_at: Number(payload.spoken_at || payload.created_at || (Date.now() / 1000)),
+      created_at: Number(payload.created_at || (Date.now() / 1000)),
+      is_partial: true,
+    };
+    state.notiba.pendingByRoomId[targetRoomId] = nextPending;
+    if (state.roomDrawerOpen && Number((state.activeRoom && state.activeRoom.id) || state.activeRoomId || 0) === targetRoomId) {
+      renderRoomDrawer();
+    }
+  }
+
+  function clearPendingTranscriptEntry(roomId, userId, itemId) {
+    const targetRoomId = Number(roomId || 0);
+    const key = pendingTranscriptKey(userId, itemId);
+    if (targetRoomId <= 0 || !normalizeText(key)) return;
+    const current = Object.assign({}, state.notiba.pendingByRoomId[targetRoomId] || {});
+    if (!Object.prototype.hasOwnProperty.call(current, key)) return;
+    delete current[key];
+    if (Object.keys(current).length) {
+      state.notiba.pendingByRoomId[targetRoomId] = current;
+    } else {
+      delete state.notiba.pendingByRoomId[targetRoomId];
+    }
+    if (state.roomDrawerOpen && Number((state.activeRoom && state.activeRoom.id) || state.activeRoomId || 0) === targetRoomId) {
+      renderRoomDrawer();
+    }
+  }
+
+  function clearRoomPendingTranscriptEntries(roomId) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    delete state.notiba.pendingByRoomId[targetRoomId];
+    if (state.roomDrawerOpen && Number((state.activeRoom && state.activeRoom.id) || state.activeRoomId || 0) === targetRoomId) {
+      renderRoomDrawer();
+    }
+  }
+
+  async function loadRoomCallTranscripts(roomId, options) {
+    const targetRoomId = Number(roomId || 0);
+    const settings = options || {};
+    if (targetRoomId <= 0) return [];
+    if (!settings.force && state.notiba.loadingByRoomId[targetRoomId]) {
+      return transcriptEntriesForRoom(targetRoomId);
+    }
+    state.notiba.loadingByRoomId[targetRoomId] = true;
+    try {
+      const payload = await api("/api/messenger/rooms/" + targetRoomId + "/call/transcripts");
+      const entries = Array.isArray(payload.entries) ? payload.entries.slice() : [];
+      if (payload.settings) {
+        state.notiba.settings = payload.settings;
+      }
+      setRoomTranscriptEntries(targetRoomId, payload.call_id || "", entries);
+      return entries;
+    } finally {
+      delete state.notiba.loadingByRoomId[targetRoomId];
+    }
   }
 
   function normalizeCallPermissionLevel(value, fallback) {
@@ -3227,9 +3446,9 @@
         const targetRoomId = Number(button.getAttribute("data-ascord-room-id") || 0);
         const targetRoom = findRoomById(targetRoomId) || state.activeRoom || currentAscordWorkspaceRoom();
         if (!action) return;
-        if (action === "events") {
-          handleAscordServerAction("create-event").catch(function (error) {
-            showError((error && error.message) || "이벤트 화면을 열지 못했습니다.");
+        if (action === "meeting-notes") {
+          openMeetingNotesModal().catch(function (error) {
+            showError((error && error.message) || "회의록 화면을 열지 못했습니다.");
           });
           return;
         }
@@ -4162,7 +4381,7 @@
     dom.roomList.innerHTML = [
       '<div class="messenger-ascord-sidebar-list">',
       '<div class="messenger-ascord-sidebar-shortcuts">',
-      ascordSidebarShortcutMarkup("events", "bi-calendar-event-fill", "이벤트"),
+      ascordSidebarShortcutMarkup("meeting-notes", "bi-journal-text", "회의록"),
       "</div>",
       '<div class="messenger-ascord-sidebar-divider"></div>',
       renderAscordChannelSection("채팅 채널", "text", textRooms),
@@ -6007,6 +6226,7 @@
     renderRoomMoreMenu();
     renderRoomDrawer();
     renderCallUi();
+    syncNotibaCapture();
   }
 
   function notibaAiIconMarkup(extraClass) {
@@ -6019,6 +6239,106 @@
     return notibaAiIconMarkup("messenger-notiba-ai-icon--drawer");
   }
 
+  function formatTranscriptClock(value) {
+    const timestamp = Number(value || 0);
+    if (!timestamp) return "";
+    try {
+      return new Date(timestamp * 1000).toLocaleTimeString("ko-KR", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function roomDrawerTranscriptAvatarMarkup(room, entry) {
+    const payload = entry || {};
+    const profile = roomMemberProfile(room, payload.user_id, payload.display_name);
+    if (profile.profile_image_url) {
+      return '<img src="' + escapeAttribute(profile.profile_image_url) + '" alt="' + escapeAttribute(profile.display_name || payload.display_name || "참여자") + '">';
+    }
+    return escapeHtml(profile.avatar_initial || avatarInitialFor(payload.display_name || payload.user_id || "U", "U"));
+  }
+
+  function renderRoomDrawerBody(room) {
+    if (!dom.roomDrawerBody) return;
+    const targetRoom = room || null;
+    const transcripts = targetRoom ? mergedTranscriptEntries(transcriptEntriesForRoom(targetRoom.id)) : [];
+    const pending = targetRoom ? pendingTranscriptEntriesForRoom(targetRoom.id) : [];
+    const currentCallId = normalizeText(state.notiba.callIdByRoomId[Number((targetRoom && targetRoom.id) || 0)]);
+    const hasLiveCall = !!normalizeText((callForRoom((targetRoom && targetRoom.id) || 0) || {}).call_id || currentCallId);
+    const captureError = normalizeText((state.notiba.capture || {}).error);
+    const modelLabel = normalizeText((state.notiba.settings && state.notiba.settings.model) || "gpt-4o-transcribe");
+    if (!targetRoom || !roomSupportsCalls(targetRoom)) {
+      dom.roomDrawerBody.innerHTML = [
+        '<div class="messenger-notiba-feed">',
+        '<div class="messenger-notiba-feed__status"><span class="messenger-notiba-feed__dot"></span><strong>Notiba AI</strong><span>ASCORD 통화에서만 실시간 한국어 전사가 표시됩니다.</span></div>',
+        '<div class="messenger-notiba-feed__empty">',
+        '<i class="bi bi-soundwave"></i>',
+        '<strong>음성채팅이 열리면 여기에 전사가 표시됩니다.</strong>',
+        '<span>같은 채널 참여자가 말하면 화자별 텍스트가 실시간으로 누적됩니다.</span>',
+        '</div>',
+        '</div>',
+      ].join("");
+      return;
+    }
+    if (!transcripts.length && !pending.length) {
+      dom.roomDrawerBody.innerHTML = [
+        '<div class="messenger-notiba-feed">',
+        '<div class="messenger-notiba-feed__status">',
+        '<span class="messenger-notiba-feed__dot' + (hasLiveCall ? " is-live" : "") + '"></span>',
+        '<strong>Notiba AI</strong>',
+        '<span>한국어 실시간 전사 · ' + escapeHtml(modelLabel) + "</span>",
+        "</div>",
+        '<div class="messenger-notiba-feed__empty">',
+        '<i class="bi bi-chat-quote"></i>',
+        '<strong>' + escapeHtml(hasLiveCall ? "지금 말하는 내용이 여기에 바로 표시됩니다." : "현재 연결된 LIVE 채널이 없습니다.") + '</strong>',
+        '<span>' + escapeHtml(
+          captureError
+            ? captureError
+            : (hasLiveCall
+              ? "A : 안녕 / B : 반가워요 같은 형식으로 화자별 텍스트가 누적됩니다."
+              : "누군가 채널에 입장해 통화를 시작하면 여기에 실시간 전사가 표시됩니다.")
+        ) + '</span>',
+        "</div>",
+        "</div>",
+      ].join("");
+      return;
+    }
+    dom.roomDrawerBody.innerHTML = [
+      '<div class="messenger-notiba-feed">',
+      '<div class="messenger-notiba-feed__status">',
+      '<span class="messenger-notiba-feed__dot is-live"></span>',
+      '<strong>Notiba AI</strong>',
+      '<span>한국어 실시간 전사 · ' + escapeHtml(modelLabel) + '</span>',
+      "</div>",
+      '<div class="messenger-notiba-feed__list">',
+      transcripts.concat(pending).map(function (entry) {
+        const speaker = normalizeText((entry && entry.display_name) || (entry && entry.user_id) || "참여자");
+        const clock = formatTranscriptClock((entry && entry.spoken_at) || (entry && entry.created_at) || 0);
+        const isPartial = !!(entry && entry.is_partial);
+        return [
+          '<article class="messenger-notiba-feed__item' + (isPartial ? " is-live" : "") + '" data-notiba-entry-id="' + escapeAttribute((entry && entry.id) || (entry && entry.item_id) || "") + '">',
+          '<span class="messenger-notiba-feed__avatar">' + roomDrawerTranscriptAvatarMarkup(targetRoom, entry) + "</span>",
+          '<div class="messenger-notiba-feed__copy">',
+          '<div class="messenger-notiba-feed__meta">',
+          '<strong>' + escapeHtml(speaker) + "</strong>",
+          '<span>' + escapeHtml(isPartial ? "입력 중" : clock) + "</span>",
+          "</div>",
+          '<p>' + escapeHtml(speaker) + " : " + escapeHtml((entry && entry.text) || "") + "</p>",
+          "</div>",
+          "</article>",
+        ].join("");
+      }).join(""),
+      "</div>",
+      "</div>",
+    ].join("");
+    try {
+      dom.roomDrawerBody.scrollTop = dom.roomDrawerBody.scrollHeight;
+    } catch (_) {}
+  }
+
   function renderRoomDrawer() {
     if (!dom.roomDrawer || !dom.roomDrawerTitle || !dom.roomDrawerIcon) return;
     const room = state.activeRoom;
@@ -6027,6 +6347,9 @@
       dom.roomDrawer.setAttribute("aria-hidden", "true");
       if (dom.roomLinkBtn) {
         dom.roomLinkBtn.setAttribute("aria-expanded", "false");
+      }
+      if (dom.roomDrawerBody) {
+        dom.roomDrawerBody.innerHTML = "";
       }
       return;
     }
@@ -6037,12 +6360,14 @@
     if (dom.roomLinkBtn) {
       dom.roomLinkBtn.setAttribute("aria-expanded", state.roomDrawerOpen ? "true" : "false");
     }
+    renderRoomDrawerBody(room);
   }
 
   function setRoomDrawerOpen(open) {
     state.roomDrawerOpen = !!open && !!state.activeRoom;
     renderRoomDrawer();
     if (state.roomDrawerOpen) {
+      loadRoomCallTranscripts(Number((state.activeRoom && state.activeRoom.id) || state.activeRoomId || 0), { force: true }).catch(function () {});
       if (dom.roomLinkBtn && typeof dom.roomLinkBtn.blur === "function") {
         dom.roomLinkBtn.blur();
       }
@@ -6060,6 +6385,174 @@
   function toggleRoomDrawer() {
     if (!state.activeRoom) return;
     setRoomDrawerOpen(!state.roomDrawerOpen);
+  }
+
+  function meetingNotesChannels() {
+    return Array.isArray(state.meetingNotes.channels) ? state.meetingNotes.channels : [];
+  }
+
+  function meetingNotesChannelByRoomId(roomId) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return null;
+    return meetingNotesChannels().find(function (channel) {
+      return Number((channel || {}).room_id || 0) === targetRoomId;
+    }) || null;
+  }
+
+  function formatMeetingNoteTimestamp(value) {
+    const text = normalizeText(value);
+    if (!text) return "저장 시각 없음";
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})$/);
+    if (!match) return text;
+    return match[1] + "-" + match[2] + "-" + match[3] + " " + match[4] + ":" + match[5] + ":" + match[6];
+  }
+
+  function setMeetingNotesActiveRoom(roomId) {
+    const nextRoomId = Number(roomId || 0);
+    if (nextRoomId === Number(state.meetingNotes.activeRoomId || 0)) return;
+    state.meetingNotes.activeRoomId = nextRoomId > 0 ? nextRoomId : 0;
+    renderMeetingNotesBrowser();
+  }
+
+  function renderMeetingNotesBrowser() {
+    if (!dom.meetingNotesChannels || !dom.meetingNotesNotes) return;
+    const channels = meetingNotesChannels();
+    const activeChannel = meetingNotesChannelByRoomId(state.meetingNotes.activeRoomId);
+    if (state.meetingNotes.loading && !channels.length) {
+      dom.meetingNotesChannels.innerHTML = '<div class="messenger-empty-inline">회의록 채널을 불러오는 중입니다.</div>';
+      dom.meetingNotesNotes.innerHTML = [
+        '<div class="messenger-meeting-notes-browser__empty">',
+        '<i class="bi bi-hourglass-split"></i>',
+        '<strong>날짜별 회의록을 준비하고 있습니다.</strong>',
+        '<span>저장된 채널 목록을 가져오는 중입니다.</span>',
+        '</div>',
+      ].join("");
+      if (dom.meetingNotesBrowser) {
+        dom.meetingNotesBrowser.classList.remove("has-active-channel");
+      }
+      return;
+    }
+    dom.meetingNotesChannels.innerHTML = channels.length
+      ? channels.map(function (channel) {
+          const targetChannel = channel || {};
+          const roomId = Number(targetChannel.room_id || 0);
+          const noteCount = Number(targetChannel.note_count || 0);
+          const activeClass = roomId > 0 && roomId === Number(state.meetingNotes.activeRoomId || 0) ? " is-active" : "";
+          return [
+            '<button class="messenger-meeting-notes-browser__channel' + activeClass + '" type="button" data-meeting-room-id="' + roomId + '">',
+            '<span class="messenger-meeting-notes-browser__channel-icon"><i class="bi bi-volume-up-fill"></i></span>',
+            '<span class="messenger-meeting-notes-browser__channel-copy">',
+            '<strong>' + escapeHtml(targetChannel.room_title || "채널") + '</strong>',
+            '<span>' + escapeHtml(noteCount > 0 ? ("회의록 " + noteCount + "개") : "저장된 회의록 없음") + '</span>',
+            '</span>',
+            '<i class="bi bi-chevron-right"></i>',
+            '</button>',
+          ].join("");
+        }).join("")
+      : '<div class="messenger-empty-inline">저장된 회의록 채널이 없습니다.</div>';
+    if (!activeChannel) {
+      dom.meetingNotesNotes.innerHTML = [
+        '<div class="messenger-meeting-notes-browser__empty">',
+        '<i class="bi bi-journal-richtext"></i>',
+        '<strong>채널에 커서를 올리면 날짜별 회의록이 펼쳐집니다.</strong>',
+        '<span>왼쪽 메뉴에서 원하는 음성 채널을 선택해 주세요.</span>',
+        '</div>',
+      ].join("");
+      if (dom.meetingNotesBrowser) {
+        dom.meetingNotesBrowser.classList.remove("has-active-channel");
+      }
+      return;
+    }
+    if (dom.meetingNotesBrowser) {
+      dom.meetingNotesBrowser.classList.add("has-active-channel");
+    }
+    const notes = Array.isArray(activeChannel.notes) ? activeChannel.notes : [];
+    dom.meetingNotesNotes.innerHTML = [
+      '<div class="messenger-meeting-notes-browser__notes-head">',
+      '<strong>' + escapeHtml(activeChannel.room_title || "채널") + '</strong>',
+      '<span>날짜별 회의록</span>',
+      '</div>',
+      notes.length
+        ? [
+            '<div class="messenger-meeting-notes-browser__note-list">',
+            notes.map(function (note) {
+              const targetNote = note || {};
+              return [
+                '<button class="messenger-meeting-notes-browser__note" type="button" data-meeting-note-id="' + escapeAttribute(targetNote.note_id || "") + '">',
+                '<span class="messenger-meeting-notes-browser__note-icon"><i class="bi bi-file-earmark-text"></i></span>',
+                '<span class="messenger-meeting-notes-browser__note-copy">',
+                '<strong>' + escapeHtml(formatMeetingNoteTimestamp(targetNote.timestamp || "")) + '</strong>',
+                '<span>' + escapeHtml(targetNote.file_name || "회의록.txt") + '</span>',
+                '</span>',
+                '</button>',
+              ].join("");
+            }).join(""),
+            '</div>',
+          ].join("")
+        : [
+            '<div class="messenger-meeting-notes-browser__empty is-inline-empty">',
+            '<i class="bi bi-journal-x"></i>',
+            '<strong>이 채널에는 아직 저장된 회의록이 없습니다.</strong>',
+            '<span>Notiba AI 전사가 누적되면 날짜별 회의록이 여기에 생성됩니다.</span>',
+            '</div>',
+          ].join(""),
+    ].join("");
+  }
+
+  async function loadMeetingNotes(force) {
+    if (state.meetingNotes.loading && !force) return meetingNotesChannels();
+    state.meetingNotes.loading = true;
+    renderMeetingNotesBrowser();
+    try {
+      const payload = await api("/api/messenger/meeting-notes");
+      state.meetingNotes.channels = Array.isArray(payload.channels) ? payload.channels : [];
+      const activeRoomId = Number(state.meetingNotes.activeRoomId || 0);
+      const hasActive = state.meetingNotes.channels.some(function (channel) {
+        return Number((channel || {}).room_id || 0) === activeRoomId;
+      });
+      if (!hasActive) {
+        state.meetingNotes.activeRoomId = 0;
+      }
+      renderMeetingNotesBrowser();
+      return state.meetingNotes.channels;
+    } finally {
+      state.meetingNotes.loading = false;
+      renderMeetingNotesBrowser();
+    }
+  }
+
+  function renderMeetingNoteViewer() {
+    if (!dom.meetingNoteViewerTitle || !dom.meetingNoteViewerMeta || !dom.meetingNoteViewerContent) return;
+    const note = state.meetingNotes.viewerNote || {};
+    dom.meetingNoteViewerTitle.textContent = normalizeText(note.channel_name) || "회의록";
+    dom.meetingNoteViewerMeta.textContent = formatMeetingNoteTimestamp(note.timestamp || "");
+    dom.meetingNoteViewerContent.textContent = normalizeText(note.content) || "회의록 내용이 없습니다.";
+  }
+
+  async function openMeetingNote(noteId) {
+    const normalizedNoteId = normalizeText(noteId);
+    if (!normalizedNoteId) return;
+    const payload = await api("/api/messenger/meeting-notes/read?note_id=" + encodeURIComponent(normalizedNoteId));
+    state.meetingNotes.pendingViewerNote = payload.note || null;
+    if (dom.meetingNotesModalInstance) {
+      dom.meetingNotesModalInstance.hide();
+      return;
+    }
+    state.meetingNotes.viewerNote = state.meetingNotes.pendingViewerNote;
+    state.meetingNotes.pendingViewerNote = null;
+    renderMeetingNoteViewer();
+    if (dom.meetingNoteViewerModalInstance) {
+      dom.meetingNoteViewerModalInstance.show();
+    }
+  }
+
+  async function openMeetingNotesModal() {
+    state.meetingNotes.pendingViewerNote = null;
+    await loadMeetingNotes(true);
+    renderMeetingNotesBrowser();
+    if (dom.meetingNotesModalInstance) {
+      dom.meetingNotesModalInstance.show();
+    }
   }
 
   function resizeComposer() {
@@ -6266,6 +6759,9 @@
     renderTyping();
     scrollMessagesToBottom(true);
     sendSocket({ type: "call_sync", room_id: targetRoomId });
+    if (state.roomDrawerOpen) {
+      loadRoomCallTranscripts(targetRoomId, { force: true }).catch(function () {});
+    }
     markActiveRoomRead();
   }
 
@@ -6333,6 +6829,9 @@
       renderInspector();
       renderMessages();
       sendSocket({ type: "call_sync", room_id: targetRoomId });
+      if (state.roomDrawerOpen && targetRoomId > 0) {
+        loadRoomCallTranscripts(targetRoomId, { force: true }).catch(function () {});
+      }
       markActiveRoomRead();
       return;
     }
@@ -6489,6 +6988,10 @@
     return normalizeText((state.currentUser || {}).user_id);
   }
 
+  function currentUserName() {
+    return normalizeText((state.currentUser || {}).name || (state.currentUser || {}).display_name || currentUserId() || "나");
+  }
+
   function livekitIdentityUserId(identity) {
     const normalized = normalizeText(identity);
     if (!normalized) return "";
@@ -6629,6 +7132,7 @@
     if (state.viewMode === "ascord") {
       renderInspector();
     }
+    syncNotibaCapture();
   }
 
   async function applySelectedInputDevices() {
@@ -6646,6 +7150,7 @@
         await room.switchActiveDevice("videoinput", videoInputId);
       } catch (_) {}
     }
+    syncNotibaCapture();
   }
 
   async function switchCallDevice(kind, deviceId) {
@@ -6668,6 +7173,450 @@
     }
     applyRemoteAudioPreferences();
     renderInspector();
+    syncNotibaCapture();
+  }
+
+  function shouldKeepNotibaCaptureActive() {
+    const roomId = Number(state.call.joinedRoomId || 0);
+    const room = findRoomById(roomId) || state.activeRoom;
+    return !!roomId
+      && !!currentLiveRoom()
+      && !!room
+      && roomSupportsCalls(room)
+      && canSpeakInCall(room);
+  }
+
+  function shouldSendNotibaCaptureAudio() {
+    const roomId = Number(state.call.joinedRoomId || 0);
+    return shouldKeepNotibaCaptureActive()
+      && !!state.call.requestedAudioEnabled
+      && !!state.call.audioEnabled
+      && !state.call.deafened
+      && !isServerMutedInRoom(roomId);
+  }
+
+  function clearNotibaPartialTimers() {
+    const capture = state.notiba.capture;
+    Object.keys(capture.partialTimers || {}).forEach(function (itemId) {
+      const timerId = capture.partialTimers[itemId];
+      if (timerId) {
+        window.clearTimeout(timerId);
+      }
+    });
+    capture.partialTimers = {};
+  }
+
+  function scheduleNotibaCaptureReconnect(message) {
+    const capture = state.notiba.capture;
+    if (capture.reconnectTimer || !shouldKeepNotibaCaptureActive()) {
+      return;
+    }
+    if (message) {
+      capture.error = normalizeText(message);
+    }
+    capture.reconnectTimer = window.setTimeout(function () {
+      capture.reconnectTimer = 0;
+      if (capture.peerConnection || capture.stream) {
+        stopNotibaCapture(false);
+      }
+      if (!shouldKeepNotibaCaptureActive()) return;
+      startNotibaCapture().catch(function () {});
+    }, 700);
+    if (state.roomDrawerOpen) {
+      renderRoomDrawer();
+    }
+  }
+
+  function notibaCaptureTrack(stream) {
+    if (!stream || typeof stream.getAudioTracks !== "function") return null;
+    return (stream.getAudioTracks()[0]) || null;
+  }
+
+  function updateNotibaCaptureTrackState() {
+    const track = notibaCaptureTrack(state.notiba.capture.stream);
+    if (!track) return;
+    track.enabled = shouldSendNotibaCaptureAudio();
+  }
+
+  function clearPendingTranscriptsForUser(roomId, userId) {
+    const targetRoomId = Number(roomId || 0);
+    const normalizedUserId = normalizeText(userId);
+    if (targetRoomId <= 0 || !normalizedUserId) return;
+    const nextPending = {};
+    let changed = false;
+    Object.keys(state.notiba.pendingByRoomId[targetRoomId] || {}).forEach(function (key) {
+      const entry = state.notiba.pendingByRoomId[targetRoomId][key];
+      if (normalizeText(entry && entry.user_id) === normalizedUserId) {
+        changed = true;
+        return;
+      }
+      nextPending[key] = entry;
+    });
+    if (!changed) return;
+    if (Object.keys(nextPending).length) {
+      state.notiba.pendingByRoomId[targetRoomId] = nextPending;
+    } else {
+      delete state.notiba.pendingByRoomId[targetRoomId];
+    }
+    if (state.roomDrawerOpen && Number((state.activeRoom && state.activeRoom.id) || state.activeRoomId || 0) === targetRoomId) {
+      renderRoomDrawer();
+    }
+  }
+
+  function stopNotibaCapture(resetError) {
+    const capture = state.notiba.capture;
+    const previousRoomId = Number(capture.roomId || 0);
+    const stream = capture.stream;
+    const peerConnection = capture.peerConnection;
+    const dataChannel = capture.dataChannel;
+    if (capture.reconnectTimer) {
+      window.clearTimeout(capture.reconnectTimer);
+      capture.reconnectTimer = 0;
+    }
+    clearNotibaPartialTimers();
+    clearPendingTranscriptsForUser(previousRoomId, currentUserId());
+    capture.roomId = 0;
+    capture.callId = "";
+    capture.deviceId = "";
+    capture.stream = null;
+    capture.peerConnection = null;
+    capture.dataChannel = null;
+    capture.sender = null;
+    capture.itemTexts = {};
+    capture.itemSpokenAtMs = {};
+    capture.starting = false;
+    if (resetError) {
+      capture.error = "";
+    }
+    if (dataChannel) {
+      try {
+        dataChannel.close();
+      } catch (_) {}
+    }
+    if (stream && typeof stream.getTracks === "function") {
+      stream.getTracks().forEach(function (track) {
+        try {
+          track.stop();
+        } catch (_) {}
+      });
+    }
+    if (peerConnection) {
+      try {
+        peerConnection.close();
+      } catch (_) {}
+    }
+    if (state.roomDrawerOpen) {
+      renderRoomDrawer();
+    }
+  }
+
+  async function sendNotibaTranscriptEvent(roomId, payload) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0 || !payload || typeof payload !== "object") return null;
+    let response = null;
+    let responsePayload = {};
+    try {
+      response = await fetch("/api/messenger/rooms/" + targetRoomId + "/call/transcript-event", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify(payload),
+      });
+      responsePayload = await response.json().catch(function () {
+        return {};
+      });
+    } catch (error) {
+      state.notiba.capture.error = normalizeText((error && error.message) || "Notiba AI 전사 이벤트 전송에 실패했습니다.");
+      if (state.roomDrawerOpen) {
+        renderRoomDrawer();
+      }
+      return null;
+    }
+    if (responsePayload.settings) {
+      state.notiba.settings = responsePayload.settings;
+    }
+    if (!response || !response.ok || !responsePayload.ok) {
+      const detail = normalizeText(responsePayload.detail || "Notiba AI 전사 처리에 실패했습니다.");
+      state.notiba.capture.error = detail;
+      if (state.roomDrawerOpen) {
+        renderRoomDrawer();
+      }
+      return null;
+    }
+    if (normalizeText(state.notiba.capture.error)) {
+      state.notiba.capture.error = "";
+      if (state.roomDrawerOpen) {
+        renderRoomDrawer();
+      }
+    }
+    return responsePayload;
+  }
+
+  function flushNotibaPartialEvent(roomId, callId, itemId) {
+    const capture = state.notiba.capture;
+    const targetRoomId = Number(roomId || 0);
+    const normalizedCallId = normalizeText(callId);
+    const normalizedItemId = normalizeText(itemId);
+    const currentText = normalizeText(capture.itemTexts[normalizedItemId]);
+    if (targetRoomId <= 0 || !normalizedCallId || !normalizedItemId || !currentText) return;
+    upsertPendingTranscriptEntry(targetRoomId, normalizedCallId, {
+      item_id: normalizedItemId,
+      user_id: currentUserId(),
+      display_name: currentUserName(),
+      text: currentText,
+      spoken_at: Number(capture.itemSpokenAtMs[normalizedItemId] || (Date.now() / 1000)),
+      created_at: Date.now() / 1000,
+    });
+    sendNotibaTranscriptEvent(targetRoomId, {
+      call_id: normalizedCallId,
+      item_id: normalizedItemId,
+      state: "partial",
+      text: currentText,
+      spoken_at_ms: Number(capture.itemSpokenAtMs[normalizedItemId] || Date.now()),
+    }).catch(function () {});
+  }
+
+  function queueNotibaPartialFlush(roomId, callId, itemId) {
+    const capture = state.notiba.capture;
+    const normalizedItemId = normalizeText(itemId);
+    if (!normalizedItemId) return;
+    if (capture.partialTimers[normalizedItemId]) {
+      window.clearTimeout(capture.partialTimers[normalizedItemId]);
+    }
+    capture.partialTimers[normalizedItemId] = window.setTimeout(function () {
+      delete capture.partialTimers[normalizedItemId];
+      flushNotibaPartialEvent(roomId, callId, normalizedItemId);
+    }, NOTIBA_REALTIME_PARTIAL_PUSH_MS);
+  }
+
+  function handleNotibaRealtimeMessage(event) {
+    const capture = state.notiba.capture;
+    const roomId = Number(capture.roomId || 0);
+    const callId = normalizeText(capture.callId || (callForRoom(roomId) || {}).call_id || state.notiba.callIdByRoomId[roomId]);
+    let payload = {};
+    try {
+      payload = JSON.parse((event && event.data) || "{}");
+    } catch (_) {
+      payload = {};
+    }
+    const type = normalizeText(payload.type).toLowerCase();
+    if (!type) return;
+    if (type === "session.created" || type === "session.updated") {
+      capture.error = "";
+      if (payload.session) {
+        state.notiba.settings = Object.assign({}, state.notiba.settings || {}, {
+          provider: "openai_realtime",
+          transport: "webrtc",
+          type: normalizeText(payload.session.type || "transcription"),
+          model: normalizeText((((payload.session.audio || {}).input || {}).transcription || {}).model || (state.notiba.settings && state.notiba.settings.model) || "gpt-4o-transcribe"),
+          language: normalizeText((((payload.session.audio || {}).input || {}).transcription || {}).language || "ko"),
+        });
+      }
+      if (state.roomDrawerOpen) {
+        renderRoomDrawer();
+      }
+      return;
+    }
+    if (type === "error") {
+      capture.error = normalizeText((((payload.error || {}).message) || payload.message) || "Notiba AI 연결 중 오류가 발생했습니다.");
+      if (state.roomDrawerOpen) {
+        renderRoomDrawer();
+      }
+      return;
+    }
+    const itemId = normalizeText(payload.item_id);
+    if (!itemId || !roomId || !callId) return;
+    if (type === "input_audio_buffer.committed") {
+      capture.itemSpokenAtMs[itemId] = Date.now();
+      return;
+    }
+    if (type === "conversation.item.input_audio_transcription.delta") {
+      const delta = String(payload.delta || "");
+      if (!delta) return;
+      capture.itemTexts[itemId] = String(capture.itemTexts[itemId] || "") + delta;
+      if (!capture.itemSpokenAtMs[itemId]) {
+        capture.itemSpokenAtMs[itemId] = Date.now();
+      }
+      queueNotibaPartialFlush(roomId, callId, itemId);
+      return;
+    }
+    if (type === "conversation.item.input_audio_transcription.completed") {
+      const finalText = normalizeText(payload.transcript || capture.itemTexts[itemId]);
+      if (capture.partialTimers[itemId]) {
+        window.clearTimeout(capture.partialTimers[itemId]);
+        delete capture.partialTimers[itemId];
+      }
+      if (!finalText) {
+        clearPendingTranscriptEntry(roomId, currentUserId(), itemId);
+        delete capture.itemTexts[itemId];
+        delete capture.itemSpokenAtMs[itemId];
+        return;
+      }
+      capture.itemTexts[itemId] = finalText;
+      upsertPendingTranscriptEntry(roomId, callId, {
+        item_id: itemId,
+        user_id: currentUserId(),
+        display_name: currentUserName(),
+        text: finalText,
+        spoken_at: Number(capture.itemSpokenAtMs[itemId] || (Date.now() / 1000)),
+        created_at: Date.now() / 1000,
+      });
+      sendNotibaTranscriptEvent(roomId, {
+        call_id: callId,
+        item_id: itemId,
+        state: "final",
+        text: finalText,
+        spoken_at_ms: Number(capture.itemSpokenAtMs[itemId] || Date.now()),
+      }).then(function (responsePayload) {
+        if (!responsePayload || !responsePayload.entry) return;
+        if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+          clearPendingTranscriptEntry(roomId, currentUserId(), itemId);
+          appendRoomTranscriptEntry(roomId, responsePayload.call_id || callId, responsePayload.entry);
+        }
+      }).catch(function () {}).finally(function () {
+        delete capture.itemTexts[itemId];
+        delete capture.itemSpokenAtMs[itemId];
+      });
+    }
+  }
+
+  async function startNotibaCapture() {
+    const capture = state.notiba.capture;
+    if (capture.starting || capture.peerConnection || !shouldKeepNotibaCaptureActive()) return;
+    const RTCPeerConnectionCtor = window.RTCPeerConnection || null;
+    if (!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") || !RTCPeerConnectionCtor) return;
+    capture.starting = true;
+    capture.error = "";
+    const roomId = Number(state.call.joinedRoomId || 0);
+    const callId = normalizeText((callForRoom(roomId) || {}).call_id || state.notiba.callIdByRoomId[roomId]);
+    const deviceId = normalizeText((state.call.selectedDevices || {}).audioinput);
+    try {
+      const audioConstraints = {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
+      if (deviceId) {
+        audioConstraints.deviceId = { exact: deviceId };
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraints,
+        video: false,
+      });
+      if (!shouldKeepNotibaCaptureActive() || Number(state.call.joinedRoomId || 0) !== roomId) {
+        if (typeof stream.getTracks === "function") {
+          stream.getTracks().forEach(function (track) {
+            try {
+              track.stop();
+            } catch (_) {}
+          });
+        }
+        return;
+      }
+      const peerConnection = new RTCPeerConnectionCtor();
+      const dataChannel = peerConnection.createDataChannel("oai-events");
+      dataChannel.addEventListener("message", handleNotibaRealtimeMessage);
+      dataChannel.addEventListener("open", function () {
+        capture.error = "";
+        if (state.roomDrawerOpen) {
+          renderRoomDrawer();
+        }
+      });
+      dataChannel.addEventListener("close", function () {
+        if (capture.dataChannel !== dataChannel) return;
+        scheduleNotibaCaptureReconnect("Notiba AI 연결이 끊어져 다시 연결합니다.");
+      });
+      peerConnection.addEventListener("connectionstatechange", function () {
+        if (capture.peerConnection !== peerConnection) return;
+        const connectionState = normalizeText(peerConnection.connectionState).toLowerCase();
+        if (connectionState === "failed" || connectionState === "disconnected" || connectionState === "closed") {
+          scheduleNotibaCaptureReconnect("Notiba AI 연결이 끊어져 다시 연결합니다.");
+        }
+      });
+      const track = notibaCaptureTrack(stream);
+      if (!track) {
+        throw new Error("Notiba AI용 마이크 트랙을 찾지 못했습니다.");
+      }
+      const sender = peerConnection.addTrack(track, stream);
+      const sessionResponse = await fetch("/api/messenger/rooms/" + roomId + "/call/transcription/session", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const sessionPayload = await sessionResponse.json().catch(function () {
+        return {};
+      });
+      if (!sessionResponse.ok || !sessionPayload.ok) {
+        const detail = normalizeText(sessionPayload.detail || "Notiba AI 세션을 열지 못했습니다.");
+        throw new Error(detail);
+      }
+      if (sessionPayload.settings) {
+        state.notiba.settings = sessionPayload.settings;
+      }
+      const ephemeralKey = normalizeText(sessionPayload.value);
+      if (!ephemeralKey) {
+        throw new Error("Notiba AI 세션 토큰을 받지 못했습니다.");
+      }
+      const openAiBaseUrl = normalizeText((sessionPayload.settings && sessionPayload.settings.api_base_url) || "https://api.openai.com").replace(/\/+$/, "");
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      const openAiResponse = await fetch(openAiBaseUrl + "/v1/realtime/calls", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + ephemeralKey,
+          "Content-Type": "application/sdp",
+        },
+        body: String((offer && offer.sdp) || ""),
+        cache: "no-store",
+      });
+      const rawAnswer = await openAiResponse.text();
+      if (!openAiResponse.ok) {
+        throw new Error(normalizeText(rawAnswer) || "OpenAI Realtime 연결에 실패했습니다.");
+      }
+      await peerConnection.setRemoteDescription({
+        type: "answer",
+        sdp: rawAnswer,
+      });
+      capture.roomId = roomId;
+      capture.callId = callId;
+      capture.deviceId = deviceId;
+      capture.stream = stream;
+      capture.peerConnection = peerConnection;
+      capture.dataChannel = dataChannel;
+      capture.sender = sender;
+      capture.itemTexts = {};
+      capture.itemSpokenAtMs = {};
+      clearNotibaPartialTimers();
+      updateNotibaCaptureTrackState();
+    } catch (error) {
+      capture.error = normalizeText((error && error.message) || "Notiba AI 실시간 전사를 시작하지 못했습니다.");
+      stopNotibaCapture(false);
+    } finally {
+      capture.starting = false;
+      if (state.roomDrawerOpen) {
+        renderRoomDrawer();
+      }
+    }
+  }
+
+  function syncNotibaCapture() {
+    const capture = state.notiba.capture;
+    const roomId = Number(state.call.joinedRoomId || 0);
+    const deviceId = normalizeText((state.call.selectedDevices || {}).audioinput);
+    if (!shouldKeepNotibaCaptureActive()) {
+      stopNotibaCapture(true);
+      return;
+    }
+    if (capture.peerConnection && capture.stream && capture.roomId === roomId && capture.deviceId === deviceId) {
+      updateNotibaCaptureTrackState();
+      return;
+    }
+    if (capture.peerConnection && capture.stream && (capture.roomId !== roomId || capture.deviceId !== deviceId)) {
+      stopNotibaCapture(true);
+    }
+    startNotibaCapture().catch(function () {});
   }
 
   async function sendCallModerationAction(action, targetUserId, room) {
@@ -7191,6 +8140,7 @@
     state.call.deafened = false;
     state.call.pushToTalkPressed = false;
     state.call.pinnedTrackId = "";
+    stopNotibaCapture(true);
     if (notifyServer && roomId > 0) {
       sendSocket({ type: "call_leave", room_id: roomId });
     }
@@ -8162,6 +9112,7 @@
     closeAllPeerConnections();
     stopStreamTracks(state.call.screenStream);
     stopStreamTracks(state.call.cameraStream);
+    stopNotibaCapture(true);
     state.call.screenStream = null;
     state.call.cameraStream = null;
     state.call.localStream = null;
@@ -8664,6 +9615,7 @@
     renderAscordVoiceDock();
     renderAscordCallDock();
     renderCallFullscreenOverlay();
+    syncNotibaCapture();
   }
 
   async function handleCallStateUpdate(call) {
@@ -8677,8 +9629,19 @@
     }
     const previousCall = snapshotRoomCall(state.call.callSnapshotsByRoomId[roomId] || state.call.roomCallsById[roomId]);
     const nextCall = snapshotRoomCall(roomCall);
+    const previousTranscriptCallId = normalizeText(state.notiba.callIdByRoomId[roomId]);
+    const nextTranscriptCallId = normalizeText((nextCall && nextCall.call_id) || "");
     state.call.roomCallsById[roomId] = roomCall;
     state.call.callSnapshotsByRoomId[roomId] = nextCall;
+    if (!nextTranscriptCallId) {
+      clearRoomTranscriptEntries(roomId);
+    } else if (previousTranscriptCallId !== nextTranscriptCallId) {
+      setRoomTranscriptEntries(roomId, nextTranscriptCallId, []);
+      clearRoomPendingTranscriptEntries(roomId);
+      if (state.roomDrawerOpen && Number(state.activeRoomId || 0) === roomId) {
+        loadRoomCallTranscripts(roomId, { force: true }).catch(function () {});
+      }
+    }
     const previousMyParticipant = callParticipant(previousCall, currentUserId());
     const myParticipant = callParticipant(nextCall, currentUserId());
     if (liveCallAlertKey(nextCall)) {
@@ -8796,6 +9759,8 @@
     delete state.call.incomingInvitesByRoomId[targetRoomId];
     delete state.call.serverMutedRoomIds[targetRoomId];
     delete state.call.roomCallsById[targetRoomId];
+    clearRoomTranscriptEntries(targetRoomId);
+    clearRoomPendingTranscriptEntries(targetRoomId);
     recalcCounts();
     renderIncomingCallInvites();
     renderRoomList();
@@ -10463,6 +11428,23 @@
       }
       return;
     }
+    if (type === "call_transcript" && payload.entry) {
+      const completedEntry = payload.entry || {};
+      clearPendingTranscriptEntry(
+        Number(payload.room_id || 0),
+        normalizeText(completedEntry.user_id),
+        normalizeText(payload.item_id || completedEntry.source_item_id || completedEntry.item_id)
+      );
+      appendRoomTranscriptEntry(Number(payload.room_id || 0), payload.call_id || "", payload.entry);
+      if (dom.meetingNotesModal && dom.meetingNotesModal.classList.contains("show")) {
+        loadMeetingNotes(true).catch(function () {});
+      }
+      return;
+    }
+    if (type === "call_transcript_partial" && payload.entry) {
+      upsertPendingTranscriptEntry(Number(payload.room_id || 0), payload.call_id || "", payload.entry);
+      return;
+    }
     if (type === "call_state" && payload.call) {
       await handleCallStateUpdate(payload.call);
       return;
@@ -10728,6 +11710,49 @@
     if (dom.roomDrawerCloseBtn) {
       dom.roomDrawerCloseBtn.addEventListener("click", function () {
         setRoomDrawerOpen(false);
+      });
+    }
+    if (dom.meetingNotesChannels) {
+      dom.meetingNotesChannels.addEventListener("mouseover", function (event) {
+        const target = event.target instanceof Element ? event.target.closest("[data-meeting-room-id]") : null;
+        if (!target) return;
+        const roomId = Number(target.getAttribute("data-meeting-room-id") || 0);
+        if (roomId <= 0) return;
+        setMeetingNotesActiveRoom(roomId);
+      });
+      dom.meetingNotesChannels.addEventListener("click", function (event) {
+        const target = event.target instanceof Element ? event.target.closest("[data-meeting-room-id]") : null;
+        if (!target) return;
+        event.preventDefault();
+        const roomId = Number(target.getAttribute("data-meeting-room-id") || 0);
+        if (roomId <= 0) return;
+        setMeetingNotesActiveRoom(roomId);
+      });
+    }
+    if (dom.meetingNotesNotes) {
+      dom.meetingNotesNotes.addEventListener("click", function (event) {
+        const target = event.target instanceof Element ? event.target.closest("[data-meeting-note-id]") : null;
+        if (!target) return;
+        event.preventDefault();
+        openMeetingNote(target.getAttribute("data-meeting-note-id")).catch(function (error) {
+          showError((error && error.message) || "회의록을 열지 못했습니다.");
+        });
+      });
+    }
+    if (dom.meetingNotesModal) {
+      dom.meetingNotesModal.addEventListener("hidden.bs.modal", function () {
+        if (!state.meetingNotes.pendingViewerNote) return;
+        state.meetingNotes.viewerNote = state.meetingNotes.pendingViewerNote;
+        state.meetingNotes.pendingViewerNote = null;
+        renderMeetingNoteViewer();
+        if (dom.meetingNoteViewerModalInstance) {
+          dom.meetingNoteViewerModalInstance.show();
+        }
+      });
+    }
+    if (dom.meetingNoteViewerModal) {
+      dom.meetingNoteViewerModal.addEventListener("show.bs.modal", function () {
+        renderMeetingNoteViewer();
       });
     }
     if (dom.roomMuteBtn) dom.roomMuteBtn.addEventListener("click", toggleMuteRoom);
@@ -11380,6 +12405,15 @@
     dom.roomDrawerIcon = $("messengerRoomDrawerIcon");
     dom.roomDrawerTitle = $("messengerRoomDrawerTitle");
     dom.roomDrawerCloseBtn = $("messengerRoomDrawerCloseBtn");
+    dom.roomDrawerBody = $("messengerRoomDrawerBody");
+    dom.meetingNotesModal = $("messengerMeetingNotesModal");
+    dom.meetingNotesBrowser = $("messengerMeetingNotesBrowser");
+    dom.meetingNotesChannels = $("messengerMeetingNotesChannels");
+    dom.meetingNotesNotes = $("messengerMeetingNotesNotes");
+    dom.meetingNoteViewerModal = $("messengerMeetingNoteViewerModal");
+    dom.meetingNoteViewerTitle = $("messengerMeetingNoteViewerTitle");
+    dom.meetingNoteViewerMeta = $("messengerMeetingNoteViewerMeta");
+    dom.meetingNoteViewerContent = $("messengerMeetingNoteViewerContent");
     dom.roomInfo = $("messengerRoomInfo");
     dom.participantPanelLabel = $("messengerParticipantPanelLabel");
     dom.participantList = $("messengerParticipantList");
@@ -11426,6 +12460,8 @@
     dom.createRoomSubmitBtn = $("messengerCreateRoomSubmitBtn");
     const modalElement = $("messengerNewRoomModal");
     dom.newRoomModalInstance = modalElement && window.bootstrap ? new bootstrap.Modal(modalElement) : null;
+    dom.meetingNotesModalInstance = dom.meetingNotesModal && window.bootstrap ? new bootstrap.Modal(dom.meetingNotesModal) : null;
+    dom.meetingNoteViewerModalInstance = dom.meetingNoteViewerModal && window.bootstrap ? new bootstrap.Modal(dom.meetingNoteViewerModal) : null;
   }
 
   async function init() {

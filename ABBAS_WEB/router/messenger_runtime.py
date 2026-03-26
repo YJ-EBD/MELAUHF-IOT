@@ -361,4 +361,86 @@ _MESSENGER_HUB = _MessengerHub()
 _MESSENGER_CALL_HUB = _MessengerCallHub()
 
 
-__all__ = ["_MESSENGER_CALL_HUB", "_MESSENGER_HUB"]
+class _MessengerTranscriptHub:
+    def __init__(self) -> None:
+        self._entries_by_room: dict[int, dict[str, Any]] = {}
+        self._lock = asyncio.Lock()
+
+    async def sync_room_call(self, room_id: int, call_id: str) -> list[dict[str, Any]]:
+        target_room_id = int(room_id or 0)
+        normalized_call_id = str(call_id or "").strip()
+        if target_room_id <= 0:
+            return []
+        async with self._lock:
+            if not normalized_call_id:
+                self._entries_by_room.pop(target_room_id, None)
+                return []
+            current = self._entries_by_room.get(target_room_id)
+            if not current or str(current.get("call_id") or "") != normalized_call_id:
+                current = {
+                    "call_id": normalized_call_id,
+                    "next_id": 1,
+                    "entries": [],
+                }
+                self._entries_by_room[target_room_id] = current
+            return [dict(item) for item in (current.get("entries") or [])]
+
+    async def append_entry(self, room_id: int, call_id: str, entry: dict[str, Any]) -> dict[str, Any] | None:
+        target_room_id = int(room_id or 0)
+        normalized_call_id = str(call_id or "").strip()
+        if target_room_id <= 0 or not normalized_call_id:
+            return None
+        payload = dict(entry or {})
+        async with self._lock:
+            current = self._entries_by_room.get(target_room_id)
+            if not current or str(current.get("call_id") or "") != normalized_call_id:
+                current = {
+                    "call_id": normalized_call_id,
+                    "next_id": 1,
+                    "entries": [],
+                }
+                self._entries_by_room[target_room_id] = current
+            next_id = int(current.get("next_id") or 1)
+            current["next_id"] = next_id + 1
+            normalized_entry = {
+                "id": next_id,
+                "room_id": target_room_id,
+                "call_id": normalized_call_id,
+                "user_id": str(payload.get("user_id") or "").strip(),
+                "display_name": str(payload.get("display_name") or "").strip(),
+                "source_item_id": str(payload.get("source_item_id") or payload.get("item_id") or "").strip(),
+                "text": str(payload.get("text") or "").strip(),
+                "spoken_at": float(payload.get("spoken_at") or time.time()),
+                "created_at": float(payload.get("created_at") or time.time()),
+                "duration_ms": max(int(payload.get("duration_ms") or 0), 0),
+            }
+            entries = list(current.get("entries") or [])
+            entries.append(normalized_entry)
+            if len(entries) > 200:
+                entries = entries[-200:]
+            current["entries"] = entries
+            return dict(normalized_entry)
+
+    async def get_room_entries(self, room_id: int, call_id: str) -> list[dict[str, Any]]:
+        target_room_id = int(room_id or 0)
+        normalized_call_id = str(call_id or "").strip()
+        if target_room_id <= 0 or not normalized_call_id:
+            return []
+        async with self._lock:
+            current = self._entries_by_room.get(target_room_id)
+            if not current or str(current.get("call_id") or "") != normalized_call_id:
+                return []
+            return [dict(item) for item in (current.get("entries") or [])]
+
+    async def clear_room(self, room_id: int) -> None:
+        target_room_id = int(room_id or 0)
+        if target_room_id <= 0:
+            return
+        async with self._lock:
+            self._entries_by_room.pop(target_room_id, None)
+
+
+_MESSENGER_TRANSCRIPT_HUB = _MessengerTranscriptHub()
+
+
+__all__ = ["_MESSENGER_CALL_HUB", "_MESSENGER_HUB", "_MESSENGER_TRANSCRIPT_HUB"]

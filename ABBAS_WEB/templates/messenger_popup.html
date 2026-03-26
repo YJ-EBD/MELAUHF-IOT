@@ -345,7 +345,7 @@
                   <i class="bi bi-x-lg"></i>
                 </button>
               </div>
-              <div class="messenger-room-drawer__body"></div>
+              <div class="messenger-room-drawer__body" id="messengerRoomDrawerBody"></div>
             </aside>
           </div>
         </section>
@@ -497,6 +497,45 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button>
         <button type="button" class="btn btn-primary" id="messengerCreateRoomSubmitBtn">대화 시작</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade messenger-modal messenger-modal--meeting-notes" id="messengerMeetingNotesModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="messenger-meeting-notes-modal__title">
+          <h5 class="modal-title">회의록</h5>
+          <span>채널에 마우스를 올리면 오른쪽에서 날짜별 회의록이 펼쳐집니다.</span>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+      </div>
+      <div class="modal-body">
+        <div class="messenger-meeting-notes-browser" id="messengerMeetingNotesBrowser">
+          <div class="messenger-meeting-notes-browser__channels" id="messengerMeetingNotesChannels">
+            <div class="messenger-empty-inline">회의록 채널을 불러오는 중입니다.</div>
+          </div>
+          <div class="messenger-meeting-notes-browser__notes" id="messengerMeetingNotesNotes"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade messenger-modal messenger-modal--meeting-note-viewer" id="messengerMeetingNoteViewerModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="messenger-meeting-note-viewer__title-wrap">
+          <h5 class="modal-title" id="messengerMeetingNoteViewerTitle">회의록</h5>
+          <span id="messengerMeetingNoteViewerMeta">채널과 저장 시각이 여기에 표시됩니다.</span>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+      </div>
+      <div class="modal-body">
+        <pre class="messenger-meeting-note-viewer__content" id="messengerMeetingNoteViewerContent">회의록을 선택하면 여기에 전체 내용이 표시됩니다.</pre>
       </div>
     </div>
   </div>
