@@ -7531,6 +7531,7 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
 .messenger-page.is-ascord .messenger-call-stage.is-empty-ascord {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   padding: 0;
   overflow: hidden;
   background:
@@ -7558,8 +7559,8 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
 }
 
 .messenger-page.is-ascord .messenger-call-stage__grid.is-empty-ascord {
-  min-height: 100%;
-  height: 100%;
+  min-height: 0;
+  height: auto;
   padding: 0 0 110px;
   gap: 0;
   grid-template-columns: minmax(0, 1fr);
@@ -7568,6 +7569,7 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
 .messenger-page.is-ascord .messenger-call-stage.is-empty-ascord .messenger-call-stage__grid.is-empty-ascord {
   display: flex;
   flex: 1 1 auto;
+  min-height: 0;
   padding: 0;
 }
 
@@ -7663,8 +7665,8 @@ html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card__hove
 }
 
 .messenger-page.is-ascord .messenger-call-stage__grid.is-empty-ascord > .messenger-call-empty--ascord {
-  min-height: 100%;
-  height: 100%;
+  min-height: 0;
+  height: auto;
   align-self: stretch;
   border-radius: 0;
 }
@@ -7672,8 +7674,8 @@ html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card__hove
 .messenger-page.is-ascord .messenger-call-stage.is-empty-ascord .messenger-call-empty--ascord,
 .messenger-page.is-ascord .messenger-call-stage.is-empty-ascord .messenger-call-empty__stage {
   flex: 1 1 auto;
-  min-height: 100%;
-  height: 100%;
+  min-height: 0;
+  height: auto;
 }
 
 html[data-bs-theme="light"] .messenger-call-empty--ascord {

@@ -112,6 +112,7 @@
       remoteStreamsByUserId: {},
       pendingSignalsByUserId: {},
       lastRenderItems: [],
+      lastAudioSinkSignature: "",
       participantOrderByRoomId: {},
       fullscreenTrackId: "",
       sharePickerMode: "application",
@@ -5575,6 +5576,10 @@
       dom.callFullscreen.setAttribute("aria-hidden", "true");
     }
     if (dom.callFullscreenMedia) {
+      const slot = dom.callFullscreenMedia.querySelector("[data-call-fullscreen-slot]");
+      clearMountedLiveKitTrack(slot);
+      dom.callFullscreenMedia.classList.remove("has-video");
+      dom.callFullscreenMedia.setAttribute("data-call-fullscreen-item", "");
       dom.callFullscreenMedia.innerHTML = "";
     }
     renderCallUi();
@@ -5593,6 +5598,10 @@
     if (!targetId) {
       dom.callFullscreen.classList.add("d-none");
       dom.callFullscreen.setAttribute("aria-hidden", "true");
+      const hiddenSlot = dom.callFullscreenMedia.querySelector("[data-call-fullscreen-slot]");
+      clearMountedLiveKitTrack(hiddenSlot);
+      dom.callFullscreenMedia.classList.remove("has-video");
+      dom.callFullscreenMedia.setAttribute("data-call-fullscreen-item", "");
       dom.callFullscreenMedia.innerHTML = "";
       return;
     }
@@ -5601,6 +5610,10 @@
       state.call.fullscreenTrackId = "";
       dom.callFullscreen.classList.add("d-none");
       dom.callFullscreen.setAttribute("aria-hidden", "true");
+      const missingSlot = dom.callFullscreenMedia.querySelector("[data-call-fullscreen-slot]");
+      clearMountedLiveKitTrack(missingSlot);
+      dom.callFullscreenMedia.classList.remove("has-video");
+      dom.callFullscreenMedia.setAttribute("data-call-fullscreen-item", "");
       dom.callFullscreenMedia.innerHTML = "";
       return;
     }
@@ -5612,12 +5625,30 @@
     if (dom.callFullscreenMeta) {
       dom.callFullscreenMeta.textContent = item.subtitle || (item.audioEnabled ? "음성 연결됨" : "대기 중");
     }
-    dom.callFullscreenMedia.innerHTML = [
-      '<div class="messenger-call-fullscreen__placeholder">' + escapeHtml(item.avatarInitial || avatarInitialFor(item.displayName, item.userId || "U")) + "</div>",
-      '<div class="messenger-call-fullscreen__slot" data-call-fullscreen-slot="' + escapeAttribute(item.id) + '"></div>',
-    ].join("");
-    const slot = dom.callFullscreenMedia.querySelector("[data-call-fullscreen-slot]");
+    const currentFullscreenItemId = normalizeText(dom.callFullscreenMedia.getAttribute("data-call-fullscreen-item"));
+    let slot = dom.callFullscreenMedia.querySelector("[data-call-fullscreen-slot]");
+    let placeholder = dom.callFullscreenMedia.querySelector(".messenger-call-fullscreen__placeholder");
+    if (currentFullscreenItemId !== targetId || !slot || !placeholder) {
+      clearMountedLiveKitTrack(slot);
+      dom.callFullscreenMedia.setAttribute("data-call-fullscreen-item", targetId);
+      dom.callFullscreenMedia.innerHTML = [
+        '<div class="messenger-call-fullscreen__placeholder">' + escapeHtml(item.avatarInitial || avatarInitialFor(item.displayName, item.userId || "U")) + "</div>",
+        '<div class="messenger-call-fullscreen__slot" data-call-fullscreen-slot="' + escapeAttribute(item.id) + '"></div>',
+      ].join("");
+      slot = dom.callFullscreenMedia.querySelector("[data-call-fullscreen-slot]");
+      placeholder = dom.callFullscreenMedia.querySelector(".messenger-call-fullscreen__placeholder");
+    } else {
+      if (placeholder) {
+        placeholder.textContent = item.avatarInitial || avatarInitialFor(item.displayName, item.userId || "U");
+      }
+      if (slot) {
+        slot.setAttribute("data-call-fullscreen-slot", escapeAttribute(item.id));
+      }
+    }
     const attached = !!(slot && item.track && attachLiveKitTrack(item.track, slot, item.isLocal));
+    if (!attached) {
+      clearMountedLiveKitTrack(slot);
+    }
     dom.callFullscreenMedia.classList.toggle("has-video", attached);
   }
 
@@ -7092,6 +7123,7 @@
     if (dom.callAudioSink) {
       dom.callAudioSink.innerHTML = "";
     }
+    state.call.lastAudioSinkSignature = "";
     if (shouldPlayOutSound) {
       playAscordOutSound(roomMeta);
     }
@@ -7276,10 +7308,14 @@
   function renderCallPrompt(roomCall) {
     if (!dom.callGrid) return;
     state.call.lastRenderItems = [];
+    state.call.lastAudioSinkSignature = "";
     dom.callGrid.classList.remove("is-empty-ascord");
     if (dom.callStage) {
       dom.callStage.classList.remove("is-empty-ascord");
     }
+    Array.prototype.forEach.call(dom.callGrid.querySelectorAll(".messenger-call-card__media-slot"), function (slot) {
+      clearMountedLiveKitTrack(slot);
+    });
     const room = state.activeRoom;
     const count = callParticipantCount(roomCall);
     const isAscord = state.viewMode === "ascord";
@@ -7328,10 +7364,22 @@
   }
 
   function attachLiveKitTrack(track, mountPoint, isLocal) {
-    if (!track || !mountPoint || typeof track.attach !== "function") return false;
-    while (mountPoint.firstChild) {
-      mountPoint.removeChild(mountPoint.firstChild);
+    const nextTrackKey = liveKitTrackKey(track);
+    if (!nextTrackKey || !mountPoint || typeof track.attach !== "function") return false;
+    const existingElement = mountPoint.__livekitElement || mountPoint.firstElementChild || null;
+    if (normalizeText(mountPoint.dataset.callTrackKey) === nextTrackKey && existingElement instanceof HTMLMediaElement) {
+      existingElement.autoplay = true;
+      existingElement.playsInline = true;
+      existingElement.muted = !!isLocal;
+      const hostCard = mountPoint.closest("[data-call-card-user], .messenger-call-fullscreen__media");
+      const isReady = existingElement.classList.contains("is-ready") || existingElement.readyState >= 2;
+      if (hostCard) {
+        hostCard.classList.toggle("has-video", isReady);
+      }
+      return true;
     }
+    clearMountedLiveKitTrack(mountPoint);
+    if (!track || !mountPoint || typeof track.attach !== "function") return false;
     let element = null;
     try {
       element = track.attach();
@@ -7345,6 +7393,7 @@
       element.muted = !!isLocal;
       element.classList.add("is-pending");
       const markReady = function () {
+        if (mountPoint.__livekitElement !== element) return;
         element.classList.remove("is-pending");
         element.classList.add("is-ready");
         const hostCard = mountPoint.closest("[data-call-card-user], .messenger-call-fullscreen__media");
@@ -7354,15 +7403,68 @@
       };
       element.addEventListener("loadeddata", markReady, { once: true });
       element.addEventListener("canplay", markReady, { once: true });
+      element.addEventListener("playing", markReady, { once: true });
+      if (typeof element.requestVideoFrameCallback === "function") {
+        try {
+          element.requestVideoFrameCallback(function () {
+            markReady();
+          });
+        } catch (_) {}
+      }
       if (element.readyState >= 2) {
         markReady();
       } else {
-        window.setTimeout(markReady, 220);
+        let readyPollCount = 0;
+        const pollReadyState = function () {
+          if (mountPoint.__livekitElement !== element) return;
+          if (element.readyState >= 2 || (!element.paused && element.currentTime > 0)) {
+            markReady();
+            return;
+          }
+          readyPollCount += 1;
+          if (readyPollCount >= 12) return;
+          window.setTimeout(pollReadyState, 120);
+        };
+        window.setTimeout(pollReadyState, 120);
       }
     }
     element.classList.add("messenger-call-card__video");
+    mountPoint.dataset.callTrackKey = nextTrackKey;
+    mountPoint.__livekitTrack = track;
+    mountPoint.__livekitElement = element;
     mountPoint.appendChild(element);
     return true;
+  }
+
+  function clearMountedLiveKitTrack(mountPoint) {
+    if (!mountPoint) return;
+    const previousTrack = mountPoint.__livekitTrack || null;
+    const previousElement = mountPoint.__livekitElement || mountPoint.firstElementChild || null;
+    if (previousTrack && typeof previousTrack.detach === "function") {
+      try {
+        previousTrack.detach(previousElement || undefined);
+      } catch (_) {}
+    }
+    while (mountPoint.firstChild) {
+      mountPoint.removeChild(mountPoint.firstChild);
+    }
+    mountPoint.__livekitTrack = null;
+    mountPoint.__livekitElement = null;
+    mountPoint.dataset.callTrackKey = "";
+  }
+
+  function liveKitTrackKey(track) {
+    const payload = track || null;
+    if (!payload) return "";
+    const mediaStreamTrack = payload.mediaStreamTrack || null;
+    return normalizeText(
+      payload.sid
+      || payload.id
+      || (mediaStreamTrack && mediaStreamTrack.id)
+      || payload.name
+      || payload.source
+      || ""
+    );
   }
 
   function applyRemoteAudioPreferences() {
@@ -7383,32 +7485,211 @@
     const sdk = livekitSdk();
     const targetRoom = room || null;
     if (!dom.callAudioSink) return;
-    dom.callAudioSink.innerHTML = "";
+    const sinkItems = [];
     if (!sdk || !targetRoom || !targetRoom.remoteParticipants) return;
     targetRoom.remoteParticipants.forEach(function (participant) {
       const publication = callTrackPublication(participant, sdk.Track.Source.Microphone);
       const track = callPublicationTrack(publication);
       if (!publication || publication.isMuted || !track || typeof track.attach !== "function") return;
-      try {
-        if (typeof track.detach === "function") {
-          track.detach();
-        }
-      } catch (_) {}
+      sinkItems.push({
+        identity: normalizeText((participant || {}).identity),
+        track: track,
+        trackKey: liveKitTrackKey(track),
+      });
+    });
+    const signature = sinkItems.map(function (item) {
+      return item.identity + "::" + item.trackKey;
+    }).join("|");
+    if (signature === state.call.lastAudioSinkSignature) {
+      applyRemoteAudioPreferences();
+      return;
+    }
+    state.call.lastAudioSinkSignature = signature;
+    const fragment = document.createDocumentFragment();
+    sinkItems.forEach(function (item) {
       let element = null;
       try {
-        element = track.attach();
+        element = item.track.attach();
       } catch (_) {
         element = null;
       }
-      if (!element) return;
-      if (element instanceof HTMLMediaElement) {
-        element.autoplay = true;
-        element.playsInline = true;
-        element.setAttribute("data-participant-identity", normalizeText((participant || {}).identity));
-      }
-      dom.callAudioSink.appendChild(element);
+      if (!(element instanceof HTMLMediaElement)) return;
+      element.autoplay = true;
+      element.playsInline = true;
+      element.setAttribute("data-participant-identity", item.identity);
+      fragment.appendChild(element);
     });
+    dom.callAudioSink.innerHTML = "";
+    dom.callAudioSink.appendChild(fragment);
     applyRemoteAudioPreferences();
+  }
+
+  function callCardPillsMarkup(item) {
+    const payload = item || {};
+    return [
+      '<span class="messenger-call-card__pill ' + (payload.audioEnabled ? 'is-on' : 'is-off') + '">' + (payload.audioEnabled ? 'MIC ON' : 'MIC OFF') + '</span>',
+      '<span class="messenger-call-card__pill ' + (payload.track ? 'is-on' : 'is-off') + '">' + (payload.track ? 'VIDEO ON' : 'VIDEO OFF') + '</span>',
+      payload.kind === "screen" ? '<span class="messenger-call-card__pill is-screen">SCREEN</span>' : "",
+    ].join("");
+  }
+
+  function callCardMarkup(item, index) {
+    const payload = item || {};
+    const avatarInitial = normalizeText(payload.avatarInitial || avatarInitialFor(payload.displayName, payload.displayName));
+    const isPinned = normalizeText(payload.id) === normalizeText(state.call.pinnedTrackId);
+    const cardStyle = callCardToneStyle(payload);
+    return [
+      '<article class="messenger-call-card' + (payload.isSpeaking ? ' is-speaking' : '') + (isPinned ? ' is-pinned' : '') + (state.call.layoutMode === "speaker" && index === 0 ? ' is-primary' : '') + '" data-call-card-user="' + escapeAttribute(payload.id) + '" style="' + escapeAttribute(cardStyle) + '">',
+      '<div class="messenger-call-card__placeholder">' + escapeHtml(avatarInitial || "U") + "</div>",
+      '<div class="messenger-call-card__media-slot" data-call-media-user="' + escapeAttribute(payload.id) + '"></div>',
+      (isPinned ? '<div class="messenger-call-card__pin-badge" aria-hidden="true"><i class="bi bi-pin-angle-fill"></i></div>' : ''),
+      '<div class="messenger-call-card__hover-actions"><button type="button" data-call-card-expand="' + escapeAttribute(payload.id) + '" aria-label="전체화면"><i class="bi bi-fullscreen"></i></button></div>',
+      '<div class="messenger-call-card__meta">',
+      '<div class="messenger-call-card__identity">',
+      '<strong>' + escapeHtml(payload.displayName) + (payload.isLocal ? ' (나)' : "") + "</strong>",
+      '<span>' + escapeHtml(payload.subtitle || (payload.track ? '영상 연결됨' : '대기 중')) + "</span>",
+      "</div>",
+      '<div class="messenger-call-card__state">' + callCardPillsMarkup(payload) + "</div>",
+      "</div>",
+      "</article>",
+    ].join("");
+  }
+
+  function createCallCardElement(item, index) {
+    const template = document.createElement("template");
+    template.innerHTML = callCardMarkup(item, index).trim();
+    return template.content.firstElementChild;
+  }
+
+  function ensureCallCardExpandButton(card, item) {
+    if (!card) return;
+    const button = card.querySelector("[data-call-card-expand]");
+    if (!button) return;
+    button.setAttribute("data-call-card-expand", normalizeText((item || {}).id));
+    button.onclick = function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      openCallFullscreen(normalizeText((item || {}).id));
+    };
+  }
+
+  function syncCallCardElement(card, item, index) {
+    if (!card || !item) return;
+    const payload = item || {};
+    const cardId = normalizeText(payload.id);
+    const isPinned = cardId === normalizeText(state.call.pinnedTrackId);
+    const avatarInitial = normalizeText(payload.avatarInitial || avatarInitialFor(payload.displayName, payload.displayName)) || "U";
+    card.setAttribute("data-call-card-user", cardId);
+    card.setAttribute("style", callCardToneStyle(payload));
+    card.classList.toggle("is-speaking", !!payload.isSpeaking);
+    card.classList.toggle("is-pinned", isPinned);
+    card.classList.toggle("is-primary", state.call.layoutMode === "speaker" && index === 0);
+    const placeholder = card.querySelector(".messenger-call-card__placeholder");
+    if (placeholder) {
+      placeholder.textContent = avatarInitial;
+    }
+    const slot = card.querySelector(".messenger-call-card__media-slot");
+    if (slot) {
+      slot.setAttribute("data-call-media-user", cardId);
+    }
+    const strong = card.querySelector(".messenger-call-card__identity strong");
+    if (strong) {
+      strong.textContent = normalizeText(payload.displayName) + (payload.isLocal ? " (나)" : "");
+    }
+    const subtitle = card.querySelector(".messenger-call-card__identity span");
+    if (subtitle) {
+      subtitle.textContent = payload.subtitle || (payload.track ? "영상 연결됨" : "대기 중");
+    }
+    const stateBox = card.querySelector(".messenger-call-card__state");
+    if (stateBox) {
+      stateBox.innerHTML = callCardPillsMarkup(payload);
+    }
+    const existingPinBadge = card.querySelector(".messenger-call-card__pin-badge");
+    if (isPinned && !existingPinBadge) {
+      const hoverActions = card.querySelector(".messenger-call-card__hover-actions");
+      const pinBadge = document.createElement("div");
+      pinBadge.className = "messenger-call-card__pin-badge";
+      pinBadge.setAttribute("aria-hidden", "true");
+      pinBadge.innerHTML = '<i class="bi bi-pin-angle-fill"></i>';
+      if (hoverActions) {
+        card.insertBefore(pinBadge, hoverActions);
+      } else {
+        card.appendChild(pinBadge);
+      }
+    } else if (!isPinned && existingPinBadge) {
+      existingPinBadge.remove();
+    }
+    ensureCallCardExpandButton(card, payload);
+    card.onclick = function () {
+      togglePinnedTrack(cardId);
+    };
+    const attached = !!(slot && payload.track && attachLiveKitTrack(payload.track, slot, payload.isLocal));
+    if (!attached) {
+      clearMountedLiveKitTrack(slot);
+      card.classList.remove("has-video");
+    }
+  }
+
+  function syncCallGridUtilityCard() {
+    if (!dom.callGrid) return;
+    let card = dom.callGrid.querySelector(".messenger-call-card--utility");
+    if (state.viewMode !== "ascord") {
+      if (card) card.remove();
+      return;
+    }
+    if (!card) {
+      const template = document.createElement("template");
+      template.innerHTML = [
+        '<article class="messenger-call-card messenger-call-card--utility">',
+        '<div class="messenger-call-card__utility-hero">',
+        '<div class="messenger-call-card__utility-art" aria-hidden="true">',
+        '<span class="messenger-call-card__utility-shape is-gem"></span>',
+        '<span class="messenger-call-card__utility-shape is-cup"><i class="bi bi-trophy-fill"></i></span>',
+        '<span class="messenger-call-card__utility-shape is-dice"></span>',
+        "</div>",
+        '<div class="messenger-call-card__utility-actions">',
+        '<button type="button" data-ascord-stage-action="invite"><i class="bi bi-person-plus-fill"></i><span>음성으로 초대하기</span></button>',
+        '<button type="button" data-ascord-stage-action="activity"><i class="bi bi-grid-1x2-fill"></i><span>활동 선택하기</span></button>',
+        "</div>",
+        "</div>",
+        "</article>",
+      ].join("").trim();
+      card = template.content.firstElementChild;
+    }
+    Array.prototype.forEach.call(card.querySelectorAll("[data-ascord-stage-action]"), function (button) {
+      button.onclick = function () {
+        handleAscordDockAction(normalizeText(button.getAttribute("data-ascord-stage-action"))).catch(function () {});
+      };
+    });
+    dom.callGrid.appendChild(card);
+  }
+
+  function syncCallGridCards(items) {
+    if (!dom.callGrid) return;
+    const nextItems = Array.isArray(items) ? items.slice() : [];
+    Array.prototype.forEach.call(dom.callGrid.querySelectorAll(".messenger-call-empty"), function (emptyState) {
+      emptyState.remove();
+    });
+    const existingCards = new Map();
+    Array.prototype.forEach.call(dom.callGrid.querySelectorAll("[data-call-card-user]"), function (card) {
+      existingCards.set(normalizeText(card.getAttribute("data-call-card-user")), card);
+    });
+    nextItems.forEach(function (item, index) {
+      const itemId = normalizeText(item && item.id);
+      let card = existingCards.get(itemId) || null;
+      if (!card) {
+        card = createCallCardElement(item, index);
+      }
+      syncCallCardElement(card, item, index);
+      dom.callGrid.appendChild(card);
+      existingCards.delete(itemId);
+    });
+    existingCards.forEach(function (card) {
+      const slot = card.querySelector(".messenger-call-card__media-slot");
+      clearMountedLiveKitTrack(slot);
+      card.remove();
+    });
+    syncCallGridUtilityCard();
   }
 
   function callForRoom(roomId) {
@@ -8136,71 +8417,7 @@
     }
     dom.callGrid.setAttribute("data-density", state.call.layoutMode === "speaker" ? "default" : callGridDensity(items.length));
     dom.callGrid.setAttribute("data-layout", sanitizeCallLayout(state.call.layoutMode));
-    const utilityCard = state.viewMode === "ascord"
-      ? [
-        '<article class="messenger-call-card messenger-call-card--utility">',
-        '<div class="messenger-call-card__utility-hero">',
-        '<div class="messenger-call-card__utility-art" aria-hidden="true">',
-        '<span class="messenger-call-card__utility-shape is-gem"></span>',
-        '<span class="messenger-call-card__utility-shape is-cup"><i class="bi bi-trophy-fill"></i></span>',
-        '<span class="messenger-call-card__utility-shape is-dice"></span>',
-        "</div>",
-        '<div class="messenger-call-card__utility-actions">',
-        '<button type="button" data-ascord-stage-action="invite"><i class="bi bi-person-plus-fill"></i><span>음성으로 초대하기</span></button>',
-        '<button type="button" data-ascord-stage-action="activity"><i class="bi bi-grid-1x2-fill"></i><span>활동 선택하기</span></button>',
-        "</div>",
-        "</div>",
-        "</article>",
-      ].join("")
-      : "";
-    dom.callGrid.innerHTML = items.map(function (item, index) {
-      const avatarInitial = normalizeText(item.avatarInitial || avatarInitialFor(item.displayName, item.displayName));
-      const isPinned = normalizeText(item.id) === normalizeText(state.call.pinnedTrackId);
-      const cardStyle = callCardToneStyle(item);
-      const pillItems = [
-        '<span class="messenger-call-card__pill ' + (item.audioEnabled ? 'is-on' : 'is-off') + '">' + (item.audioEnabled ? 'MIC ON' : 'MIC OFF') + '</span>',
-        '<span class="messenger-call-card__pill ' + (item.track ? 'is-on' : 'is-off') + '">' + (item.track ? 'VIDEO ON' : 'VIDEO OFF') + '</span>',
-        item.kind === "screen" ? '<span class="messenger-call-card__pill is-screen">SCREEN</span>' : "",
-      ].join("");
-      return [
-        '<article class="messenger-call-card' + (item.isSpeaking ? ' is-speaking' : '') + (isPinned ? ' is-pinned' : '') + (state.call.layoutMode === "speaker" && index === 0 ? ' is-primary' : '') + '" data-call-card-user="' + escapeAttribute(item.id) + '" style="' + escapeAttribute(cardStyle) + '">',
-        '<div class="messenger-call-card__placeholder">' + escapeHtml(avatarInitial || "U") + "</div>",
-        '<div class="messenger-call-card__media-slot" data-call-media-user="' + escapeAttribute(item.id) + '"></div>',
-        (isPinned ? '<div class="messenger-call-card__pin-badge" aria-hidden="true"><i class="bi bi-pin-angle-fill"></i></div>' : ''),
-        '<div class="messenger-call-card__hover-actions"><button type="button" data-call-card-expand="' + escapeAttribute(item.id) + '" aria-label="전체화면"><i class="bi bi-fullscreen"></i></button></div>',
-        '<div class="messenger-call-card__meta">',
-        '<div class="messenger-call-card__identity">',
-        '<strong>' + escapeHtml(item.displayName) + (item.isLocal ? ' (나)' : "") + "</strong>",
-        '<span>' + escapeHtml(item.subtitle || (item.track ? '영상 연결됨' : '대기 중')) + "</span>",
-        "</div>",
-        '<div class="messenger-call-card__state">' + pillItems + "</div>",
-        "</div>",
-        "</article>",
-      ].join("");
-    }).join("") + utilityCard;
-
-    Array.prototype.forEach.call(dom.callGrid.querySelectorAll("[data-call-media-user]"), function (slot) {
-      const item = items.find(function (entry) {
-        return entry.id === normalizeText(slot.getAttribute("data-call-media-user"));
-      }) || null;
-      const card = slot.closest("[data-call-card-user]");
-      const attached = !!(item && item.track && attachLiveKitTrack(item.track, slot, item.isLocal));
-      if (card && !attached) {
-        card.classList.remove("has-video");
-      }
-    });
-    Array.prototype.forEach.call(dom.callGrid.querySelectorAll("[data-call-card-user]"), function (card) {
-      card.addEventListener("click", function () {
-        togglePinnedTrack(normalizeText(card.getAttribute("data-call-card-user")));
-      });
-    });
-    Array.prototype.forEach.call(dom.callGrid.querySelectorAll("[data-call-card-expand]"), function (button) {
-      button.addEventListener("click", function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-        openCallFullscreen(normalizeText(button.getAttribute("data-call-card-expand")));
-      });
-    });
+    syncCallGridCards(items);
     renderCallAudioSink(liveRoom);
   }
 
