@@ -23,6 +23,7 @@ _TALK_BACKUP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dir
 _TALK_BACKUP_ROOMS_DIR = os.path.join(_TALK_BACKUP_ROOT_DIR, "rooms")
 _TALK_BACKUP_MANIFEST_PATH = os.path.join(_TALK_BACKUP_ROOT_DIR, "manifest.json")
 _TALK_BACKUP_WRITE_LOCK = threading.Lock()
+_ASCORD_WORKSPACE_KEY = "ascord"
 
 
 def _norm_text(value: Any) -> str:
@@ -64,6 +65,29 @@ def _norm_channel_category(value: Any) -> str:
     if len(category) > 60:
         return category[:60].strip()
     return category
+
+
+def _norm_workspace_key(value: Any) -> str:
+    normalized = _norm_text(value).lower()
+    if normalized == _ASCORD_WORKSPACE_KEY:
+        return _ASCORD_WORKSPACE_KEY
+    return ""
+
+
+def _norm_workspace_invite_status(value: Any) -> str:
+    normalized = _norm_text(value).lower()
+    if normalized == "invited":
+        return "invited"
+    return "active"
+
+
+def _workspace_member_role_for_user_role(value: Any) -> str:
+    normalized = _norm_text(value).lower()
+    if normalized == "superuser":
+        return "owner"
+    if normalized == "admin":
+        return "admin"
+    return "member"
 
 
 def _room_slug_token(value: Any) -> str:
@@ -256,10 +280,42 @@ def _attachment_payload(message_type: Any, content: Any) -> dict[str, str]:
     }
 
 
+def _ascord_invite_payload(message_type: Any, content: Any) -> dict[str, Any]:
+    if _norm_text(message_type).lower() != "ascord_invite":
+        return {}
+    try:
+        payload = json.loads(str(content or "{}"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {}
+    workspace_key = _norm_workspace_key(payload.get("workspace_key") or _ASCORD_WORKSPACE_KEY)
+    if workspace_key != _ASCORD_WORKSPACE_KEY:
+        return {}
+    return {
+        "workspace_key": workspace_key,
+        "workspace_name": _norm_text(payload.get("workspace_name")) or "ASCORD",
+        "invite_url": _norm_text(payload.get("invite_url")),
+        "target_room_id": int(payload.get("target_room_id") or 0),
+        "target_room_title": _norm_text(payload.get("target_room_title")) or "전체 채널",
+        "target_room_mode": _norm_channel_mode(payload.get("target_room_mode")),
+        "invited_user_id": _norm_user_id(payload.get("invited_user_id")),
+        "invited_by_user_id": _norm_user_id(payload.get("invited_by_user_id")),
+        "card_title": _norm_text(payload.get("card_title")) or "ASCORD 서버에 초대받았어요",
+        "card_detail": _norm_text(payload.get("card_detail")) or "ABBAS Talk 개인톡에서 바로 참가할 수 있습니다.",
+        "button_label": _norm_text(payload.get("button_label")) or "음성 채널 참가하기",
+    }
+
+
 def _message_preview_for_type(message_type: Any, content: Any, limit: int = 140) -> str:
     normalized_type = _norm_text(message_type).lower()
     if normalized_type == "system":
         return _message_preview(content, limit=limit)
+    invite_payload = _ascord_invite_payload(message_type, content)
+    if invite_payload:
+        workspace_name = _norm_text(invite_payload.get("workspace_name")) or "ASCORD"
+        room_title = _norm_text(invite_payload.get("target_room_title")) or "전체 채널"
+        return _message_preview(f"[ASCORD 초대] {workspace_name} · {room_title}", limit=limit)
     attachment = _attachment_payload(message_type, content)
     if attachment:
         label = "[이미지]" if attachment.get("kind") == "image" else "[파일]"
@@ -513,6 +569,23 @@ def _ensure_schema_with_cur(cur) -> None:
     )
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS chat_workspace_members (
+          workspace_key VARCHAR(32) NOT NULL,
+          user_id VARCHAR(64) NOT NULL,
+          member_role VARCHAR(16) NOT NULL DEFAULT 'member',
+          invite_status VARCHAR(16) NOT NULL DEFAULT 'active',
+          invited_by VARCHAR(64) NOT NULL DEFAULT '',
+          invited_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          joined_at DATETIME NULL,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (workspace_key, user_id),
+          KEY idx_chat_workspace_members_status (workspace_key, invite_status, updated_at),
+          KEY idx_chat_workspace_members_user (user_id, workspace_key)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS chat_call_logs (
           id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
           room_id BIGINT UNSIGNED NOT NULL,
@@ -569,6 +642,84 @@ def _ensure_schema_with_cur(cur) -> None:
     if "updated_at" not in cols:
         cur.execute("ALTER TABLE chat_room_members ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER joined_at")
 
+    try:
+        cur.execute("SHOW COLUMNS FROM chat_workspace_members")
+        workspace_cols = {str(row.get('Field') or '').strip() for row in (cur.fetchall() or [])}
+    except Exception:
+        workspace_cols = set()
+    if "member_role" not in workspace_cols:
+        cur.execute("ALTER TABLE chat_workspace_members ADD COLUMN member_role VARCHAR(16) NOT NULL DEFAULT 'member' AFTER user_id")
+    if "invite_status" not in workspace_cols:
+        cur.execute("ALTER TABLE chat_workspace_members ADD COLUMN invite_status VARCHAR(16) NOT NULL DEFAULT 'active' AFTER member_role")
+    if "invited_by" not in workspace_cols:
+        cur.execute("ALTER TABLE chat_workspace_members ADD COLUMN invited_by VARCHAR(64) NOT NULL DEFAULT '' AFTER invite_status")
+    if "invited_at" not in workspace_cols:
+        cur.execute("ALTER TABLE chat_workspace_members ADD COLUMN invited_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER invited_by")
+    if "joined_at" not in workspace_cols:
+        cur.execute("ALTER TABLE chat_workspace_members ADD COLUMN joined_at DATETIME NULL AFTER invited_at")
+    if "updated_at" not in workspace_cols:
+        cur.execute("ALTER TABLE chat_workspace_members ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER joined_at")
+
+    cur.execute(
+        """
+        SELECT 1 AS ok
+        FROM chat_workspace_members
+        WHERE workspace_key=%s
+        LIMIT 1
+        """,
+        (_ASCORD_WORKSPACE_KEY,),
+    )
+    if not bool((cur.fetchone() or {}).get("ok")):
+        approved_role_map: dict[str, str] = {}
+        for row in user_repo.list_user_rows() or []:
+            if str(row.get("APPROVAL_STATUS") or "").strip().lower() != "approved":
+                continue
+            user_id = _norm_user_id(row.get("ID"))
+            if not user_id:
+                continue
+            approved_role_map[user_id] = _workspace_member_role_for_user_role(row.get("ROLE"))
+        seeded_user_ids: set[str] = {
+            user_id
+            for user_id, member_role in approved_role_map.items()
+            if member_role in {"owner", "admin"}
+        }
+        cur.execute(
+            """
+            SELECT DISTINCT m.user_id
+            FROM chat_room_members m
+            INNER JOIN chat_rooms r
+              ON r.id = m.room_id
+            WHERE COALESCE(r.room_key, '') LIKE 'ascord:%%'
+              AND COALESCE(r.room_key, '') <> 'ascord:global'
+            """
+        )
+        for row in (cur.fetchall() or []):
+            user_id = _norm_user_id(row.get("user_id"))
+            if user_id in approved_role_map:
+                seeded_user_ids.add(user_id)
+        if seeded_user_ids:
+            cur.executemany(
+                """
+                INSERT INTO chat_workspace_members (
+                  workspace_key, user_id, member_role, invite_status, invited_by, invited_at, joined_at, updated_at
+                )
+                VALUES (%s, %s, %s, 'active', 'system', NOW(), NOW(), NOW())
+                ON DUPLICATE KEY UPDATE
+                  member_role=VALUES(member_role),
+                  invite_status='active',
+                  joined_at=COALESCE(joined_at, NOW()),
+                  updated_at=NOW()
+                """,
+                [
+                    (
+                        _ASCORD_WORKSPACE_KEY,
+                        user_id,
+                        approved_role_map.get(user_id) or "member",
+                    )
+                    for user_id in sorted(seeded_user_ids)
+                ],
+            )
+
     _SCHEMA_READY = True
 
 
@@ -577,6 +728,188 @@ def ensure_schema() -> None:
     with db.conn() as conn:
         with conn.cursor() as cur:
             _ensure_schema_with_cur(cur)
+
+
+def list_workspace_members(workspace_key: str = _ASCORD_WORKSPACE_KEY, *, statuses: list[str] | None = None) -> list[dict[str, Any]]:
+    normalized_workspace_key = _norm_workspace_key(workspace_key)
+    if not normalized_workspace_key:
+        return []
+    normalized_statuses = [
+        _norm_workspace_invite_status(status)
+        for status in list(statuses or [])
+        if _norm_workspace_invite_status(status)
+    ]
+
+    params: list[Any] = [normalized_workspace_key]
+    where_status = ""
+    if normalized_statuses:
+        placeholders = ", ".join(["%s"] * len(normalized_statuses))
+        where_status = f" AND invite_status IN ({placeholders})"
+        params.extend(normalized_statuses)
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                f"""
+                SELECT
+                  workspace_key,
+                  user_id,
+                  COALESCE(member_role, 'member') AS member_role,
+                  COALESCE(invite_status, 'active') AS invite_status,
+                  COALESCE(invited_by, '') AS invited_by,
+                  COALESCE(DATE_FORMAT(invited_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS invited_at,
+                  COALESCE(DATE_FORMAT(joined_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS joined_at,
+                  COALESCE(DATE_FORMAT(updated_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS updated_at
+                FROM chat_workspace_members
+                WHERE workspace_key=%s
+                {where_status}
+                ORDER BY
+                  CASE COALESCE(invite_status, 'active')
+                    WHEN 'active' THEN 0
+                    ELSE 1
+                  END,
+                  COALESCE(joined_at, invited_at, updated_at) ASC,
+                  user_id ASC
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall() or []
+    return [
+        {
+            "workspace_key": _norm_workspace_key(row.get("workspace_key")),
+            "user_id": _norm_user_id(row.get("user_id")),
+            "member_role": _norm_text(row.get("member_role")) or "member",
+            "invite_status": _norm_workspace_invite_status(row.get("invite_status")),
+            "invited_by": _norm_user_id(row.get("invited_by")),
+            "invited_at": _norm_text(row.get("invited_at")),
+            "joined_at": _norm_text(row.get("joined_at")),
+            "updated_at": _norm_text(row.get("updated_at")),
+        }
+        for row in rows
+        if _norm_user_id(row.get("user_id"))
+    ]
+
+
+def invite_workspace_members(
+    workspace_key: str,
+    user_ids: list[str],
+    invited_by: str = "",
+) -> list[dict[str, Any]]:
+    normalized_workspace_key = _norm_workspace_key(workspace_key)
+    inviter_user_id = _norm_user_id(invited_by)
+    normalized_user_ids = []
+    seen: set[str] = set()
+    for raw_user_id in list(user_ids or []):
+        user_id = _norm_user_id(raw_user_id)
+        if not user_id or user_id in seen:
+            continue
+        seen.add(user_id)
+        normalized_user_ids.append(user_id)
+    if not normalized_workspace_key or not normalized_user_ids:
+        return []
+
+    approved_role_map: dict[str, str] = {}
+    for row in user_repo.list_user_rows() or []:
+        if str(row.get("APPROVAL_STATUS") or "").strip().lower() != "approved":
+            continue
+        user_id = _norm_user_id(row.get("ID"))
+        if not user_id:
+            continue
+        approved_role_map[user_id] = _workspace_member_role_for_user_role(row.get("ROLE"))
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.executemany(
+                """
+                INSERT INTO chat_workspace_members (
+                  workspace_key, user_id, member_role, invite_status, invited_by, invited_at, joined_at, updated_at
+                )
+                VALUES (%s, %s, %s, 'invited', %s, NOW(), NULL, NOW())
+                ON DUPLICATE KEY UPDATE
+                  member_role=CASE
+                    WHEN COALESCE(member_role, '') IN ('owner', 'admin') THEN member_role
+                    ELSE VALUES(member_role)
+                  END,
+                  invite_status=CASE
+                    WHEN COALESCE(invite_status, 'active')='active' THEN 'active'
+                    ELSE 'invited'
+                  END,
+                  invited_by=CASE
+                    WHEN COALESCE(invite_status, 'active')='active' THEN invited_by
+                    ELSE VALUES(invited_by)
+                  END,
+                  invited_at=CASE
+                    WHEN COALESCE(invite_status, 'active')='active' THEN invited_at
+                    ELSE NOW()
+                  END,
+                  updated_at=NOW()
+                """,
+                [
+                    (
+                        normalized_workspace_key,
+                        user_id,
+                        approved_role_map.get(user_id) or "member",
+                        inviter_user_id,
+                    )
+                    for user_id in normalized_user_ids
+                ],
+            )
+    status_map = {
+        row.get("user_id"): row
+        for row in list_workspace_members(normalized_workspace_key)
+        if row.get("user_id")
+    }
+    return [status_map[user_id] for user_id in normalized_user_ids if user_id in status_map]
+
+
+def activate_workspace_member(workspace_key: str, user_id: str) -> dict[str, Any] | None:
+    normalized_workspace_key = _norm_workspace_key(workspace_key)
+    normalized_user_id = _norm_user_id(user_id)
+    if not normalized_workspace_key or not normalized_user_id:
+        return None
+
+    member_role = "member"
+    found_approved_user = False
+    for row in user_repo.list_user_rows() or []:
+        if _norm_user_id(row.get("ID")) != normalized_user_id:
+            continue
+        if str(row.get("APPROVAL_STATUS") or "").strip().lower() != "approved":
+            return None
+        member_role = _workspace_member_role_for_user_role(row.get("ROLE"))
+        found_approved_user = True
+        break
+    if not found_approved_user:
+        return None
+
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                INSERT INTO chat_workspace_members (
+                  workspace_key, user_id, member_role, invite_status, invited_by, invited_at, joined_at, updated_at
+                )
+                VALUES (%s, %s, %s, 'active', '', NOW(), NOW(), NOW())
+                ON DUPLICATE KEY UPDATE
+                  member_role=CASE
+                    WHEN COALESCE(member_role, '') IN ('owner', 'admin') THEN member_role
+                    ELSE VALUES(member_role)
+                  END,
+                  invite_status='active',
+                  joined_at=COALESCE(joined_at, NOW()),
+                  updated_at=NOW()
+                """,
+                (normalized_workspace_key, normalized_user_id, member_role),
+            )
+    for row in list_workspace_members(normalized_workspace_key, statuses=["active"]):
+        if row.get("user_id") == normalized_user_id:
+            return row
+    return None
 
 
 def _ensure_room_with_cur(
@@ -2058,7 +2391,7 @@ def insert_message(room_id: int, sender_user_id: str, content: str, message_type
         raise ValueError("sender required")
     if not normalized_content:
         raise ValueError("message required")
-    if normalized_message_type not in {"text", "file", "image"}:
+    if normalized_message_type not in {"text", "file", "image", "ascord_invite"}:
         raise ValueError("message_type invalid")
     if len(normalized_content) > _DIRECT_MESSAGE_MAX_LEN:
         raise ValueError(f"메시지는 최대 {_DIRECT_MESSAGE_MAX_LEN}자까지 전송할 수 있습니다.")

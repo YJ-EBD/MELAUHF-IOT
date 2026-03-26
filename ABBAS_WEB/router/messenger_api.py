@@ -83,6 +83,59 @@ def register_messenger_api_routes(router: APIRouter) -> None:
     _request_user_row = pages_module._request_user_row
     _store_messenger_room_avatar = pages_module._store_messenger_room_avatar
 
+    def _ascord_workspace_name() -> str:
+        return "ABBA-S Korea"
+
+    def _ascord_workspace_sort_key(item: dict[str, Any] | None) -> tuple[Any, ...]:
+        payload = item or {}
+        return (
+            0 if payload.get("is_online") else 1,
+            str(payload.get("department") or ""),
+            str(payload.get("display_name") or "").lower(),
+            str(payload.get("user_id") or "").lower(),
+        )
+
+    def _ascord_workspace_membership_payload(user_directory: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        membership_rows = chat_repo.list_workspace_members("ascord")
+        membership_map = {
+            str(row.get("user_id") or "").strip(): dict(row)
+            for row in membership_rows
+            if str(row.get("user_id") or "").strip()
+        }
+        active_members: list[dict[str, Any]] = []
+        invited_members: list[dict[str, Any]] = []
+        for user_id, membership in membership_map.items():
+            profile = dict(user_directory.get(user_id) or {})
+            if not profile:
+                continue
+            profile["workspace_invite_status"] = str(membership.get("invite_status") or "active")
+            profile["workspace_member_role"] = str(membership.get("member_role") or "member")
+            profile["workspace_invited_at"] = str(membership.get("invited_at") or "")
+            profile["workspace_joined_at"] = str(membership.get("joined_at") or "")
+            if str(membership.get("invite_status") or "active") == "active":
+                active_members.append(profile)
+            else:
+                invited_members.append(profile)
+        active_members.sort(key=_ascord_workspace_sort_key)
+        invited_members.sort(key=_ascord_workspace_sort_key)
+        return {
+            "active_members": active_members,
+            "invited_members": invited_members,
+            "membership_map": membership_map,
+        }
+
+    def _parse_ascord_invite_content(content: Any) -> dict[str, Any]:
+        try:
+            payload = json.loads(str(content or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            return {}
+        workspace_key = str(payload.get("workspace_key") or "").strip().lower() or "ascord"
+        if workspace_key != "ascord":
+            return {}
+        return payload
+
     @router.post("/api/messenger/rooms/{room_id}/call/session")
     async def api_messenger_room_call_session(
         request: Request,
@@ -560,6 +613,183 @@ def register_messenger_api_routes(router: APIRouter) -> None:
         await _messenger_refresh_room_state(room_id, notify=True)
         room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, room_id)
         return JSONResponse({"ok": True, "room": room_payload, "member_ids": added_member_ids})
+
+    @router.get("/api/messenger/ascord/workspace-invite")
+    async def api_messenger_ascord_workspace_invite(
+        request: Request,
+        room_id: int = 0,
+    ):
+        current_user_id, room, error_response = await _messenger_require_room_for_user(request, room_id)
+        if error_response is not None:
+            return error_response
+        if not _messenger_is_ascord_room(room):
+            return _messenger_json_error("ASCORD 채널에서만 서버 초대를 열 수 있습니다.", 400)
+        if not _messenger_can_invite_room_members(room, current_user_id, _request_user_role(request)):
+            return _messenger_json_error("서버 초대 권한이 없습니다.", 403)
+
+        user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+        membership_payload = await asyncio.to_thread(_ascord_workspace_membership_payload, user_directory)
+        active_member_ids = {
+            str(item.get("user_id") or "").strip()
+            for item in membership_payload.get("active_members") or []
+            if str(item.get("user_id") or "").strip()
+        }
+        pending_members = membership_payload.get("invited_members") or []
+        pending_member_ids = {
+            str(item.get("user_id") or "").strip()
+            for item in pending_members
+            if str(item.get("user_id") or "").strip()
+        }
+
+        invite_candidates: list[dict[str, Any]] = []
+        for user_id, profile in user_directory.items():
+            if not user_id or user_id == current_user_id:
+                continue
+            if user_id in active_member_ids:
+                continue
+            item = dict(profile)
+            item["workspace_invite_status"] = "invited" if user_id in pending_member_ids else "available"
+            invite_candidates.append(item)
+        invite_candidates.sort(
+            key=lambda item: (
+                1 if str(item.get("workspace_invite_status") or "available") == "invited" else 0,
+                *_ascord_workspace_sort_key(item),
+            )
+        )
+
+        base_url = str(request.base_url).rstrip("/")
+        invite_link = f"{base_url}/message?open_messenger=1"
+        if int(room.get("id") or 0) > 0:
+            invite_link += f"&messenger_room_id={int(room.get('id') or 0)}"
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "payload": {
+                    "workspace": {
+                        "key": "ascord",
+                        "name": _ascord_workspace_name(),
+                    },
+                    "target_room": {
+                        "id": int(room.get("id") or 0),
+                        "title": str(room.get("title") or "ASCORD 채널"),
+                        "channel_mode": str(room.get("channel_mode") or "voice"),
+                    },
+                    "invite_link": invite_link,
+                    "server_members": membership_payload.get("active_members") or [],
+                    "invite_candidates": invite_candidates,
+                },
+            }
+        )
+
+    @router.post("/api/messenger/ascord/workspace-invites")
+    async def api_messenger_send_ascord_workspace_invite(
+        request: Request,
+        payload: dict[str, Any] = Body(default={}),
+    ):
+        room_id = int(payload.get("room_id") or 0)
+        target_user_id = str(payload.get("user_id") or "").strip()
+        current_user_id, room, error_response = await _messenger_require_room_for_user(request, room_id)
+        if error_response is not None:
+            return error_response
+        if not _messenger_is_ascord_room(room):
+            return _messenger_json_error("ASCORD 채널에서만 서버 초대를 보낼 수 있습니다.", 400)
+        if not _messenger_can_invite_room_members(room, current_user_id, _request_user_role(request)):
+            return _messenger_json_error("서버 초대 권한이 없습니다.", 403)
+        if (not target_user_id) or target_user_id == current_user_id:
+            return _messenger_json_error("초대할 사용자를 확인해주세요.", 400)
+
+        user_directory, _contacts = await asyncio.to_thread(_build_messenger_user_directory, current_user_id)
+        if target_user_id not in user_directory:
+            return _messenger_json_error("사용자 정보를 찾을 수 없습니다.", 404)
+
+        membership_payload = await asyncio.to_thread(_ascord_workspace_membership_payload, user_directory)
+        active_member_ids = {
+            str(item.get("user_id") or "").strip()
+            for item in membership_payload.get("active_members") or []
+            if str(item.get("user_id") or "").strip()
+        }
+        if target_user_id in active_member_ids:
+            return _messenger_json_error("이미 ASCORD 서버 멤버입니다.", 400)
+
+        await asyncio.to_thread(chat_repo.invite_workspace_members, "ascord", [target_user_id], current_user_id)
+
+        dm_room_id = await asyncio.to_thread(chat_repo.get_or_create_direct_room, current_user_id, target_user_id)
+        base_url = str(request.base_url).rstrip("/")
+        invite_link = f"{base_url}/message?open_messenger=1&messenger_room_id={room_id}"
+        invite_content = json.dumps(
+            {
+                "workspace_key": "ascord",
+                "workspace_name": _ascord_workspace_name(),
+                "invite_url": invite_link,
+                "target_room_id": room_id,
+                "target_room_title": str(room.get("title") or "ASCORD 채널"),
+                "target_room_mode": str(room.get("channel_mode") or "voice"),
+                "invited_user_id": target_user_id,
+                "invited_by_user_id": current_user_id,
+                "card_title": "음성 채널에 초대받았어요",
+                "card_detail": f"{_ascord_workspace_name()} 워크스페이스 · {str(room.get('title') or 'ASCORD 채널')}",
+                "button_label": "음성 채널 참가하기",
+            },
+            ensure_ascii=False,
+        )
+        try:
+            message = await asyncio.to_thread(chat_repo.insert_message, dm_room_id, current_user_id, invite_content, "ascord_invite")
+        except Exception as exc:
+            return _messenger_json_error(f"서버 초대 메시지 전송에 실패했습니다: {exc}", 500)
+
+        participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, dm_room_id)
+        await _messenger_emit_room_state_for_users(participant_ids, dm_room_id, notify=True)
+        await _messenger_emit_message_created(participant_ids, message)
+        message_payload = await asyncio.to_thread(_build_single_messenger_message_payload, current_user_id, message)
+        return JSONResponse({"ok": True, "room_id": dm_room_id, "message": message_payload})
+
+    @router.post("/api/messenger/messages/{message_id}/ascord-invite/accept")
+    async def api_messenger_accept_ascord_workspace_invite(
+        request: Request,
+        message_id: int,
+    ):
+        current_user_id, error_response = _messenger_require_user_id(request)
+        if error_response is not None:
+            return error_response
+
+        message = await asyncio.to_thread(chat_repo.get_message_by_id, message_id)
+        if not message:
+            return _messenger_json_error("초대 메시지를 찾을 수 없습니다.", 404)
+        if str(message.get("message_type") or "").strip().lower() != "ascord_invite":
+            return _messenger_json_error("ASCORD 초대 메시지가 아닙니다.", 400)
+        if not await asyncio.to_thread(chat_repo.room_has_member, int(message.get("room_id") or 0), current_user_id):
+            return _messenger_json_error("초대 메시지에 접근할 수 없습니다.", 403)
+
+        invite_payload = _parse_ascord_invite_content(message.get("content"))
+        if not invite_payload:
+            return _messenger_json_error("초대 정보를 읽을 수 없습니다.", 400)
+        invited_user_id = str(invite_payload.get("invited_user_id") or "").strip()
+        if invited_user_id and invited_user_id != current_user_id:
+            return _messenger_json_error("이 초대는 현재 계정을 위한 메시지가 아닙니다.", 403)
+
+        workspace_row = await asyncio.to_thread(chat_repo.activate_workspace_member, "ascord", current_user_id)
+        if not workspace_row:
+            return _messenger_json_error("ASCORD 서버 멤버십을 활성화하지 못했습니다.", 400)
+
+        target_room_id = int(invite_payload.get("target_room_id") or 0)
+        room_payload = None
+        if target_room_id > 0:
+            target_room = await asyncio.to_thread(chat_repo.get_room_by_id, target_room_id)
+            if target_room and _messenger_is_ascord_room(target_room):
+                await asyncio.to_thread(chat_repo.add_room_members, target_room_id, [current_user_id])
+                participant_ids = await asyncio.to_thread(chat_repo.list_room_user_ids, target_room_id)
+                await _messenger_emit_room_state_for_users(participant_ids, target_room_id, notify=True)
+                room_payload = await asyncio.to_thread(_build_single_messenger_room_payload, current_user_id, target_room_id)
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "workspace_member": workspace_row,
+                "room": room_payload,
+                "target_room_id": target_room_id,
+            }
+        )
 
     @router.patch("/api/messenger/rooms/{room_id}/members/{target_user_id}")
     async def api_messenger_update_room_member_role(

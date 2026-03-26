@@ -132,10 +132,43 @@ def _messenger_attachment_from_content(message_type: Any, content: Any) -> dict[
     }
 
 
+def _messenger_ascord_invite_from_content(message_type: Any, content: Any) -> dict[str, Any]:
+    normalized_type = str(message_type or "").strip().lower()
+    if normalized_type != "ascord_invite":
+        return {}
+    try:
+        payload = json.loads(str(content or "{}"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {}
+    workspace_key = str(payload.get("workspace_key") or "").strip().lower() or "ascord"
+    if workspace_key != "ascord":
+        return {}
+    return {
+        "workspace_key": "ascord",
+        "workspace_name": str(payload.get("workspace_name") or "").strip() or "ASCORD",
+        "invite_url": str(payload.get("invite_url") or "").strip(),
+        "target_room_id": int(payload.get("target_room_id") or 0),
+        "target_room_title": str(payload.get("target_room_title") or "").strip() or "전체 채널",
+        "target_room_mode": str(payload.get("target_room_mode") or "").strip().lower() or "voice",
+        "invited_user_id": str(payload.get("invited_user_id") or "").strip(),
+        "invited_by_user_id": str(payload.get("invited_by_user_id") or "").strip(),
+        "card_title": str(payload.get("card_title") or "").strip() or "ASCORD 서버에 초대받았어요",
+        "card_detail": str(payload.get("card_detail") or "").strip() or "개인톡에서 바로 참가할 수 있습니다.",
+        "button_label": str(payload.get("button_label") or "").strip() or "음성 채널 참가하기",
+    }
+
+
 def _messenger_message_preview_for_view(message_type: Any, content: Any) -> str:
     normalized_type = str(message_type or "").strip().lower()
     if normalized_type == "system":
         return _messenger_preview_text(content, limit=100)
+    invite_payload = _messenger_ascord_invite_from_content(message_type, content)
+    if invite_payload:
+        workspace_name = str(invite_payload.get("workspace_name") or "").strip() or "ASCORD"
+        room_title = str(invite_payload.get("target_room_title") or "").strip() or "전체 채널"
+        return _messenger_preview_text(f"[ASCORD 초대] {workspace_name} · {room_title}", limit=100)
     attachment = _messenger_attachment_from_content(message_type, content)
     if attachment:
         label = "[이미지]" if attachment.get("kind") == "image" else "[파일]"
@@ -910,6 +943,7 @@ def _messenger_message_view(
     message_type = str(message.get("message_type") or "text").strip().lower() or "text"
     is_system_message = message_type == "system" or sender_user_id == "system"
     attachment = _messenger_attachment_from_content(message_type, message.get("content"))
+    invite = _messenger_ascord_invite_from_content(message_type, message.get("content"))
     sender_display_name = _messenger_system_sender_label(room) if is_system_message else str(sender_view.get("display_name") or sender_user_id)
     return {
         "id": message_id,
@@ -929,6 +963,7 @@ def _messenger_message_view(
         "message_type": message_type,
         "content": str(message.get("content") or ""),
         "attachment": attachment,
+        "invite": invite,
         "preview_text": _messenger_message_preview_for_view(message_type, message.get("content")),
         "created_at": created_at,
         "created_date": created_at[:10] if len(created_at) >= 10 else "",

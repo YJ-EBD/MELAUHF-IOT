@@ -9,6 +9,7 @@
     dismissedNotificationIds: new Set(),
     dismissedNotificationStorageKey: "",
     shownBrowserNotificationIds: new Set(),
+    acceptingAscordInviteMessageIds: new Set(),
     notificationPermissionRequested: false,
     userProfilesById: {},
     roomHistory: [],
@@ -360,6 +361,36 @@
       size_text: normalizeText(payload.size_text),
       content_type: normalizeText(payload.content_type),
       icon: messageType === "image" ? "bi-image-fill" : (/\.pdf$/i.test(name) ? "bi-file-earmark-pdf-fill" : "bi-file-earmark-fill"),
+    };
+  }
+
+  function parseAscordInviteMessage(message) {
+    if (!message) return null;
+    if (normalizeText(message.message_type).toLowerCase() !== "ascord_invite") return null;
+    const embedded = message.invite;
+    if (embedded && typeof embedded === "object" && normalizeText(embedded.workspace_key).toLowerCase() === "ascord") {
+      return embedded;
+    }
+    let payload = {};
+    try {
+      payload = JSON.parse(String(message.content || "{}")) || {};
+    } catch (_) {
+      payload = {};
+    }
+    if (!payload || typeof payload !== "object") return null;
+    if (normalizeText(payload.workspace_key || "ascord").toLowerCase() !== "ascord") return null;
+    return {
+      workspace_key: "ascord",
+      workspace_name: normalizeText(payload.workspace_name) || "ASCORD",
+      invite_url: normalizeText(payload.invite_url),
+      target_room_id: Number(payload.target_room_id || 0),
+      target_room_title: normalizeText(payload.target_room_title) || "전체 채널",
+      target_room_mode: normalizeText(payload.target_room_mode) === "stage" ? "stage" : "voice",
+      invited_user_id: normalizeText(payload.invited_user_id),
+      invited_by_user_id: normalizeText(payload.invited_by_user_id),
+      card_title: normalizeText(payload.card_title) || "ASCORD 서버에 초대받았어요",
+      card_detail: normalizeText(payload.card_detail) || "개인톡에서 바로 참가할 수 있습니다.",
+      button_label: normalizeText(payload.button_label) || "음성 채널 참가하기",
     };
   }
 
@@ -2373,9 +2404,9 @@
     if (dom.sidebarSearchBtn) dom.sidebarSearchBtn.setAttribute("aria-label", isAscord ? "채널 검색" : "검색");
     if (dom.roomSearch) dom.roomSearch.setAttribute("placeholder", isAscord ? "ASCORD 채널 검색" : "채팅방 또는 메시지 검색");
     setRailButtonVisible(dom.railRoomsBtn, true);
-    setRailButtonVisible(dom.railInboxBtn, true);
+    setRailButtonVisible(dom.railInboxBtn, !isAscord);
     setRailButtonVisible(dom.railAlertsBtn, true);
-    setRailButtonVisible(dom.railComposeBtn, true);
+    setRailButtonVisible(dom.railComposeBtn, !isAscord);
     setRailButtonVisible(dom.railRecentBtn, true);
     setRailButtonVisible(dom.railGuideBtn, true);
     setRailButtonVisible(dom.railSettingsBtn, true);
@@ -2389,16 +2420,12 @@
     setRailButtonDisabled(dom.railSettingsBtn, false);
     if (isAscord) {
       setRailButtonLabel(dom.railRoomsBtn, "ASCORD 채널");
-      setRailButtonLabel(dom.railInboxBtn, "LIVE 채널");
       setRailButtonLabel(dom.railAlertsBtn, "발언 요청");
-      setRailButtonLabel(dom.railComposeBtn, "새 채널");
       setRailButtonLabel(dom.railRecentBtn, "최근 채널");
       setRailButtonLabel(dom.railGuideBtn, "ASCORD 가이드");
       setRailButtonLabel(dom.railSettingsBtn, "ASCORD 설정");
       setRailButtonIcon(dom.railRoomsBtn, "bi-volume-up-fill");
-      setRailButtonIcon(dom.railInboxBtn, "bi-broadcast");
       setRailButtonIcon(dom.railAlertsBtn, "bi-megaphone-fill");
-      setRailButtonIcon(dom.railComposeBtn, "bi-plus-circle-fill");
       setRailButtonIcon(dom.railRecentBtn, "bi-clock-history");
       setRailButtonIcon(dom.railGuideBtn, "bi-broadcast-pin");
       setRailButtonIcon(dom.railSettingsBtn, "bi-sliders");
@@ -2464,15 +2491,6 @@
         return {
           title: "ASCORD 채널",
           metaHtml: "<span>LIVE <strong>" + liveRooms.length + "</strong></span><span>ROOMS <strong>" + visibleRooms.length + "</strong></span>",
-          hideFilters: true,
-          hideSummary: true,
-          hideQuick: true,
-        };
-      }
-      if (mode === "inbox") {
-        return {
-          title: "LIVE 채널",
-          metaHtml: "<span>CHANNELS <strong>" + liveRooms.length + "</strong></span><span>JOINED <strong>" + visibleRooms.filter(function (room) { return ascordRoomState(room).joinedHere; }).length + "</strong></span>",
           hideFilters: true,
           hideSummary: true,
           hideQuick: true,
@@ -2645,6 +2663,9 @@
       settings: true,
     };
     state.sidebarMode = allowedModes[mode] ? mode : "rooms";
+    if (state.viewMode === "ascord" && state.sidebarMode === "inbox") {
+      state.sidebarMode = "rooms";
+    }
     if (dom.railRoomsBtn) dom.railRoomsBtn.classList.toggle("is-active", state.sidebarMode === "rooms");
     if (dom.railInboxBtn) dom.railInboxBtn.classList.toggle("is-active", state.sidebarMode === "inbox");
     if (dom.railUnreadBtn) dom.railUnreadBtn.classList.toggle("is-active", state.sidebarMode === "unread");
@@ -2653,12 +2674,6 @@
     if (dom.railRecentBtn) dom.railRecentBtn.classList.toggle("is-active", state.sidebarMode === "recent");
     if (dom.railGuideBtn) dom.railGuideBtn.classList.toggle("is-active", state.sidebarMode === "guide");
     if (dom.railSettingsBtn) dom.railSettingsBtn.classList.toggle("is-active", state.sidebarMode === "settings");
-    if (state.viewMode === "ascord" && state.sidebarMode === "inbox") {
-      ascordLiveRooms(filteredRooms()).forEach(function (room) {
-        markLiveRoomSeen(room && room.id, callForRoom(room && room.id));
-      });
-      recalcCounts();
-    }
     updateSidebarChrome();
     renderRoomList();
   }
@@ -3003,10 +3018,6 @@
           if (dom.newRoomModalInstance) dom.newRoomModalInstance.show();
           return;
         }
-        if (action === "open-inbox") {
-          setSidebarMode("inbox");
-          return;
-        }
         if (action === "open-alerts") {
           setSidebarMode("alerts");
           return;
@@ -3145,11 +3156,6 @@
     if (!dom.roomList) return;
     updateSidebarChrome();
     if (state.viewMode === "ascord") {
-      if (state.sidebarMode === "inbox") {
-        renderAscordLiveRoomList();
-        bindRoomListInteractions();
-        return;
-      }
       if (state.sidebarMode === "alerts") {
         renderAscordStageRequestList();
         bindRoomListInteractions();
@@ -3849,19 +3855,6 @@
     ].join("");
   }
 
-  function renderAscordLiveRoomList() {
-    renderAscordUtilityRoomList(
-      ascordLiveRooms(filteredRooms()),
-      "bi-broadcast",
-      "지금 연결된 LIVE 채널이 없습니다.",
-      "누군가 채널에 입장해 통화를 시작하면 여기에 바로 표시됩니다.",
-      {
-        introTitle: "LIVE 채널",
-        introCopy: "현재 통화가 열려 있는 ASCORD 채널만 빠르게 모아봅니다.",
-      }
-    );
-  }
-
   function renderAscordStageRequestList() {
     renderAscordUtilityRoomList(
       ascordPendingStageRooms(filteredRooms()),
@@ -3897,8 +3890,6 @@
       '<strong>ASCORD 사용 가이드</strong>',
       '<span>VOICE 채널은 일반 음성채널, STAGE 채널은 청중 중심 운영형입니다. 채널 카드를 눌러 먼저 선택하고, 음성 입장 버튼으로 실제 연결을 시작합니다.</span>',
       '<div class="messenger-side-card--actions">',
-      '<button type="button" data-guide-action="new-chat"><i class="bi bi-plus-circle"></i><span>새 채널 만들기</span></button>',
-      '<button type="button" data-guide-action="open-inbox"><i class="bi bi-broadcast"></i><span>LIVE 보기</span></button>',
       '<button type="button" data-guide-action="open-alerts"><i class="bi bi-megaphone"></i><span>발언 요청 보기</span></button>',
       '</div>',
       '</section>',
@@ -3987,6 +3978,40 @@
     if (isSystemMessage(message)) {
       return '<div class="messenger-system-message__text">' + formatRichText(content) + "</div>";
     }
+    const ascordInvite = parseAscordInviteMessage(message);
+    if (ascordInvite) {
+      const inviteLink = normalizeText(ascordInvite.invite_url);
+      const inviteRoomId = Number(ascordInvite.target_room_id || 0);
+      const inviteRoomTitle = normalizeText(ascordInvite.target_room_title || "ASCORD 채널");
+      const inviteRoomMode = normalizeText(ascordInvite.target_room_mode) === "stage" ? "stage" : "voice";
+      const inviteIcon = roomVoiceIcon({ channel_mode: inviteRoomMode });
+      const buttonLabel = message.is_mine
+        ? "초대 보냄"
+        : (state.acceptingAscordInviteMessageIds.has(Number(message.id || 0))
+          ? "참가 중..."
+          : normalizeText(ascordInvite.button_label || "음성 채널 참가하기"));
+      return [
+        inviteLink
+          ? '<a class="messenger-ascord-invite-link" href="' + escapeAttribute(inviteLink) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(inviteLink) + "</a>"
+          : "",
+        '<div class="messenger-ascord-invite-card">',
+        '<div class="messenger-ascord-invite-card__title">' + escapeHtml(ascordInvite.card_title || "ASCORD 서버에 초대받았어요") + "</div>",
+        '<div class="messenger-ascord-invite-card__body">',
+        '<div class="messenger-ascord-invite-card__room">',
+        '<span class="messenger-ascord-invite-card__avatar">A</span>',
+        '<span class="messenger-ascord-invite-card__meta">',
+        '<strong><i class="bi ' + escapeAttribute(inviteIcon) + '"></i><span>' + escapeHtml(inviteRoomTitle) + "</span></strong>",
+        '<span>' + escapeHtml(normalizeText(ascordInvite.card_detail || ascordInvite.workspace_name || "ASCORD")) + "</span>",
+        "</span>",
+        "</div>",
+        message.is_mine
+          ? '<span class="messenger-ascord-invite-card__sent">' + escapeHtml(buttonLabel) + "</span>"
+          : '<button class="messenger-ascord-invite-card__action" type="button" data-ascord-invite-accept="' + Number(message.id || 0) + '"' + (state.acceptingAscordInviteMessageIds.has(Number(message.id || 0)) ? " disabled" : "") + ">" + escapeHtml(buttonLabel) + "</button>",
+        "</div>",
+        inviteRoomId > 0 ? '<input type="hidden" data-ascord-invite-room-id="' + inviteRoomId + '">' : "",
+        "</div>",
+      ].filter(Boolean).join("");
+    }
     const structuredAttachment = parseAttachment(message);
     const attachment = structuredAttachment || detectMessageAttachment(content);
     const cleanText = attachment
@@ -4015,6 +4040,35 @@
       parts.push('<div class="messenger-message-text">' + formatRichText(content) + "</div>");
     }
     return parts.join("");
+  }
+
+  async function acceptAscordInviteMessage(messageId) {
+    const targetMessageId = Number(messageId || 0);
+    if (targetMessageId <= 0) return;
+    if (state.acceptingAscordInviteMessageIds.has(targetMessageId)) return;
+    state.acceptingAscordInviteMessageIds.add(targetMessageId);
+    renderMessages();
+    try {
+      const payload = await api("/api/messenger/messages/" + targetMessageId + "/ascord-invite/accept", {
+        method: "POST",
+      });
+      const roomId = Number((payload && payload.target_room_id) || (payload.room && payload.room.id) || 0);
+      await showToast("success", "ASCORD 서버 초대를 수락했습니다.");
+      if (roomId > 0) {
+        setPopupOpen(true);
+        setViewMode("ascord");
+        await loadBootstrap(roomId);
+        await selectRoom(roomId);
+        await startOrJoinCall("audio");
+      } else {
+        await loadBootstrap(state.activeRoomId);
+      }
+    } catch (error) {
+      await showError((error && error.message) || "ASCORD 서버 초대 수락에 실패했습니다.");
+    } finally {
+      state.acceptingAscordInviteMessageIds.delete(targetMessageId);
+      renderMessages();
+    }
   }
 
   function renderMessages() {
@@ -4116,6 +4170,15 @@
           normalizeText(button.getAttribute("data-user-profile-id")),
           findMessageById(state.activeRoomId, messageId)
         );
+      });
+    });
+    Array.prototype.forEach.call(dom.messageList.querySelectorAll("[data-ascord-invite-accept]"), function (button) {
+      button.addEventListener("click", function (event) {
+        event.stopPropagation();
+        if (button.disabled) return;
+        acceptAscordInviteMessage(Number(button.getAttribute("data-ascord-invite-accept") || 0)).catch(function (error) {
+          showError((error && error.message) || "ASCORD 초대 수락에 실패했습니다.");
+        });
       });
     });
     highlightPendingMessage();
@@ -8389,19 +8452,82 @@
     });
   }
 
-  function inviteCandidateMarkup(contact, selected) {
+  function inviteCandidateMarkup(contact, options) {
+    const settings = options || {};
+    const invited = !!settings.invited;
+    const inviting = !!settings.inviting;
     const avatar = contact.profile_image_url
-      ? '<img src="' + escapeHtml(contact.profile_image_url) + '" alt="' + escapeHtml(contact.display_name) + '">'
+      ? '<img src="' + escapeAttribute(contact.profile_image_url) + '" alt="' + escapeAttribute(contact.display_name || contact.user_id || "구성원") + '">'
       : escapeHtml(contact.avatar_initial || "U");
+    const secondaryText = normalizeText(contact.user_id || contact.department || contact.presence_label || "구성원");
     return [
-      '<button class="messenger-contact-picker__item' + (selected ? ' is-selected' : '') + '" type="button" data-invite-user-id="' + escapeAttribute(contact.user_id) + '">',
-      '<span class="messenger-contact-picker__avatar">' + avatar + "</span>",
-      '<span class="messenger-contact-picker__meta">',
+      '<div class="messenger-discord-invite-modal__member">',
+      '<span class="messenger-contact-avatar messenger-discord-invite-modal__member-avatar">' + avatar + '<span class="messenger-contact-avatar__status is-' + escapeAttribute(contact.presence_tone || "offline") + '"></span></span>',
+      '<span class="messenger-discord-invite-modal__member-meta">',
       "<strong>" + escapeHtml(contact.display_name || contact.user_id) + "</strong>",
-      "<span>" + escapeHtml(contact.department || contact.presence_label || "구성원") + "</span>",
+      "<span>" + escapeHtml(secondaryText) + "</span>",
       "</span>",
-      '<span class="messenger-contact-picker__checkbox"><i class="bi bi-check-lg"></i></span>',
+      '<button class="messenger-discord-invite-modal__member-action' + (invited ? ' is-sent' : '') + '" type="button" data-invite-user-id="' + escapeAttribute(contact.user_id) + '"' + ((invited || inviting) ? " disabled" : "") + ">" + escapeHtml(inviting ? "초대 중..." : (invited ? "초대됨" : "초대하기")) + "</button>",
+      "</div>",
+    ].join("");
+  }
+
+  function ascordWorkspaceInviteMemberMarkup(contact, options) {
+    const settings = options || {};
+    const section = normalizeText(settings.section).toLowerCase() || "invite";
+    const status = normalizeText(settings.status).toLowerCase() || (section === "members" ? "active" : "available");
+    const inviting = !!settings.inviting;
+    const avatar = contact.profile_image_url
+      ? '<img src="' + escapeAttribute(contact.profile_image_url) + '" alt="' + escapeAttribute(contact.display_name || contact.user_id || "구성원") + '">'
+      : escapeHtml(contact.avatar_initial || "U");
+    const secondaryText = normalizeText(contact.user_id || contact.department || contact.presence_label || "구성원");
+    const actionLabel = section === "members"
+      ? "멤버"
+      : (inviting ? "전송 중..." : (status === "invited" ? "초대됨" : "초대하기"));
+    const disabled = section === "members" || status === "invited" || inviting;
+    return [
+      '<div class="messenger-discord-invite-modal__member">',
+      '<span class="messenger-contact-avatar messenger-discord-invite-modal__member-avatar">' + avatar + '<span class="messenger-contact-avatar__status is-' + escapeAttribute(contact.presence_tone || "offline") + '"></span></span>',
+      '<span class="messenger-discord-invite-modal__member-meta">',
+      "<strong>" + escapeHtml(contact.display_name || contact.user_id) + "</strong>",
+      "<span>" + escapeHtml(secondaryText) + "</span>",
+      "</span>",
+      '<button class="messenger-discord-invite-modal__member-action' + (section === "members" ? ' is-existing' : '') + (status === "invited" ? ' is-sent' : '') + '" type="button"' + (section === "invite" ? ' data-ascord-workspace-invite-user-id="' + escapeAttribute(contact.user_id) + '"' : "") + (disabled ? " disabled" : "") + ">" + escapeHtml(actionLabel) + "</button>",
+      "</div>",
+    ].join("");
+  }
+
+  function ascordWorkspaceInviteSectionMarkup(sectionKey, title, items, options) {
+    const settings = options || {};
+    const isOpen = !!settings.open;
+    const section = normalizeText(sectionKey).toLowerCase();
+    const rows = Array.isArray(items) ? items : [];
+    const emptyTitle = normalizeText(settings.emptyTitle) || "표시할 사용자가 없습니다.";
+    const emptyCopy = normalizeText(settings.emptyCopy) || "조건에 맞는 사용자가 아직 없습니다.";
+    const bodyHtml = rows.length
+      ? rows.map(function (item) {
+          return ascordWorkspaceInviteMemberMarkup(item, {
+            section: section,
+            status: normalizeText(item.workspace_invite_status) || (section === "members" ? "active" : "available"),
+            inviting: !!settings.invitingUserIds && settings.invitingUserIds.has(normalizeText(item.user_id)),
+          });
+        }).join("")
+      : [
+          '<div class="messenger-discord-invite-modal__empty messenger-discord-invite-modal__empty--compact">',
+          '<strong>' + escapeHtml(emptyTitle) + "</strong>",
+          '<span>' + escapeHtml(emptyCopy) + "</span>",
+          "</div>",
+        ].join("");
+    return [
+      '<section class="messenger-discord-invite-modal__section' + (isOpen ? ' is-open' : '') + '" data-ascord-workspace-section="' + escapeAttribute(section) + '">',
+      '<button class="messenger-discord-invite-modal__section-toggle" type="button" data-ascord-workspace-toggle="' + escapeAttribute(section) + '">',
+      '<span>' + escapeHtml(title) + "</span>",
+      '<i class="bi ' + escapeAttribute(isOpen ? "bi-chevron-down" : "bi-chevron-right") + '"></i>',
       "</button>",
+      '<div class="messenger-discord-invite-modal__section-body"' + (isOpen ? "" : " hidden") + '>',
+      bodyHtml,
+      "</div>",
+      "</section>",
     ].join("");
   }
 
@@ -8417,42 +8543,45 @@
       return null;
     }
 
-    const selectedUserIds = new Set();
+    const invitedUserIds = new Set();
+    const invitingUserIds = new Set();
     const inviteLink = workspaceInviteLink(targetRoom);
-    const result = await fireDialog({
+    const destinationIcon = roomSupportsCalls(targetRoom) ? roomVoiceIcon(targetRoom) : "bi-hash";
+    await fireDialog({
       title: "친구를 " + ascordWorkspaceName() + " 워크스페이스로 초대하기",
-      width: "42rem",
+      width: "37rem",
+      showConfirmButton: false,
+      showCancelButton: false,
+      showCloseButton: true,
+      focusConfirm: false,
       customClass: {
         popup: "app-swal-popup messenger-discord-invite-modal",
         title: "app-swal-title messenger-discord-invite-modal__title",
         htmlContainer: "app-swal-html messenger-discord-invite-modal__html",
         actions: "app-swal-actions messenger-discord-invite-modal__actions",
+        closeButton: "messenger-discord-invite-modal__close",
       },
       html: [
-        '<div class="messenger-discord-invite-modal__subtitle">수신자는 ' + escapeHtml((targetRoom && targetRoom.title) || "ASCORD 채널") + "에 도착해요</div>",
+        '<div class="messenger-discord-invite-modal__subtitle">수신자는 <span class="messenger-discord-invite-modal__destination"><i class="bi ' + escapeAttribute(destinationIcon) + '"></i><span>' + escapeHtml((targetRoom && targetRoom.title) || "ASCORD 채널") + "</span></span>에 도착해요</div>",
         '<div class="app-swal-form messenger-discord-invite-modal__body">',
-        '<div class="app-swal-field-group">',
         '<div class="messenger-discord-invite-modal__search">',
         '<i class="bi bi-search"></i>',
         '<input id="swalMessengerInviteSearch" class="form-control app-swal-field app-swal-contact-search" type="search" placeholder="친구 찾기">',
         "</div>",
-        '<div class="messenger-discord-invite-modal__label">서버 멤버</div>',
-        '</div>',
-        '<div class="messenger-contact-picker app-swal-contact-picker messenger-discord-invite-modal__list" id="swalMessengerInviteList"></div>',
+        '<div class="messenger-discord-invite-modal__label"><span>서버 멤버</span><i class="bi bi-chevron-down"></i></div>',
+        '<div class="messenger-discord-invite-modal__list-wrap">',
+        '<div class="messenger-discord-invite-modal__list" id="swalMessengerInviteList"></div>',
+        "</div>",
         '<div class="messenger-discord-invite-modal__footer">',
         '<div class="messenger-discord-invite-modal__footer-copy">또는 친구에게 서버 초대 링크 전송하기</div>',
         '<div class="messenger-discord-invite-modal__copy-row">',
         '<input id="swalMessengerInviteLink" class="form-control app-swal-field" type="text" readonly value="' + escapeAttribute(inviteLink) + '">',
         '<button id="swalMessengerInviteCopyBtn" class="btn btn-primary" type="button">복사</button>',
         "</div>",
-        '<div class="messenger-discord-invite-modal__footer-help">초대 링크는 이 브라우저 세션에서 현재 채널을 빠르게 여는 용도로 사용됩니다.</div>',
+        '<div class="messenger-discord-invite-modal__footer-help">초대 링크는 현재 채널로 빠르게 이동하는 용도로 사용됩니다.</div>',
         "</div>",
         '</div>',
       ].join(""),
-      showCancelButton: true,
-      confirmButtonText: "초대",
-      cancelButtonText: "취소",
-      focusConfirm: false,
       didOpen: function () {
         const searchInput = document.getElementById("swalMessengerInviteSearch");
         const list = document.getElementById("swalMessengerInviteList");
@@ -8471,11 +8600,21 @@
             return haystack.indexOf(query) !== -1;
           });
           if (!filtered.length) {
-            list.innerHTML = '<div class="messenger-empty-inline">검색 결과가 없습니다.</div>';
+            list.innerHTML = [
+              '<div class="messenger-discord-invite-modal__empty">',
+              '<i class="bi bi-search"></i>',
+              '<strong>검색 결과가 없습니다.</strong>',
+              '<span>다른 이름이나 아이디로 다시 찾아보세요.</span>',
+              "</div>",
+            ].join("");
             return;
           }
           list.innerHTML = filtered.map(function (contact) {
-            return inviteCandidateMarkup(contact, selectedUserIds.has(normalizeText(contact.user_id)));
+            const userId = normalizeText(contact.user_id);
+            return inviteCandidateMarkup(contact, {
+              invited: invitedUserIds.has(userId),
+              inviting: invitingUserIds.has(userId),
+            });
           }).join("");
         };
 
@@ -8484,12 +8623,28 @@
           if (!button) return;
           const userId = normalizeText(button.getAttribute("data-invite-user-id"));
           if (!userId) return;
-          if (selectedUserIds.has(userId)) {
-            selectedUserIds.delete(userId);
-          } else {
-            selectedUserIds.add(userId);
-          }
+          if (invitedUserIds.has(userId) || invitingUserIds.has(userId)) return;
+          invitingUserIds.add(userId);
           renderList();
+          api("/api/messenger/rooms/" + targetRoom.id + "/members", {
+            method: "POST",
+            body: JSON.stringify({ member_ids: [userId] }),
+          }).then(function (payload) {
+            invitingUserIds.delete(userId);
+            invitedUserIds.add(userId);
+            if (payload && payload.room) {
+              mergeRoom(payload.room);
+              state.activeRoom = currentRoom();
+              renderHeader();
+              renderInspector();
+            }
+            showToast("success", "멤버를 초대했습니다.").catch(function () {});
+            renderList();
+          }).catch(function (error) {
+            invitingUserIds.delete(userId);
+            renderList();
+            showToast("warning", (error && error.message) || "멤버 초대에 실패했습니다.").catch(function () {});
+          });
         });
 
         if (searchInput) {
@@ -8509,37 +8664,180 @@
         }
         renderList();
       },
-      preConfirm: function () {
-        if (!selectedUserIds.size) {
-          window.Swal.showValidationMessage("초대할 구성원을 선택해주세요.");
-          return false;
+    });
+    return true;
+  }
+
+  async function promptAscordWorkspaceInvite(room) {
+    const targetRoom = room || state.activeRoom;
+    if (!targetRoom) {
+      await showWarning("ASCORD 채널을 먼저 선택해주세요.");
+      return null;
+    }
+    if (!hasSwal()) {
+      await showWarning("초대 창을 열 수 없습니다.");
+      return null;
+    }
+
+    let payload;
+    try {
+      payload = await api("/api/messenger/ascord/workspace-invite?room_id=" + Number(targetRoom.id || 0));
+    } catch (error) {
+      await showError((error && error.message) || "ASCORD 서버 초대 정보를 불러오지 못했습니다.");
+      return null;
+    }
+
+    const data = (payload && payload.payload) || {};
+    const serverMembers = Array.isArray(data.server_members) ? data.server_members.slice() : [];
+    const inviteCandidates = Array.isArray(data.invite_candidates) ? data.invite_candidates.slice() : [];
+    const invitingUserIds = new Set();
+    const inviteStatusByUserId = {};
+    inviteCandidates.forEach(function (item) {
+      const userId = normalizeText(item && item.user_id);
+      if (!userId) return;
+      inviteStatusByUserId[userId] = normalizeText(item.workspace_invite_status) || "available";
+    });
+    const workspaceName = normalizeText((data.workspace && data.workspace.name) || ascordWorkspaceName());
+    const inviteLink = normalizeText(data.invite_link) || workspaceInviteLink(targetRoom);
+    let openSection = "invite";
+
+    await fireDialog({
+      title: "친구를 " + workspaceName + " 그룹으로 초대하기",
+      width: "39rem",
+      showConfirmButton: false,
+      showCancelButton: false,
+      showCloseButton: true,
+      focusConfirm: false,
+      customClass: {
+        popup: "app-swal-popup messenger-discord-invite-modal",
+        title: "app-swal-title messenger-discord-invite-modal__title",
+        htmlContainer: "app-swal-html messenger-discord-invite-modal__html",
+        actions: "app-swal-actions messenger-discord-invite-modal__actions",
+        closeButton: "messenger-discord-invite-modal__close",
+      },
+      html: [
+        '<div class="messenger-discord-invite-modal__subtitle">수신자는 <span class="messenger-discord-invite-modal__destination"><i class="bi ' + escapeAttribute(roomVoiceIcon(targetRoom)) + '"></i><span>' + escapeHtml((targetRoom && targetRoom.title) || "ASCORD 채널") + "</span></span>에 도착해요</div>",
+        '<div class="app-swal-form messenger-discord-invite-modal__body">',
+        '<div class="messenger-discord-invite-modal__search">',
+        '<i class="bi bi-search"></i>',
+        '<input id="swalMessengerWorkspaceInviteSearch" class="form-control app-swal-field app-swal-contact-search" type="search" placeholder="친구 찾기">',
+        "</div>",
+        '<div class="messenger-discord-invite-modal__list-wrap">',
+        '<div class="messenger-discord-invite-modal__list messenger-discord-invite-modal__list--directory" id="swalMessengerWorkspaceInviteDirectory"></div>',
+        "</div>",
+        '<div class="messenger-discord-invite-modal__footer">',
+        '<div class="messenger-discord-invite-modal__footer-copy">또는 친구에게 서버 초대 링크 전송하기</div>',
+        '<div class="messenger-discord-invite-modal__copy-row">',
+        '<input id="swalMessengerWorkspaceInviteLink" class="form-control app-swal-field" type="text" readonly value="' + escapeAttribute(inviteLink) + '">',
+        '<button id="swalMessengerWorkspaceInviteCopyBtn" class="btn btn-primary" type="button">복사</button>',
+        "</div>",
+        '<div class="messenger-discord-invite-modal__footer-help">초대 링크는 개인톡 없이도 ASCORD 채널로 바로 이동하는 용도로 사용됩니다.</div>',
+        "</div>",
+        "</div>",
+      ].join(""),
+      didOpen: function () {
+        const searchInput = document.getElementById("swalMessengerWorkspaceInviteSearch");
+        const directory = document.getElementById("swalMessengerWorkspaceInviteDirectory");
+        const copyButton = document.getElementById("swalMessengerWorkspaceInviteCopyBtn");
+        if (!directory) return;
+
+        const filterItems = function (items) {
+          const query = normalizeText(searchInput && searchInput.value).toLowerCase();
+          return (items || []).filter(function (item) {
+            if (!query) return true;
+            const haystack = [
+              item.display_name,
+              item.department,
+              item.user_id,
+            ].join(" ").toLowerCase();
+            return haystack.indexOf(query) !== -1;
+          });
+        };
+
+        const renderDirectory = function () {
+          const filteredMembers = filterItems(serverMembers);
+          const filteredInviteCandidates = filterItems(inviteCandidates).map(function (item) {
+            return Object.assign({}, item, {
+              workspace_invite_status: inviteStatusByUserId[normalizeText(item.user_id)] || normalizeText(item.workspace_invite_status) || "available",
+            });
+          });
+          directory.innerHTML = [
+            ascordWorkspaceInviteSectionMarkup("members", "서버 멤버", filteredMembers, {
+              open: openSection === "members",
+              emptyTitle: "현재 ASCORD 서버 멤버가 없습니다.",
+              emptyCopy: "서버에 참가한 사용자가 여기에 표시됩니다.",
+            }),
+            ascordWorkspaceInviteSectionMarkup("invite", "서버에 초대하기", filteredInviteCandidates, {
+              open: openSection !== "members",
+              invitingUserIds: invitingUserIds,
+              emptyTitle: "추가로 초대할 사용자가 없습니다.",
+              emptyCopy: "모든 사용자가 이미 초대되었거나 서버 멤버입니다.",
+            }),
+          ].join("");
+        };
+
+        directory.addEventListener("click", function (event) {
+          const toggle = event.target instanceof Element ? event.target.closest("[data-ascord-workspace-toggle]") : null;
+          if (toggle) {
+            const nextSection = normalizeText(toggle.getAttribute("data-ascord-workspace-toggle")).toLowerCase();
+            openSection = nextSection === "members" ? "members" : "invite";
+            renderDirectory();
+            return;
+          }
+          const button = event.target instanceof Element ? event.target.closest("[data-ascord-workspace-invite-user-id]") : null;
+          if (!button) return;
+          const userId = normalizeText(button.getAttribute("data-ascord-workspace-invite-user-id"));
+          if (!userId) return;
+          if (inviteStatusByUserId[userId] === "invited" || invitingUserIds.has(userId)) return;
+          invitingUserIds.add(userId);
+          renderDirectory();
+          api("/api/messenger/ascord/workspace-invites", {
+            method: "POST",
+            body: JSON.stringify({
+              room_id: Number(targetRoom.id || 0),
+              user_id: userId,
+            }),
+          }).then(function () {
+            inviteStatusByUserId[userId] = "invited";
+            invitingUserIds.delete(userId);
+            renderDirectory();
+            showToast("success", "ABBAS Talk 개인톡으로 서버 초대를 보냈습니다.").catch(function () {});
+          }).catch(function (error) {
+            invitingUserIds.delete(userId);
+            renderDirectory();
+            showToast("warning", (error && error.message) || "서버 초대 전송에 실패했습니다.").catch(function () {});
+          });
+        });
+
+        if (searchInput) {
+          searchInput.addEventListener("input", renderDirectory);
+          searchInput.focus();
         }
-        return Array.from(selectedUserIds);
+        if (copyButton) {
+          copyButton.addEventListener("click", function () {
+            copyText(inviteLink).then(function (copied) {
+              if (!copied) return;
+              copyButton.textContent = "복사됨";
+              window.setTimeout(function () {
+                copyButton.textContent = "복사";
+              }, 1400);
+            });
+          });
+        }
+        renderDirectory();
       },
     });
-    return result && result.isConfirmed ? (result.value || []) : null;
+    return true;
   }
 
   async function inviteMembersToRoom(room) {
     const targetRoom = room || state.activeRoom;
     if (!targetRoom || !canInviteMembers(targetRoom) || targetRoom.is_direct) return;
-    const memberIds = await promptInviteMembers(targetRoom);
-    if (!Array.isArray(memberIds) || !memberIds.length) return;
-    try {
-      const payload = await api("/api/messenger/rooms/" + targetRoom.id + "/members", {
-        method: "POST",
-        body: JSON.stringify({ member_ids: memberIds }),
-      });
-      if (payload && payload.room) {
-        mergeRoom(payload.room);
-        state.activeRoom = currentRoom();
-        renderHeader();
-        renderInspector();
-      }
-      await showToast("success", "멤버를 초대했습니다.");
-    } catch (error) {
-      await showError(error.message || "멤버 초대에 실패했습니다.");
+    if (isAscordRoom(targetRoom)) {
+      await promptAscordWorkspaceInvite(targetRoom);
+      return;
     }
+    await promptInviteMembers(targetRoom);
   }
 
   async function editRoomDetails(room) {
