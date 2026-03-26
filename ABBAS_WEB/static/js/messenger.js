@@ -59,6 +59,8 @@
     dragRectWidth: 0,
     dragRectHeight: 0,
     ascordVoiceDragRoomId: 0,
+    ascordRoomClickTimer: 0,
+    ascordPendingRoomId: 0,
     call: {
       roomCallsById: {},
       joinedRoomId: 0,
@@ -165,6 +167,14 @@
     screen_share: "none",
     invite_members: "admin",
     moderate: "admin",
+  };
+  const ASCORD_SOUND_PATHS = {
+    join: "/sounds/ascord_join.mp3",
+    out: "/sounds/ascord_out.mp3",
+    mute: "/sounds/ascord_mute.mp3",
+    unmute: "/sounds/ascord_unmute.mp3",
+    streamStart: "/sounds/ascord_stream_start.mp3",
+    streamStop: "/sounds/ascord_stream_stop.mp3",
   };
 
   function $(id) {
@@ -303,6 +313,24 @@
   function avatarInitialFor(displayName, fallback) {
     const text = normalizeText(displayName || fallback || "U");
     return text ? text.charAt(0).toUpperCase() : "U";
+  }
+
+  function hashedTextNumber(value) {
+    const text = normalizeText(value);
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = ((hash * 31) + text.charCodeAt(index)) % 2147483647;
+    }
+    return Math.abs(hash);
+  }
+
+  function callCardToneStyle(item) {
+    const payload = item || {};
+    const seedText = normalizeText(payload.userId || payload.identity || payload.displayName || payload.id || "call-card");
+    const seed = hashedTextNumber(seedText);
+    const hue = seed % 360;
+    const secondaryHue = (hue + 24 + (seed % 41)) % 360;
+    return "--call-card-hue:" + String(hue) + ";--call-card-hue-alt:" + String(secondaryHue) + ";";
   }
 
   function escapeAttribute(value) {
@@ -2808,6 +2836,29 @@
     });
   }
 
+  function clearPendingAscordRoomOpen() {
+    if (state.ascordRoomClickTimer) {
+      window.clearTimeout(state.ascordRoomClickTimer);
+    }
+    state.ascordRoomClickTimer = 0;
+    state.ascordPendingRoomId = 0;
+  }
+
+  function scheduleAscordRoomOpen(roomId) {
+    const targetRoomId = Number(roomId || 0);
+    if (targetRoomId <= 0) return;
+    clearPendingAscordRoomOpen();
+    state.ascordPendingRoomId = targetRoomId;
+    state.ascordRoomClickTimer = window.setTimeout(function () {
+      const pendingRoomId = Number(state.ascordPendingRoomId || 0);
+      clearPendingAscordRoomOpen();
+      if (pendingRoomId <= 0) return;
+      openAscordRoom(pendingRoomId).catch(function (error) {
+        showError((error && error.message) || "ASCORD 채널을 열지 못했습니다.");
+      });
+    }, 220);
+  }
+
   function bindRoomListInteractions() {
     if (!dom.roomList) return;
     Array.prototype.forEach.call(dom.roomList.querySelectorAll("[data-room-id]"), function (button) {
@@ -2815,6 +2866,12 @@
         const roomId = Number(button.getAttribute("data-room-id") || 0);
         if (roomId <= 0) return;
         if (state.viewMode === "ascord") {
+          const targetRoom = findRoomById(roomId);
+          if (targetRoom && roomSupportsCalls(targetRoom)) {
+            scheduleAscordRoomOpen(roomId);
+            return;
+          }
+          clearPendingAscordRoomOpen();
           openAscordRoom(roomId).catch(function (error) {
             showError((error && error.message) || "ASCORD 채널을 열지 못했습니다.");
           });
@@ -2843,6 +2900,7 @@
         if (!targetRoom || !roomSupportsCalls(targetRoom)) return;
         event.preventDefault();
         event.stopPropagation();
+        clearPendingAscordRoomOpen();
         joinAscordVoiceChannel(roomId).catch(function (error) {
           showError((error && error.message) || "ASCORD 음성채널에 입장하지 못했습니다.");
         });
@@ -3357,28 +3415,45 @@
     return context || null;
   }
 
-  function playAscordJoinSound() {
-    const context = ensureAscordUiAudioContext();
-    if (!context) return;
-    const notes = [
-      { frequency: 783.99, start: 0, duration: 0.085, gain: 0.045 },
-      { frequency: 1046.5, start: 0.095, duration: 0.11, gain: 0.055 },
-    ];
-    notes.forEach(function (note) {
-      try {
-        const oscillator = context.createOscillator();
-        const gain = context.createGain();
-        oscillator.type = "triangle";
-        oscillator.frequency.setValueAtTime(note.frequency, context.currentTime + note.start);
-        gain.gain.setValueAtTime(0.0001, context.currentTime + note.start);
-        gain.gain.exponentialRampToValueAtTime(note.gain, context.currentTime + note.start + 0.01);
-        gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + note.start + note.duration);
-        oscillator.connect(gain);
-        gain.connect(context.destination);
-        oscillator.start(context.currentTime + note.start);
-        oscillator.stop(context.currentTime + note.start + note.duration + 0.02);
-      } catch (_) {}
-    });
+  function shouldPlayAscordSound(room) {
+    return !!(room && isAscordRoom(room));
+  }
+
+  function playAscordSound(effectName, room) {
+    if (!shouldPlayAscordSound(room)) return;
+    const src = ASCORD_SOUND_PATHS[normalizeText(effectName)];
+    if (!src || typeof Audio !== "function") return;
+    ensureAscordUiAudioContext();
+    try {
+      const audio = new Audio(src);
+      audio.preload = "auto";
+      audio.volume = 1;
+      audio.play().catch(function () {});
+    } catch (_) {}
+  }
+
+  function playAscordJoinSound(room) {
+    playAscordSound("join", room);
+  }
+
+  function playAscordOutSound(room) {
+    playAscordSound("out", room);
+  }
+
+  function playAscordMuteSound(room) {
+    playAscordSound("mute", room);
+  }
+
+  function playAscordUnmuteSound(room) {
+    playAscordSound("unmute", room);
+  }
+
+  function playAscordStreamStartSound(room) {
+    playAscordSound("streamStart", room);
+  }
+
+  function playAscordStreamStopSound(room) {
+    playAscordSound("streamStop", room);
   }
 
   function workspaceInviteLink(room) {
@@ -4960,6 +5035,10 @@
     const isAscord = state.viewMode === "ascord";
     const room = state.activeRoom;
     const joinedHere = !!room && Number(state.call.joinedRoomId || 0) === Number(room.id || 0) && !!currentLiveRoom();
+    const canSpeakHere = !!room && canSpeakInCall(room);
+    const serverMuted = joinedHere && isServerMutedInRoom(room && room.id);
+    const micEnabled = joinedHere && !!state.call.requestedAudioEnabled && !state.call.deafened && !serverMuted && canSpeakHere;
+    const micDisabled = !joinedHere || !!state.call.deafened || !!serverMuted || !canSpeakHere;
     dom.ascordVoiceDock.classList.toggle("d-none", !isAscord);
     if (!isAscord) {
       dom.ascordVoiceDock.innerHTML = "";
@@ -5004,7 +5083,7 @@
       '<span>' + escapeHtml(currentUser.presence_label || "온라인") + "</span>",
       "</span>",
       '<div class="messenger-ascord-voice-dock__profile-actions">',
-      '<button type="button" data-ascord-dock-action="toggle-mic"' + (!joinedHere ? " disabled" : "") + '><i class="bi ' + (state.call.requestedAudioEnabled ? "bi-mic-fill" : "bi-mic-mute-fill") + '"></i></button>',
+      '<button type="button" data-ascord-dock-action="toggle-mic"' + (micDisabled ? " disabled" : "") + '><i class="bi ' + (micEnabled ? "bi-mic-fill" : "bi-mic-mute-fill") + '"></i></button>',
       '<button type="button" data-ascord-dock-action="settings"><i class="bi bi-gear-fill"></i></button>',
       "</div>",
       "</div>",
@@ -5016,6 +5095,10 @@
     const room = state.activeRoom;
     const isAscord = state.viewMode === "ascord";
     const joinedHere = !!room && Number(state.call.joinedRoomId || 0) === Number(room.id || 0) && !!currentLiveRoom();
+    const canSpeakHere = !!room && canSpeakInCall(room);
+    const serverMuted = joinedHere && isServerMutedInRoom(room && room.id);
+    const micEnabled = joinedHere && !!state.call.requestedAudioEnabled && !state.call.deafened && !serverMuted && canSpeakHere;
+    const micDisabled = !joinedHere || !!state.call.deafened || !!serverMuted || !canSpeakHere;
     dom.ascordCallDock.classList.toggle("d-none", !(isAscord && joinedHere));
     if (!(isAscord && joinedHere)) {
       dom.ascordCallDock.innerHTML = "";
@@ -5023,7 +5106,7 @@
     }
     dom.ascordCallDock.innerHTML = [
       '<div class="messenger-ascord-call-dock__group">',
-      '<button type="button" class="' + (state.call.requestedAudioEnabled ? "is-active" : "") + '" data-ascord-call-dock-action="toggle-mic"><i class="bi ' + (state.call.requestedAudioEnabled ? "bi-mic-fill" : "bi-mic-mute-fill") + '"></i></button>',
+      '<button type="button" class="' + (micEnabled ? "is-active" : "") + '" data-ascord-call-dock-action="toggle-mic"' + (micDisabled ? " disabled" : "") + '><i class="bi ' + (micEnabled ? "bi-mic-fill" : "bi-mic-mute-fill") + '"></i></button>',
       '<button type="button" class="' + (state.call.cameraEnabled ? "is-active" : "") + '" data-ascord-call-dock-action="toggle-camera"><i class="bi ' + (state.call.cameraEnabled ? "bi-camera-video-fill" : "bi-camera-video-off-fill") + '"></i></button>',
       '<button type="button" class="' + (state.call.sharingScreen ? "is-active" : "") + '" data-ascord-call-dock-action="open-share"><i class="bi ' + (state.call.sharingScreen ? "bi-display-fill" : "bi-display") + '"></i></button>',
       '<button type="button" data-ascord-call-dock-action="layout"><i class="bi bi-grid-3x3-gap-fill"></i></button>',
@@ -5031,7 +5114,7 @@
       "</div>",
       '<button type="button" class="messenger-ascord-call-dock__leave" data-ascord-call-dock-action="leave"><i class="bi bi-telephone-x-fill"></i></button>',
       '<div class="messenger-ascord-call-dock__group">',
-      '<button type="button" class="' + (state.call.deafened ? "is-active" : "") + '" data-ascord-call-dock-action="toggle-deafen"><i class="bi bi-headset"></i></button>',
+      '<button type="button" class="' + (state.call.deafened ? "is-deafened" : "") + '" data-ascord-call-dock-action="toggle-deafen"><i class="bi bi-headset"></i></button>',
       '</div>',
     ].join("");
   }
@@ -5525,7 +5608,7 @@
     const targetRoomId = Number(roomId || 0);
     if (targetRoomId <= 0) return;
     if (Number(state.call.joinedRoomId || 0) === targetRoomId) {
-      disconnectLiveKitRoom(false).catch(function () {});
+      disconnectLiveKitRoom(false, { playSound: false }).catch(function () {});
     }
     delete state.call.roomCallsById[targetRoomId];
     delete state.call.callSnapshotsByRoomId[targetRoomId];
@@ -5801,6 +5884,7 @@
   async function joinAscordVoiceChannel(roomId) {
     const targetRoomId = Number(roomId || 0);
     if (targetRoomId <= 0) return;
+    clearPendingAscordRoomOpen();
     ensureAscordUiAudioContext();
     if (!state.initialized) {
       await init();
@@ -6394,7 +6478,7 @@
       return existingRoom;
     }
     if (existingRoom && Number(state.call.joinedRoomId || 0) !== targetRoomId) {
-      await disconnectLiveKitRoom(false);
+      await disconnectLiveKitRoom(false, { playSound: false });
       await delayMs(120);
     }
     let lastError = null;
@@ -6473,7 +6557,7 @@
         } catch (_) {}
         lastError = error;
         if (state.call.liveRoom === room) {
-          await disconnectLiveKitRoom(false);
+          await disconnectLiveKitRoom(false, { playSound: false });
         } else {
           try {
             const disconnectResult = room && typeof room.disconnect === "function" ? room.disconnect() : null;
@@ -6492,9 +6576,12 @@
     throw lastError || new Error("통화 연결에 실패했습니다.");
   }
 
-  async function disconnectLiveKitRoom(notifyServer) {
+  async function disconnectLiveKitRoom(notifyServer, options) {
+    const settings = options || {};
     const room = currentLiveRoom();
     const roomId = Number(state.call.joinedRoomId || 0);
+    const roomMeta = findRoomById(roomId) || state.activeRoom;
+    const shouldPlayOutSound = settings.playSound !== false && shouldPlayAscordSound(roomMeta);
     if (roomId > 0) {
       delete state.call.serverMutedRoomIds[roomId];
     }
@@ -6524,6 +6611,9 @@
     } catch (_) {}
     if (dom.callAudioSink) {
       dom.callAudioSink.innerHTML = "";
+    }
+    if (shouldPlayOutSound) {
+      playAscordOutSound(roomMeta);
     }
   }
 
@@ -7224,7 +7314,7 @@
   }
 
   async function cleanupLocalCallSession() {
-    await disconnectLiveKitRoom(false);
+    await disconnectLiveKitRoom(false, { playSound: false });
     closeAllPeerConnections();
     stopStreamTracks(state.call.screenStream);
     stopStreamTracks(state.call.cameraStream);
@@ -7251,10 +7341,12 @@
   async function stopScreenShare() {
     const room = currentLiveRoom();
     if (!room || !state.call.sharingScreen) return;
+    const roomMeta = findRoomById(state.call.joinedRoomId) || state.activeRoom;
     await room.localParticipant.setScreenShareEnabled(false);
     syncLocalMediaStateFromLiveRoom();
     emitCallMediaState();
     renderCallUi();
+    playAscordStreamStopSound(roomMeta);
   }
 
   function bindScreenShareLifecycle(stream) {
@@ -7338,9 +7430,7 @@
         source: state.call.sharingScreen ? "screen" : "camera",
       });
       sendSocket({ type: "call_sync", room_id: targetRoomId });
-      if (isAscordRoom(room)) {
-        playAscordJoinSound();
-      }
+      playAscordJoinSound(room);
     } catch (error) {
       await showError(formatLivekitConnectionError(error), "통화 준비 실패");
       await cleanupLocalCallSession();
@@ -7389,6 +7479,11 @@
     state.call.micBeforeDeafen = state.call.requestedAudioEnabled;
     await syncCallTransmitState();
     renderRoomList();
+    if (state.call.requestedAudioEnabled) {
+      playAscordUnmuteSound(roomMeta);
+      return;
+    }
+    playAscordMuteSound(roomMeta);
   }
 
   async function toggleCallCamera() {
@@ -7411,15 +7506,21 @@
     const room = currentLiveRoom();
     if (!room || !state.call.joinedRoomId) return;
     const roomMeta = findRoomById(state.call.joinedRoomId) || state.activeRoom;
+    const nextSharingState = !state.call.sharingScreen;
     if (!canShareScreenInCall(roomMeta) && !state.call.sharingScreen) {
       await showWarning("이 채널에서는 화면공유 권한이 제한되어 있습니다.", "화면공유 권한 없음");
       return;
     }
-    await room.localParticipant.setScreenShareEnabled(!state.call.sharingScreen);
+    await room.localParticipant.setScreenShareEnabled(nextSharingState);
     syncLocalMediaStateFromLiveRoom();
     emitCallMediaState();
     renderCallUi();
     renderRoomList();
+    if (nextSharingState) {
+      playAscordStreamStartSound(roomMeta);
+      return;
+    }
+    playAscordStreamStopSound(roomMeta);
   }
 
   async function enforceJoinedRoomPermissions(room) {
@@ -7459,9 +7560,11 @@
 
   async function toggleCallDeafen() {
     if (!state.call.joinedRoomId) return;
+    const roomMeta = findRoomById(state.call.joinedRoomId) || state.activeRoom;
     const nextValue = !state.call.deafened;
     if (nextValue) {
       state.call.micBeforeDeafen = !!state.call.requestedAudioEnabled;
+      state.call.requestedAudioEnabled = false;
     }
     state.call.deafened = nextValue;
     if (!nextValue) {
@@ -7473,6 +7576,11 @@
     renderAscordVoiceDock();
     renderAscordCallDock();
     renderInspector();
+    if (nextValue) {
+      playAscordMuteSound(roomMeta);
+      return;
+    }
+    playAscordUnmuteSound(roomMeta);
   }
 
   async function toggleCallPushToTalk() {
@@ -7535,17 +7643,18 @@
       : "";
     dom.callGrid.innerHTML = items.map(function (item, index) {
       const avatarInitial = normalizeText(item.avatarInitial || avatarInitialFor(item.displayName, item.displayName));
+      const isPinned = normalizeText(item.id) === normalizeText(state.call.pinnedTrackId);
+      const cardStyle = callCardToneStyle(item);
       const pillItems = [
         '<span class="messenger-call-card__pill ' + (item.audioEnabled ? 'is-on' : 'is-off') + '">' + (item.audioEnabled ? 'MIC ON' : 'MIC OFF') + '</span>',
         '<span class="messenger-call-card__pill ' + (item.track ? 'is-on' : 'is-off') + '">' + (item.track ? 'VIDEO ON' : 'VIDEO OFF') + '</span>',
-        item.isSpeaking ? '<span class="messenger-call-card__pill is-on">LIVE</span>' : "",
-        normalizeText(item.id) === normalizeText(state.call.pinnedTrackId) ? '<span class="messenger-call-card__pill is-screen">PINNED</span>' : "",
         item.kind === "screen" ? '<span class="messenger-call-card__pill is-screen">SCREEN</span>' : "",
       ].join("");
       return [
-        '<article class="messenger-call-card' + (item.isSpeaking ? ' is-speaking' : '') + (normalizeText(item.id) === normalizeText(state.call.pinnedTrackId) ? ' is-pinned' : '') + (state.call.layoutMode === "speaker" && index === 0 ? ' is-primary' : '') + '" data-call-card-user="' + escapeAttribute(item.id) + '">',
+        '<article class="messenger-call-card' + (item.isSpeaking ? ' is-speaking' : '') + (isPinned ? ' is-pinned' : '') + (state.call.layoutMode === "speaker" && index === 0 ? ' is-primary' : '') + '" data-call-card-user="' + escapeAttribute(item.id) + '" style="' + escapeAttribute(cardStyle) + '">',
         '<div class="messenger-call-card__placeholder">' + escapeHtml(avatarInitial || "U") + "</div>",
         '<div class="messenger-call-card__media-slot" data-call-media-user="' + escapeAttribute(item.id) + '"></div>',
+        (isPinned ? '<div class="messenger-call-card__pin-badge" aria-hidden="true"><i class="bi bi-pin-angle-fill"></i></div>' : ''),
         '<div class="messenger-call-card__hover-actions"><button type="button" data-call-card-expand="' + escapeAttribute(item.id) + '" aria-label="전체화면"><i class="bi bi-fullscreen"></i></button></div>',
         '<div class="messenger-call-card__meta">',
         '<div class="messenger-call-card__identity">',
@@ -7603,6 +7712,7 @@
     const canUseCamera = !!room && canUseVideoInCall(room);
     const canShareScreenNow = !!room && canShareScreenInCall(room);
     const canSpeakNow = !!room && canSpeakInCall(room);
+    const micUiEnabled = joinedHere && !!state.call.requestedAudioEnabled && !state.call.deafened && !serverMuted && canSpeakNow;
     const stageMode = !!room && isStageRoom(room);
     const myStageParticipant = stageMode ? callParticipant(roomCall, currentUserId()) : null;
     const pendingStageRequests = stageMode ? Number((roomCall && roomCall.speaker_request_count) || 0) : 0;
@@ -7701,10 +7811,10 @@
       dom.stageQueueBtn.classList.toggle("is-active", queueVisible && pendingStageRequests > 0);
       setCallButton(dom.stageQueueBtn, "bi-megaphone", pendingStageRequests > 0 ? ("요청 " + pendingStageRequests + "건") : "요청 없음");
     }
-    setCallButton(dom.toggleMicBtn, serverMuted ? "bi-mic-mute-fill" : (state.call.requestedAudioEnabled ? "bi-mic" : "bi-mic-mute"), !canSpeakNow ? "MIC 제한" : (serverMuted ? "운영자 음소거" : (state.call.requestedAudioEnabled ? "마이크" : "음소거 해제")));
+    setCallButton(dom.toggleMicBtn, (!canSpeakNow || serverMuted || state.call.deafened || !state.call.requestedAudioEnabled) ? "bi-mic-mute-fill" : "bi-mic", !canSpeakNow ? "MIC 제한" : (serverMuted ? "운영자 음소거" : (state.call.deafened ? "올뮤트 중" : (state.call.requestedAudioEnabled ? "마이크" : "음소거 해제"))));
     setCallButton(dom.toggleCameraBtn, state.call.cameraEnabled ? "bi-camera-video" : "bi-camera-video-off", !canUseCamera ? "카메라 제한" : (state.call.cameraEnabled ? "카메라" : "카메라 켜기"));
     setCallButton(dom.screenShareBtn, state.call.sharingScreen ? "bi-display-fill" : "bi-display", !canShareScreenNow ? "공유 제한" : (state.call.sharingScreen ? "공유 중지" : "화면 공유"));
-    setCallButton(dom.deafenBtn, "bi-headset", state.call.deafened ? "디슨 해제" : "디슨");
+    setCallButton(dom.deafenBtn, "bi-headset", state.call.deafened ? "올뮤트 해제" : "올뮤트");
     setCallButton(dom.pushToTalkBtn, "bi-broadcast-pin", state.call.pushToTalk ? "PTT ON" : "PTT OFF");
     setCallButton(dom.callLayoutBtn, state.call.layoutMode === "speaker" ? "bi-layout-three-columns" : "bi-grid-3x3-gap", state.call.layoutMode === "speaker" ? "그리드" : "스피커뷰");
     setCallButton(dom.leaveCallBtn, "bi-telephone-x", "나가기");
@@ -7712,8 +7822,8 @@
     if (dom.audioCallBtn) dom.audioCallBtn.disabled = !room || !callReady || state.call.joining || ((!isAscord) && joinedElsewhere) || amInRoomCall || !canLaunchCall;
     if (dom.videoCallBtn) dom.videoCallBtn.disabled = !room || !callReady || state.call.joining || ((!isAscord) && joinedElsewhere) || amInRoomCall || !canLaunchCall || !canUseCamera;
     if (dom.toggleMicBtn) {
-      dom.toggleMicBtn.disabled = !joinedHere || serverMuted || !canSpeakNow;
-      dom.toggleMicBtn.classList.toggle("is-active", joinedHere && !!state.call.requestedAudioEnabled && !serverMuted && canSpeakNow);
+      dom.toggleMicBtn.disabled = !joinedHere || serverMuted || !canSpeakNow || !!state.call.deafened;
+      dom.toggleMicBtn.classList.toggle("is-active", micUiEnabled);
     }
     if (dom.toggleCameraBtn) {
       dom.toggleCameraBtn.disabled = !joinedHere || !canUseCamera;
@@ -7725,7 +7835,8 @@
     }
     if (dom.deafenBtn) {
       dom.deafenBtn.disabled = !joinedHere;
-      dom.deafenBtn.classList.toggle("is-active", joinedHere && !!state.call.deafened);
+      dom.deafenBtn.classList.remove("is-active");
+      dom.deafenBtn.classList.toggle("is-deafened", joinedHere && !!state.call.deafened);
     }
     if (dom.pushToTalkBtn) {
       dom.pushToTalkBtn.disabled = !room;
@@ -9660,7 +9771,7 @@
       endPopupDrag();
       stopHeartbeat();
       if (state.call.joinedRoomId) {
-        disconnectLiveKitRoom(true).catch(function () {});
+        disconnectLiveKitRoom(true, { playSound: false }).catch(function () {});
       }
       try {
         if (state.socket) state.socket.close();

@@ -1276,6 +1276,33 @@ body.messenger-popup-open {
   border-color: rgba(37, 88, 222, 0.22);
 }
 
+.messenger-call-action.is-deafened {
+  background: rgba(222, 73, 89, 0.08);
+  color: #de4959;
+  border-color: rgba(222, 73, 89, 0.18);
+}
+
+.messenger-call-action.is-deafened:hover:not(:disabled) {
+  border-color: rgba(222, 73, 89, 0.26);
+  color: #b52b3a;
+}
+
+.messenger-call-action.is-deafened i {
+  position: relative;
+}
+
+.messenger-call-action.is-deafened i::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: 1.1em;
+  height: 0.14em;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translate(-50%, -50%) rotate(-42deg);
+}
+
 .messenger-call-action--soft {
   background: rgba(255, 255, 255, 0.78);
 }
@@ -1410,8 +1437,9 @@ body.messenger-popup-open {
   display: grid;
   place-items: center;
   background:
-    radial-gradient(circle at top, rgba(108, 162, 255, 0.4), transparent 38%),
-    linear-gradient(180deg, rgba(16, 26, 44, 0.96), rgba(8, 13, 24, 0.98));
+    radial-gradient(circle at 18% 16%, hsl(var(--call-card-hue-alt, 208) 82% 68% / 0.34), transparent 36%),
+    radial-gradient(circle at 82% 14%, hsl(var(--call-card-hue, 228) 72% 58% / 0.18), transparent 28%),
+    linear-gradient(180deg, hsl(var(--call-card-hue, 224) 34% 22%), hsl(var(--call-card-hue-alt, 248) 28% 12%));
   color: rgba(255, 255, 255, 0.96);
   font-size: 2.5rem;
   font-weight: 900;
@@ -4016,6 +4044,22 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
   transform: translateY(0);
 }
 
+.messenger-call-card__pin-badge {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  z-index: 4;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: rgba(17, 18, 20, 0.72);
+  color: #ffffff;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
 .messenger-call-card__hover-actions button {
   width: 36px;
   height: 36px;
@@ -5563,6 +5607,7 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
   transform: translateY(6px);
   pointer-events: none;
   transition: opacity 160ms ease, transform 160ms ease;
+  padding-right: 58px;
   border-color: rgba(255, 255, 255, 0.06);
   background: rgba(17, 18, 20, 0.72);
 }
@@ -5585,6 +5630,10 @@ html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card__meta
 .messenger-page.is-ascord .messenger-call-card__identity span,
 .messenger-page.is-ascord .messenger-call-card__pill {
   color: var(--mw-ascord-text-soft);
+}
+
+.messenger-page.is-ascord .messenger-call-card__state {
+  margin-right: 2px;
 }
 
 .messenger-page.is-ascord .messenger-call-card__hover-actions {
@@ -5721,6 +5770,32 @@ html[data-bs-theme="light"] .messenger-call-empty__copy {
   box-shadow: inset 0 0 0 1px rgba(67, 181, 129, 0.38);
 }
 
+.messenger-ascord-call-dock__group button.is-deafened {
+  background: rgba(218, 55, 60, 0.14);
+  color: #ffd9dc;
+  box-shadow: inset 0 0 0 1px rgba(218, 55, 60, 0.28);
+}
+
+.messenger-ascord-call-dock__group button.is-deafened:hover {
+  background: rgba(218, 55, 60, 0.18);
+}
+
+.messenger-ascord-call-dock__group button.is-deafened i {
+  position: relative;
+}
+
+.messenger-ascord-call-dock__group button.is-deafened i::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: 1.1em;
+  height: 0.14em;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translate(-50%, -50%) rotate(-42deg);
+}
+
 .messenger-ascord-call-dock__group button:hover,
 .messenger-ascord-call-dock__leave:hover {
   background: rgba(255, 255, 255, 0.08);
@@ -5744,6 +5819,16 @@ html[data-bs-theme="light"] .messenger-ascord-call-dock__group button.is-active 
   background: rgba(35, 165, 90, 0.16);
   color: #185c34;
   box-shadow: inset 0 0 0 1px rgba(35, 165, 90, 0.22);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-call-dock__group button.is-deafened {
+  background: rgba(218, 55, 60, 0.12);
+  color: #9c1f2a;
+  box-shadow: inset 0 0 0 1px rgba(218, 55, 60, 0.2);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-call-dock__group button.is-deafened:hover {
+  background: rgba(218, 55, 60, 0.16);
 }
 
 html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-shell {
@@ -5799,8 +5884,9 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card:not(.h
 
 html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card:not(.has-video):not(.messenger-call-card--utility) .messenger-call-card__placeholder {
   background:
-    radial-gradient(circle at top, rgba(74, 103, 154, 0.28), transparent 40%),
-    linear-gradient(180deg, rgba(9, 14, 22, 0.98), rgba(7, 11, 18, 0.98));
+    radial-gradient(circle at 16% 14%, hsl(var(--call-card-hue-alt, 202) 78% 48% / 0.28), transparent 38%),
+    radial-gradient(circle at 84% 18%, hsl(var(--call-card-hue, 232) 74% 42% / 0.18), transparent 28%),
+    linear-gradient(180deg, hsl(var(--call-card-hue, 224) 32% 24%), hsl(var(--call-card-hue-alt, 252) 26% 12%));
   color: #dbe4f1;
 }
 
@@ -6038,8 +6124,9 @@ html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card:not(.
 
 html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card:not(.has-video):not(.messenger-call-card--utility) .messenger-call-card__placeholder {
   background:
-    radial-gradient(circle at top, rgba(148, 163, 184, 0.14), transparent 38%),
-    linear-gradient(180deg, #ffffff, #eef2f7) !important;
+    radial-gradient(circle at 16% 14%, hsl(var(--call-card-hue-alt, 36) 88% 76% / 0.34), transparent 34%),
+    radial-gradient(circle at 84% 16%, hsl(var(--call-card-hue, 210) 78% 72% / 0.22), transparent 28%),
+    linear-gradient(180deg, hsl(var(--call-card-hue, 210) 78% 92%), hsl(var(--call-card-hue-alt, 238) 58% 82%)) !important;
   color: #111827 !important;
 }
 
@@ -6075,6 +6162,12 @@ html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card__pill
 html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card__pill.is-screen {
   background: rgba(59, 130, 246, 0.14);
   color: #1d4ed8;
+}
+
+html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card__pin-badge {
+  background: rgba(255, 255, 255, 0.92);
+  color: #1f2937;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
 }
 
 html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-card__utility-actions button {

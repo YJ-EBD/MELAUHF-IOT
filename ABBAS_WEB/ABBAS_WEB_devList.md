@@ -654,3 +654,20 @@
   - ASCORD 첫 진입/새로고침 시 임의 채널이 아니라 기본 음성채널 `전체 채널`(`room_key = ascord:global`)이 먼저 선택되도록 부트스트랩과 프론트 기본 선택 우선순위를 함께 정리했다.
   - 음성채널 참가 UX는 우측 볼륨 버튼 의존도를 낮추고, 사이드바 채널 카드 자체를 더블클릭하면 바로 참가되게 바꿨다.
   - 마이크나 출력 장치가 비어 있는 경우에는 참가 전에 장치 확인 모달을 띄우고, 새로고침으로 장치 목록을 다시 잡은 뒤 참가/취소를 고를 수 있게 했으며, 마이크가 없더라도 듣기 전용으로 ASCORD 채널에 참가할 수 있도록 보강했다.
+
+## 65. ASCORD 효과음 적용과 올뮤트·카드 비주얼 후속 보정
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `main.py`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+  - `sounds/ascord_join.mp3`
+  - `sounds/ascord_out.mp3`
+  - `sounds/ascord_mute.mp3`
+  - `sounds/ascord_unmute.mp3`
+  - `sounds/ascord_stream_start.mp3`
+  - `sounds/ascord_stream_stop.mp3`
+- 간단한 설명
+  - ASCORD 음성채널 참가/퇴장, 마이크·헤드셋 올뮤트/해제, 화면공유 시작/종료 시 각각 전용 MP3 효과음이 재생되도록 `sounds` 정적 경로와 프론트 재생 유틸을 연결했다.
+  - 음성채널 이동은 이미 다른 채널에 들어간 상태에서도 카드 더블클릭만으로 바로 전환되게 single click 선택 지연을 보강했고, 올뮤트 시에는 마이크 상태도 함께 꺼져 보이도록 도킹 버튼 상태와 헤드셋 슬래시 아이콘 스타일을 정리했다.
+  - ASCORD 통화 카드 UI는 사용자별 랜덤 컬러를 라이트/다크 테마 밝기에 맞춰 적용하고, 하단 배지가 전체화면 버튼과 겹치지 않도록 여백을 조정했으며, `LIVE`/`PINNED` 텍스트 배지는 제거하고 좌상단 핀 아이콘으로 고정 표시되게 다듬었다.

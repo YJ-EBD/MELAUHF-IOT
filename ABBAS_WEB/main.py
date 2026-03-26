@@ -33,6 +33,7 @@ app = FastAPI(title="for_rnd 관리자 콘솔")
 
 # 정적 파일
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/sounds", StaticFiles(directory="sounds"), name="sounds")
 
 # (신규) 인증 미들웨어
 app.add_middleware(AuthMiddleware)
