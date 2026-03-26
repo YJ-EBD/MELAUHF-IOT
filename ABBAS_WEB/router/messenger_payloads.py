@@ -292,6 +292,7 @@ def _build_messenger_user_profile_payload(
         "presence_label": str(user_view.get("presence_label") or ""),
         "presence_page_text": str(user_view.get("presence_page_text") or ""),
         "presence_tone": str(user_view.get("presence_tone") or "offline"),
+        "presence_override": str(user_view.get("presence_override") or profile_form.get("presence_override") or ""),
         "is_self": normalized_target_user_id == current_user_id,
         "email": str(profile_form.get("email") or ""),
         "phone": str(profile_form.get("phone") or ""),

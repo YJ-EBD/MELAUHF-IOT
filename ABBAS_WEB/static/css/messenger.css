@@ -724,12 +724,49 @@ body.messenger-popup-open {
 .messenger-room-group__label button {
   width: 24px;
   height: 24px;
+  padding: 0;
+  position: relative;
   border-radius: 50%;
   border: 1px solid var(--mw-border);
   background: rgba(255, 255, 255, 0.9);
   color: var(--mw-text-faint);
   display: grid;
   place-items: center;
+  line-height: 0;
+}
+
+.messenger-room-group__label button i {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.messenger-room-group__label button i::before {
+  display: block;
+  line-height: 1;
+}
+
+.messenger-page.is-ascord .messenger-room-group__label button .bi-plus-lg {
+  position: absolute;
+  inset: 0;
+  font-size: 0;
+}
+
+.messenger-page.is-ascord .messenger-room-group__label button .bi-plus-lg::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  background:
+    linear-gradient(currentColor 0 0) center / 10px 1.6px no-repeat,
+    linear-gradient(currentColor 0 0) center / 1.6px 10px no-repeat;
 }
 
 .messenger-room-card,
@@ -957,6 +994,11 @@ body.messenger-popup-open {
   background: var(--mw-warning);
 }
 
+.messenger-avatar__status.is-dnd,
+.messenger-contact-avatar__status.is-dnd {
+  background: #ed4245;
+}
+
 .messenger-avatar__status.is-offline,
 .messenger-contact-avatar__status.is-offline {
   background: #aab3c5;
@@ -1181,6 +1223,10 @@ body.messenger-popup-open {
   gap: 8px;
 }
 
+.messenger-chat-header-anchor {
+  display: none;
+}
+
 .messenger-call-strip {
   display: flex;
   align-items: center;
@@ -1325,6 +1371,10 @@ body.messenger-popup-open {
   background:
     radial-gradient(circle at top right, rgba(108, 162, 255, 0.12), transparent 30%),
     linear-gradient(180deg, rgba(246, 249, 255, 0.9), rgba(245, 248, 255, 0.7));
+}
+
+.messenger-call-stage__header-slot:empty {
+  display: none;
 }
 
 .messenger-call-stage__grid {
@@ -3843,7 +3893,8 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 }
 
 .messenger-sidebar__workspace {
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
   border: 1px solid transparent;
   border-radius: 14px;
   padding: 10px 12px;
@@ -3915,6 +3966,17 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
   display: grid;
 }
 
+.messenger-ascord-server-menu__section {
+  display: grid;
+  gap: 2px;
+}
+
+.messenger-ascord-server-menu__section + .messenger-ascord-server-menu__section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .messenger-ascord-server-menu button {
   width: 100%;
   border: 0;
@@ -3943,12 +4005,12 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 }
 
 .messenger-ascord-server-menu button.is-danger {
-  color: #f38ba8;
+  color: #ed4245;
 }
 
 .messenger-ascord-server-menu button.is-danger:hover {
   background: rgba(237, 66, 69, 0.18);
-  color: #ffd7dd;
+  color: #ffdbdf;
 }
 
 .messenger-voice-room-card__members {
@@ -4048,6 +4110,15 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
   gap: 10px;
 }
 
+.messenger-ascord-voice-dock__profile {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.messenger-ascord-voice-dock__profile-shell {
+  position: relative;
+}
+
 .messenger-ascord-voice-dock__connection {
   padding: 8px 10px;
   border-radius: 14px;
@@ -4092,6 +4163,23 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
   gap: 2px;
 }
 
+.messenger-ascord-voice-dock__profile-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 180ms ease;
+}
+
+.messenger-ascord-voice-dock__profile-main:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .messenger-ascord-voice-dock__copy strong,
 .messenger-ascord-voice-dock__identity strong {
   color: #f2f3f5;
@@ -4112,20 +4200,24 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 .messenger-ascord-voice-dock__action-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
+  width: 100%;
+  max-width: 374px;
+  justify-self: center;
 }
 
 .messenger-ascord-voice-dock__avatar {
-  width: 38px;
-  height: 38px;
+  position: relative;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
-  overflow: hidden;
   display: grid;
   place-items: center;
   background: rgba(88, 101, 242, 0.18);
   color: #ffffff;
   font-size: 0.82rem;
   font-weight: 800;
+  flex-shrink: 0;
 }
 
 .messenger-ascord-voice-dock__avatar img {
@@ -4133,12 +4225,552 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
   height: 100%;
   object-fit: cover;
   display: block;
+  border-radius: inherit;
 }
 
 .messenger-ascord-voice-dock__profile-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
+}
+
+.messenger-ascord-voice-dock__profile-actions button {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 1.15rem;
+}
+
+.messenger-ascord-voice-dock__avatar .messenger-contact-avatar__status {
+  right: -1px;
+  bottom: -1px;
+  width: 12px;
+  height: 12px;
+}
+
+.messenger-ascord-voice-dock__identity {
+  gap: 3px;
+}
+
+.messenger-ascord-voice-dock__identity strong {
+  font-size: 0.96rem;
+  line-height: 1.05;
+}
+
+.messenger-ascord-voice-dock__identity-flip {
+  position: relative;
+  display: block;
+  min-width: 0;
+  height: 18px;
+  perspective: 700px;
+  overflow: hidden;
+}
+
+.messenger-ascord-voice-dock__identity-flip-inner {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+}
+
+.messenger-ascord-voice-dock__identity-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #b5bac1;
+  font-size: 0.74rem;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform: translateZ(0);
+  will-change: transform;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  font-smooth: always;
+  transition: transform 680ms cubic-bezier(0.22, 1, 0.36, 1), color 160ms ease;
+}
+
+.messenger-ascord-voice-dock__identity-face--front {
+  transform-origin: 50% 100%;
+  transform: translate3d(0, 0, 1px) rotateX(0deg);
+}
+
+.messenger-ascord-voice-dock__identity-face--back {
+  transform-origin: 50% 0%;
+  transform: translate3d(0, 1px, 1px) rotateX(-92deg);
+}
+
+.messenger-ascord-voice-dock__identity-flip:hover .messenger-ascord-voice-dock__identity-face--front {
+  transform: translate3d(0, 0, 1px) rotateX(92deg);
+}
+
+.messenger-ascord-voice-dock__identity-flip:hover .messenger-ascord-voice-dock__identity-face--back {
+  transform: translate3d(0, 1px, 1px) rotateX(0deg);
+}
+
+.messenger-ascord-voice-dock__profile-actions button.is-muted,
+.messenger-ascord-voice-dock__profile-actions button.is-deafened {
+  background: rgba(218, 55, 60, 0.14);
+  color: #ffd9dc;
+}
+
+.messenger-ascord-voice-dock__profile-actions button.is-muted:hover:not(:disabled),
+.messenger-ascord-voice-dock__profile-actions button.is-deafened:hover:not(:disabled) {
+  background: rgba(218, 55, 60, 0.18);
+}
+
+.messenger-ascord-voice-dock__profile-actions button.is-deafened i {
+  position: relative;
+}
+
+.messenger-ascord-voice-dock__profile-actions button.is-deafened i::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: 1.05em;
+  height: 0.13em;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translate(-50%, -50%) rotate(-42deg);
+}
+
+.messenger-ascord-voice-dock__settings-button:hover i {
+  animation: messenger-ascord-gear-spin 420ms ease;
+}
+
+@keyframes messenger-ascord-gear-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.messenger-ascord-profile-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 14px);
+  width: min(348px, calc(100vw - 36px));
+  border-radius: 18px;
+  background: #23252b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 28px 54px rgba(6, 8, 12, 0.36);
+  color: #f2f3f5;
+  overflow: visible;
+  z-index: 42;
+}
+
+.messenger-ascord-profile-menu__banner {
+  height: 130px;
+  border-radius: 18px 18px 0 0;
+  background:
+    radial-gradient(circle at 16% 20%, hsl(var(--call-card-hue-alt, 268) 84% 78% / 0.24), transparent 28%),
+    radial-gradient(circle at 84% 18%, hsl(var(--call-card-hue, 248) 76% 62% / 0.18), transparent 30%),
+    linear-gradient(135deg, hsl(var(--call-card-hue, 248) 58% 66%), hsl(var(--call-card-hue-alt, 272) 56% 62%));
+}
+
+.messenger-ascord-profile-menu__hero {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  top: 76px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: end;
+  gap: 14px;
+}
+
+.messenger-ascord-profile-menu__avatar {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  overflow: visible;
+  display: grid;
+  place-items: center;
+  border: 6px solid #23252b;
+  background: #1a1c20;
+  box-shadow: 0 10px 26px rgba(7, 8, 12, 0.22);
+}
+
+.messenger-ascord-profile-menu__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: inherit;
+}
+
+.messenger-ascord-profile-menu .messenger-contact-avatar__status {
+  right: 3px;
+  bottom: 4px;
+  width: 18px;
+  height: 18px;
+  border-width: 4px;
+  border-color: #23252b;
+}
+
+.messenger-ascord-profile-menu__intro {
+  position: relative;
+  min-width: 0;
+  min-height: 74px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: #3a3c43;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  box-shadow: 0 14px 28px rgba(10, 11, 16, 0.2);
+}
+
+.messenger-ascord-profile-menu__intro::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  bottom: 20px;
+  width: 18px;
+  height: 18px;
+  background: inherit;
+  border-radius: 4px;
+  transform: rotate(45deg);
+}
+
+.messenger-ascord-profile-menu__intro-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-size: 1rem;
+  margin-top: 2px;
+}
+
+.messenger-ascord-profile-menu__intro strong {
+  min-width: 0;
+  font-size: 0.98rem;
+  font-weight: 800;
+  line-height: 1.4;
+  color: #f2f3f5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.messenger-ascord-profile-menu__body {
+  padding: 46px 18px 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.messenger-ascord-profile-menu__identity {
+  display: grid;
+  gap: 4px;
+}
+
+.messenger-ascord-profile-menu__identity strong {
+  font-size: 2rem;
+  line-height: 1;
+  font-weight: 900;
+  color: #ffffff;
+}
+
+.messenger-ascord-profile-menu__identity span {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #c7ccd4;
+}
+
+.messenger-ascord-profile-menu__panel {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #2b2d31;
+  display: grid;
+  position: relative;
+  overflow: visible;
+}
+
+.messenger-ascord-profile-menu__action-wrap {
+  position: relative;
+}
+
+.messenger-ascord-profile-menu__action {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  padding: 13px 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  color: #f2f3f5;
+  font-size: 1rem;
+  font-weight: 700;
+  text-align: left;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.messenger-ascord-profile-menu__action:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.messenger-ascord-profile-menu__action i {
+  color: #c7ccd4;
+}
+
+.messenger-ascord-profile-menu__divider {
+  height: 1px;
+  margin: 2px 4px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.messenger-ascord-profile-menu__status-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #9aa3b0;
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.02);
+}
+
+.messenger-ascord-profile-menu__status-dot.is-online {
+  background: #3ba55d;
+}
+
+.messenger-ascord-profile-menu__status-dot.is-away {
+  background: #faa81a;
+}
+
+.messenger-ascord-profile-menu__status-dot.is-dnd {
+  background: #ed4245;
+}
+
+.messenger-ascord-profile-menu__status-dot.is-offline {
+  background: #7d8390;
+}
+
+.messenger-ascord-profile-menu__status-menu {
+  position: absolute;
+  top: auto;
+  bottom: 0;
+  left: calc(100% + 18px);
+  width: 276px;
+  padding: 8px;
+  border-radius: 16px;
+  background: #2b2d31;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 42px rgba(10, 11, 16, 0.34);
+  display: grid;
+  gap: 2px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-6px);
+  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+  z-index: 4;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
+
+.messenger-ascord-profile-menu__action-wrap--status:hover .messenger-ascord-profile-menu__status-menu,
+.messenger-ascord-profile-menu__action-wrap--status:focus-within .messenger-ascord-profile-menu__status-menu {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.messenger-ascord-profile-menu__status-current,
+.messenger-ascord-profile-menu__status-option {
+  width: 100%;
+  border-radius: 12px;
+  padding: 11px 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  color: #f2f3f5;
+}
+
+.messenger-ascord-profile-menu__status-current {
+  background: transparent;
+  cursor: default;
+}
+
+.messenger-ascord-profile-menu__status-option {
+  border: 0;
+  background: transparent;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.messenger-ascord-profile-menu__status-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.messenger-ascord-profile-menu__status-option-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  color: #c7ccd4;
+  font-size: 1rem;
+}
+
+.messenger-ascord-profile-menu__status-option-icon.is-online {
+  color: #3ba55d;
+}
+
+.messenger-ascord-profile-menu__status-option-icon.is-away {
+  color: #faa81a;
+}
+
+.messenger-ascord-profile-menu__status-option-icon.is-dnd {
+  color: #ed4245;
+}
+
+.messenger-ascord-profile-menu__status-option-icon.is-offline {
+  color: #9aa3b0;
+}
+
+.messenger-ascord-profile-menu__status-option-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.messenger-ascord-profile-menu__status-option-copy strong {
+  display: block;
+  font-size: 1.05rem;
+  font-weight: 800;
+  line-height: 1.2;
+  color: inherit;
+}
+
+.messenger-ascord-profile-menu__status-option-copy span {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #aeb5c2;
+}
+
+.messenger-ascord-profile-menu__status-divider {
+  height: 1px;
+  margin: 4px 10px 6px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu {
+  background: #ffffff;
+  border-color: rgba(17, 24, 39, 0.08);
+  box-shadow: 0 26px 48px rgba(15, 23, 42, 0.16);
+  color: #2e3338;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__banner {
+  background:
+    radial-gradient(circle at 16% 20%, hsl(var(--call-card-hue-alt, 32) 88% 88% / 0.34), transparent 28%),
+    radial-gradient(circle at 84% 18%, hsl(var(--call-card-hue, 212) 78% 80% / 0.22), transparent 30%),
+    linear-gradient(135deg, hsl(var(--call-card-hue, 210) 84% 84%), hsl(var(--call-card-hue-alt, 242) 72% 78%));
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__avatar {
+  border-color: #ffffff;
+  background: #eef2f7;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu .messenger-contact-avatar__status {
+  border-color: #ffffff;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__intro {
+  background: #ffffff;
+  color: #2e3338;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.12);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__intro strong {
+  color: #2e3338;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__intro-icon {
+  color: #5b66d5;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__identity strong {
+  color: #20242b;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__identity span {
+  color: #6a7480;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__panel {
+  background: #f4f6fa;
+  border: 1px solid rgba(17, 24, 39, 0.06);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__action {
+  color: #2e3338;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__action:hover {
+  background: rgba(17, 24, 39, 0.05);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__action i {
+  color: #6a7480;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__divider {
+  background: rgba(17, 24, 39, 0.08);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__status-dot {
+  box-shadow: 0 0 0 4px rgba(17, 24, 39, 0.03);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__status-menu {
+  background: #ffffff;
+  border-color: rgba(17, 24, 39, 0.08);
+  box-shadow: 0 22px 40px rgba(15, 23, 42, 0.14);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__status-option {
+  color: #2e3338;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__status-option:hover {
+  background: rgba(17, 24, 39, 0.05);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__status-current {
+  color: #2e3338;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__status-option-copy span {
+  color: #7a8594;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-profile-menu__status-divider {
+  background: rgba(17, 24, 39, 0.08);
 }
 
 .messenger-call-card {
@@ -4460,6 +5092,7 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 .messenger-page.is-ascord .messenger-room-group__label button {
   width: 20px;
   height: 20px;
+  padding: 0;
   border: 0;
   background: transparent;
   color: #949ba4;
@@ -4864,6 +5497,8 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 }
 
 .messenger-discord-invite-modal {
+  --messenger-discord-invite-list-height: min(44vh, 392px);
+  --messenger-discord-invite-section-body-height: calc(var(--messenger-discord-invite-list-height) - 66px);
   position: relative;
   padding: 28px 0 0 !important;
   border-radius: 18px;
@@ -4875,6 +5510,10 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 }
 
 .messenger-share-picker {
+  --messenger-share-picker-text: #f2f3f5;
+  --messenger-share-picker-text-soft: #b5bac1;
+  --messenger-share-picker-card-bg: rgba(17, 18, 20, 0.32);
+  --messenger-share-picker-card-border: rgba(255, 255, 255, 0.08);
   border-radius: 24px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: #313338;
@@ -4889,24 +5528,24 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 
 .messenger-discord-invite-modal__title {
   margin: 0 !important;
-  padding: 0 64px 0 20px !important;
+  padding: 0 58px 0 24px !important;
   text-align: left;
-  font-size: clamp(1.5rem, 1.25rem + 0.8vw, 1.78rem);
+  font-size: clamp(1.62rem, 1.34rem + 0.7vw, 1.88rem);
   font-weight: 800;
-  line-height: 1.24;
+  line-height: 1.22;
 }
 
 .messenger-discord-invite-modal__html {
   margin: 0 !important;
-  padding: 0 0 22px !important;
+  padding: 10px 0 22px !important;
 }
 
 .messenger-discord-invite-modal__subtitle {
   margin: 0 0 18px;
-  padding: 8px 20px 0;
+  padding: 0 24px;
   color: #b5bac1;
-  font-size: 0.96rem;
-  line-height: 1.45;
+  font-size: 0.99rem;
+  line-height: 1.5;
 }
 
 .messenger-discord-invite-modal__destination {
@@ -4924,18 +5563,18 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 
 .messenger-discord-invite-modal__body {
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
 .messenger-discord-invite-modal__search {
   position: relative;
-  padding: 0 20px;
+  padding: 0 24px;
 }
 
 .messenger-discord-invite-modal__search i {
   position: absolute;
   top: 50%;
-  left: 34px;
+  left: 40px;
   transform: translateY(-50%);
   color: #949ba4;
   font-size: 1rem;
@@ -4945,7 +5584,7 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 .messenger-discord-invite-modal__search input,
 .messenger-discord-invite-modal__copy-row input {
   width: 100%;
-  min-height: 46px;
+  min-height: 48px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   background: #1e1f22;
@@ -4969,25 +5608,26 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 .messenger-discord-invite-modal__label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 20px;
+  gap: 8px;
+  padding: 0 24px;
   color: #b5bac1;
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  font-size: 0.84rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .messenger-discord-invite-modal__label i {
-  font-size: 0.82rem;
+  font-size: 0.84rem;
 }
 
 .messenger-discord-invite-modal__list-wrap {
-  padding: 0 14px 0 20px;
+  padding: 0 16px 0 24px;
 }
 
 .messenger-discord-invite-modal__list {
-  max-height: min(44vh, 408px);
+  min-height: var(--messenger-discord-invite-list-height);
+  max-height: var(--messenger-discord-invite-list-height);
   overflow: auto;
   display: grid;
   gap: 2px;
@@ -5025,10 +5665,29 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 .messenger-discord-invite-modal__section-body {
   display: grid;
   gap: 2px;
+  min-height: var(--messenger-discord-invite-section-body-height);
+  max-height: var(--messenger-discord-invite-section-body-height);
+  overflow: auto;
+  align-content: start;
+  padding-right: 6px;
 }
 
 .messenger-discord-invite-modal__section-body[hidden] {
   display: none;
+}
+
+.messenger-discord-invite-modal__section-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.messenger-discord-invite-modal__section-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(17, 18, 20, 0.8);
+}
+
+.messenger-discord-invite-modal__section-body::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: transparent;
 }
 
 .messenger-discord-invite-modal__list::-webkit-scrollbar {
@@ -5050,9 +5709,9 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
   grid-template-columns: 40px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  min-height: 56px;
-  padding: 8px 10px;
-  border-radius: 10px;
+  min-height: 60px;
+  padding: 7px 10px;
+  border-radius: 8px;
   border: 1px solid transparent;
   transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
 }
@@ -5092,18 +5751,18 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 
 .messenger-discord-invite-modal__member-meta strong {
   color: #ffffff;
-  font-size: 1.02rem;
+  font-size: 1rem;
   font-weight: 700;
 }
 
 .messenger-discord-invite-modal__member-meta span {
   color: #b5bac1;
-  font-size: 0.9rem;
+  font-size: 0.92rem;
 }
 
 .messenger-discord-invite-modal__member-action {
-  min-width: 98px;
-  min-height: 38px;
+  min-width: 100px;
+  min-height: 40px;
   padding: 0 16px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -5138,7 +5797,7 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 }
 
 .messenger-discord-invite-modal__empty {
-  min-height: 220px;
+  min-height: var(--messenger-discord-invite-list-height);
   display: grid;
   place-items: center;
   gap: 8px;
@@ -5165,15 +5824,15 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 }
 
 .messenger-discord-invite-modal__empty--compact {
-  min-height: 112px;
-  padding: 18px;
+  min-height: var(--messenger-discord-invite-section-body-height);
+  padding: 24px;
 }
 
 .messenger-discord-invite-modal__footer {
   display: grid;
   gap: 12px;
-  margin-top: 8px;
-  padding: 18px 20px 0;
+  margin-top: 4px;
+  padding: 16px 24px 0;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -5186,7 +5845,7 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 .messenger-discord-invite-modal__copy-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
 }
 
@@ -5195,10 +5854,10 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 }
 
 .messenger-discord-invite-modal__copy-row button {
-  min-width: 92px;
-  min-height: 46px;
+  min-width: 96px;
+  min-height: 48px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #5865f2;
   color: #ffffff;
   padding: 11px 16px;
@@ -5213,7 +5872,7 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 
 .messenger-discord-invite-modal__footer-help {
   color: #949ba4;
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   line-height: 1.45;
 }
 
@@ -5223,10 +5882,10 @@ html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-call-card__pill.
 
 .messenger-discord-invite-modal__close {
   position: absolute;
-  top: 18px;
-  right: 18px;
-  width: 32px;
-  height: 32px;
+  top: 16px;
+  right: 16px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -5338,8 +5997,8 @@ html[data-bs-theme="light"] .messenger-discord-invite-modal__list-wrap {
 }
 
 html[data-bs-theme="light"] .messenger-discord-invite-modal__list {
-  min-height: 392px !important;
-  max-height: 392px !important;
+  min-height: var(--messenger-discord-invite-list-height) !important;
+  max-height: var(--messenger-discord-invite-list-height) !important;
   padding: 0 8px 0 0 !important;
   background: transparent !important;
   scrollbar-color: rgba(148, 155, 164, 0.8) transparent;
@@ -5347,6 +6006,17 @@ html[data-bs-theme="light"] .messenger-discord-invite-modal__list {
 
 html[data-bs-theme="light"] .messenger-discord-invite-modal__section-toggle {
   color: #4b5563 !important;
+}
+
+html[data-bs-theme="light"] .messenger-discord-invite-modal__section-body {
+  min-height: var(--messenger-discord-invite-section-body-height) !important;
+  max-height: var(--messenger-discord-invite-section-body-height) !important;
+  padding-right: 8px !important;
+  scrollbar-color: rgba(148, 155, 164, 0.8) transparent;
+}
+
+html[data-bs-theme="light"] .messenger-discord-invite-modal__section-body::-webkit-scrollbar-thumb {
+  background: rgba(148, 155, 164, 0.85) !important;
 }
 
 html[data-bs-theme="light"] .messenger-discord-invite-modal__list::-webkit-scrollbar-thumb {
@@ -5412,11 +6082,16 @@ html[data-bs-theme="light"] .messenger-discord-invite-modal__member-action.is-ex
 }
 
 html[data-bs-theme="light"] .messenger-discord-invite-modal__empty {
-  min-height: 392px !important;
+  min-height: var(--messenger-discord-invite-list-height) !important;
   border: 1px dashed #d9dde3 !important;
   border-radius: 12px !important;
   background: linear-gradient(180deg, #fbfcfd, #f4f6f8) !important;
   text-align: center !important;
+}
+
+html[data-bs-theme="light"] .messenger-discord-invite-modal__empty--compact {
+  min-height: var(--messenger-discord-invite-section-body-height) !important;
+  padding: 24px !important;
 }
 
 html[data-bs-theme="light"] .messenger-discord-invite-modal__empty i {
@@ -5517,6 +6192,9 @@ html[data-bs-theme="light"] .swal2-close.messenger-discord-invite-modal__close:h
 
 .messenger-share-picker__body {
   min-height: 280px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  align-items: start;
   border-radius: 18px;
   background: #2b2d31;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -5529,9 +6207,9 @@ html[data-bs-theme="light"] .swal2-close.messenger-discord-invite-modal__close:h
   gap: 8px;
   padding: 18px 20px;
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(17, 18, 20, 0.32);
-  color: #f2f3f5;
+  border: 1px solid var(--messenger-share-picker-card-border);
+  background: var(--messenger-share-picker-card-bg);
+  color: var(--messenger-share-picker-text);
 }
 
 .messenger-share-picker__hero strong {
@@ -5539,22 +6217,74 @@ html[data-bs-theme="light"] .swal2-close.messenger-discord-invite-modal__close:h
 }
 
 .messenger-share-picker__hero span {
-  color: #b5bac1;
+  color: var(--messenger-share-picker-text-soft);
   font-size: 0.9rem;
 }
 
 .messenger-share-picker__primary {
-  margin-top: 16px;
-  border: 0;
-  border-radius: 14px;
-  background: #5865f2;
-  color: #ffffff;
-  display: inline-flex;
+  width: min(100%, 420px);
+  grid-row: 3;
+  margin: 0 auto;
+  align-self: end;
+  justify-self: center;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  font-weight: 700;
-  box-shadow: 0 12px 24px rgba(88, 101, 242, 0.22);
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--messenger-share-picker-card-border);
+  border-radius: 16px;
+  background: var(--messenger-share-picker-card-bg);
+  color: var(--messenger-share-picker-text);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: none;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.messenger-share-picker__primary:hover {
+  transform: translateY(-1px);
+}
+
+.messenger-share-picker__primary-icon {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: rgba(88, 101, 242, 0.16);
+  color: #dce0ff;
+  font-size: 1.28rem;
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0.12);
+}
+
+.messenger-share-picker__primary-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.messenger-share-picker__primary-copy strong {
+  color: var(--messenger-share-picker-text);
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.messenger-share-picker__primary-copy span {
+  color: var(--messenger-share-picker-text-soft);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.messenger-modal--ascord {
+  --mw-ascord-border: rgba(0, 0, 0, 0.28);
+  --mw-ascord-text: #f2f3f5;
+  --mw-ascord-text-faint: #949ba4;
+  --mw-ascord-accent: #5865f2;
+  --mw-ascord-accent-soft: rgba(88, 101, 242, 0.18);
+  --mw-ascord-modal: #313338;
+  --mw-ascord-input: #1e1f22;
+  scrollbar-gutter: stable both-edges;
 }
 
 .messenger-modal--ascord .modal-content {
@@ -5562,6 +6292,7 @@ html[data-bs-theme="light"] .swal2-close.messenger-discord-invite-modal__close:h
   border-radius: 24px;
   background: #313338;
   color: #f2f3f5;
+  width: 100%;
 }
 
 .messenger-modal--ascord .modal-header,
@@ -5632,6 +6363,389 @@ html[data-bs-theme="light"] .swal2-close.messenger-discord-invite-modal__close:h
 .messenger-modal--ascord .btn-primary {
   border-color: #5865f2;
   background: #5865f2;
+}
+
+.messenger-modal--ascord .modal-dialog {
+  width: min(640px, calc(100vw - 2rem));
+  max-width: 640px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.messenger-ascord-create-layout {
+  display: grid;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.messenger-ascord-create-layout__subtitle {
+  margin: 0;
+  color: var(--mw-ascord-text-faint);
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.messenger-ascord-create-layout__section {
+  display: grid;
+  gap: 12px;
+}
+
+.messenger-ascord-create-layout__eyebrow {
+  color: var(--mw-ascord-text);
+  font-size: 0.98rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.messenger-ascord-create-layout__type-list {
+  display: grid;
+  gap: 8px;
+}
+
+.messenger-ascord-create-layout__type-item {
+  width: 100%;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--mw-ascord-text-soft);
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 6px 0;
+  text-align: left;
+  transition: color 160ms ease;
+}
+
+.messenger-ascord-create-layout__type-item:hover {
+  color: var(--mw-ascord-text);
+}
+
+.messenger-ascord-create-layout__type-radio {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.26);
+  display: grid;
+  place-items: center;
+  margin-top: 2px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.messenger-ascord-create-layout__type-radio span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  transition: background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.messenger-ascord-create-layout__type-item.is-active {
+  color: var(--mw-ascord-text);
+}
+
+.messenger-ascord-create-layout__type-item.is-active .messenger-ascord-create-layout__type-radio {
+  border-color: var(--mw-ascord-accent);
+  background: var(--mw-ascord-accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--mw-ascord-accent) 24%, transparent),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  transform: scale(1.04);
+}
+
+.messenger-ascord-create-layout__type-item.is-active .messenger-ascord-create-layout__type-radio span {
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18);
+  transform: scale(1.02);
+}
+
+.messenger-ascord-create-layout__type-icon {
+  width: 28px;
+  display: grid;
+  place-items: center;
+  color: inherit;
+  font-size: 1.35rem;
+  margin-top: 1px;
+}
+
+.messenger-ascord-create-layout__type-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.messenger-ascord-create-layout__type-copy strong {
+  color: inherit;
+  font-size: 0.98rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.messenger-ascord-create-layout__type-copy span {
+  color: var(--mw-ascord-text-faint);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.messenger-modal--ascord #messengerGroupNameWrap {
+  margin-bottom: 18px !important;
+}
+
+.messenger-modal--ascord #messengerGroupNameWrap .form-label,
+.messenger-modal--ascord #messengerContactSearchWrap .form-label {
+  margin-bottom: 10px;
+  color: var(--mw-ascord-text);
+  font-size: 0.98rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.messenger-ascord-create-layout__name-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.messenger-modal--ascord .messenger-ascord-create-layout__name-field .form-control {
+  min-height: 50px;
+  border-radius: 12px;
+  padding-left: 44px;
+  padding-right: 50px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.messenger-ascord-create-layout__name-prefix,
+.messenger-ascord-create-layout__name-emoji {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  color: var(--mw-ascord-text-faint);
+}
+
+.messenger-ascord-create-layout__name-prefix {
+  left: 14px;
+  width: 20px;
+  font-size: 1.05rem;
+}
+
+.messenger-ascord-create-layout__name-emoji {
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  pointer-events: none;
+}
+
+.messenger-ascord-create-layout__privacy {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin: 4px 0 20px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.messenger-ascord-create-layout__privacy.is-active {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.messenger-ascord-create-layout__privacy-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.messenger-ascord-create-layout__privacy-copy strong {
+  color: var(--mw-ascord-text);
+  font-size: 0.98rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.messenger-ascord-create-layout__privacy-copy span {
+  color: var(--mw-ascord-text-faint);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.messenger-ascord-create-layout__switch {
+  position: relative;
+  width: 48px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  transform: none;
+  transition: background 180ms ease, box-shadow 180ms ease;
+}
+
+.messenger-ascord-create-layout__switch span {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  transition: transform 180ms ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
+}
+
+.messenger-ascord-create-layout__switch.is-on {
+  background: var(--mw-ascord-accent);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 0 0 3px color-mix(in srgb, var(--mw-ascord-accent) 24%, transparent);
+  transform: none;
+}
+
+.messenger-ascord-create-layout__switch.is-on span {
+  transform: translateX(20px);
+  box-shadow:
+    0 6px 14px rgba(0, 0, 0, 0.28),
+    0 0 0 2px rgba(255, 255, 255, 0.18);
+}
+
+.messenger-modal--ascord #messengerContactSearchWrap,
+.messenger-modal--ascord #messengerContactPickerWrap {
+  margin-top: 0;
+}
+
+.messenger-modal--ascord .messenger-contact-picker {
+  border-radius: 12px;
+  border: 1px solid var(--mw-ascord-border);
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  gap: 8px;
+  max-height: 260px;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__item {
+  grid-template-columns: 40px minmax(0, 1fr) 24px;
+  gap: 12px;
+  min-height: 60px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--mw-ascord-border);
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__item.is-selected {
+  background: rgba(88, 101, 242, 0.14);
+  border-color: rgba(88, 101, 242, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0.18);
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 0.9rem;
+  color: #ffffff;
+  overflow: visible;
+  flex-shrink: 0;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-avatar__status {
+  right: -2px;
+  bottom: -2px;
+  width: 12px;
+  height: 12px;
+  border-color: #313338;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__meta {
+  width: 100%;
+  gap: 2px;
+  justify-items: start;
+  align-content: center;
+  justify-self: start;
+  text-align: left;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__meta strong {
+  color: var(--mw-ascord-text);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__meta span {
+  color: var(--mw-ascord-text-faint);
+  font-size: 0.92rem;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__checkbox {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--mw-ascord-accent);
+  opacity: 0;
+  transform: scale(0.72);
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0);
+  transition: opacity 160ms ease, transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__item.is-selected .messenger-contact-picker__checkbox {
+  opacity: 1;
+  transform: scale(1);
+  background: color-mix(in srgb, var(--mw-ascord-accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mw-ascord-accent) 32%, transparent);
+}
+
+.messenger-modal--ascord .modal-footer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.messenger-modal--ascord .modal-footer .btn {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 10px;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.messenger-modal--ascord .btn-primary:disabled {
+  border-color: transparent;
+  background: var(--mw-ascord-accent-soft);
+  color: rgba(255, 255, 255, 0.72);
 }
 
 html[data-bs-theme="dark"] .messenger-page.is-ascord {
@@ -5715,6 +6829,10 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
   background: transparent;
   border-radius: 0;
   padding: 10px 10px;
+  width: fit-content;
+  max-width: 100%;
+  grid-template-columns: minmax(0, max-content) auto;
+  gap: 8px;
 }
 
 .messenger-page.is-ascord .messenger-sidebar__workspace strong {
@@ -5784,6 +6902,10 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
   border-color: var(--mw-ascord-border);
   background: var(--mw-ascord-surface-strong);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.3);
+}
+
+.messenger-ascord-server-menu__section + .messenger-ascord-server-menu__section {
+  border-top-color: var(--mw-ascord-border);
 }
 
 .messenger-ascord-server-menu button {
@@ -5868,12 +6990,45 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
 .messenger-ascord-channel-section__head button {
   width: 20px;
   height: 20px;
+  padding: 0;
+  position: relative;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--mw-ascord-text-faint);
   display: grid;
   place-items: center;
+  line-height: 0;
+}
+
+.messenger-ascord-channel-section__head button .bi-plus-lg {
+  position: absolute;
+  inset: 0;
+  font-size: 0;
+}
+
+.messenger-ascord-channel-section__head button .bi-plus-lg::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 2px;
+  transform: translate(-50%, -50%);
+  background: currentColor;
+  border-radius: 999px;
+}
+
+.messenger-ascord-channel-section__head button .bi-plus-lg::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  background: currentColor;
+  border-radius: 999px;
 }
 
 .messenger-ascord-channel-section__head button:hover {
@@ -6024,6 +7179,10 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
   font-size: 0.96rem;
 }
 
+.messenger-ascord-channel-subaction-wrap {
+  position: relative;
+}
+
 .messenger-ascord-channel-row__status:hover,
 .messenger-ascord-channel-subaction:hover {
   background: var(--mw-ascord-hover);
@@ -6040,6 +7199,155 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.messenger-ascord-voice-invite-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  transform: translateY(6px);
+  width: min(320px, calc(100vw - 48px));
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--mw-ascord-border);
+  border-radius: 16px;
+  background: var(--mw-ascord-surface-strong);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 40;
+  transition: opacity 160ms ease, transform 160ms ease, visibility 160ms ease;
+}
+
+.messenger-ascord-channel-subaction-wrap.is-open .messenger-ascord-voice-invite-menu {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.messenger-ascord-voice-invite-menu__item,
+.messenger-ascord-voice-invite-menu__more {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--mw-ascord-text);
+}
+
+.messenger-ascord-voice-invite-menu__item {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+}
+
+.messenger-ascord-voice-invite-menu__avatar {
+  width: 36px;
+  height: 36px;
+  font-size: 0.82rem;
+  color: #ffffff;
+}
+
+.messenger-ascord-voice-invite-menu .messenger-contact-avatar__status {
+  border-color: var(--mw-ascord-surface-strong);
+}
+
+.messenger-ascord-voice-invite-menu__meta {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.messenger-ascord-voice-invite-menu__meta strong,
+.messenger-ascord-voice-invite-menu__meta span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.messenger-ascord-voice-invite-menu__meta strong {
+  color: var(--mw-ascord-text);
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.messenger-ascord-voice-invite-menu__meta span {
+  color: var(--mw-ascord-text-faint);
+  font-size: 0.84rem;
+}
+
+.messenger-ascord-voice-invite-menu__action {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--mw-ascord-text-faint);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.messenger-ascord-voice-invite-menu__item:hover,
+.messenger-ascord-voice-invite-menu__more:hover {
+  background: var(--mw-ascord-hover);
+}
+
+.messenger-ascord-voice-invite-menu__item:hover .messenger-ascord-voice-invite-menu__action:not(:disabled) {
+  background: var(--mw-ascord-accent-soft);
+  color: var(--mw-ascord-accent);
+}
+
+.messenger-ascord-voice-invite-menu__action:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.messenger-ascord-voice-invite-menu__action.is-sent {
+  color: var(--mw-ascord-good);
+}
+
+.messenger-ascord-voice-invite-menu__state {
+  min-height: 72px;
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  padding: 12px 10px;
+  border-radius: 12px;
+  color: var(--mw-ascord-text-faint);
+  text-align: center;
+}
+
+.messenger-ascord-voice-invite-menu__state i {
+  font-size: 1rem;
+}
+
+.messenger-ascord-voice-invite-menu__state span {
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+.messenger-ascord-voice-invite-menu__state.is-error {
+  color: var(--mw-ascord-danger);
+}
+
+.messenger-ascord-voice-invite-menu__more {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-top: 2px;
+  color: var(--mw-ascord-text);
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-align: left;
 }
 
 .messenger-ascord-channel-members {
@@ -6182,6 +7490,7 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
 }
 
 .messenger-page.is-ascord .messenger-call-stage {
+  position: relative;
   flex: 1;
   padding: 0 0 90px;
   max-height: none;
@@ -6189,11 +7498,55 @@ html[data-bs-theme="light"] .messenger-page.is-ascord {
   background: var(--mw-ascord-stage-bg);
 }
 
+.messenger-page.is-ascord .messenger-call-stage__header-slot {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+}
+
+.messenger-page.is-ascord .messenger-call-stage__header-slot .messenger-chat-header {
+  width: 100%;
+  margin: 0;
+}
+
+.messenger-page.is-ascord.is-ascord-call-joined .messenger-call-stage__header-slot {
+  height: 0;
+  overflow: visible;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-14px);
+  transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
+}
+
+.messenger-page.is-ascord.is-ascord-call-joined #messengerCallStage:hover .messenger-call-stage__header-slot,
+.messenger-page.is-ascord.is-ascord-call-joined .messenger-call-stage__header-slot:hover,
+.messenger-page.is-ascord.is-ascord-call-joined .messenger-call-stage__header-slot:focus-within {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
 .messenger-page.is-ascord .messenger-call-stage.is-empty-ascord {
   display: flex;
   flex-direction: column;
   padding: 0;
   overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 88%, rgba(88, 101, 242, 0.72), transparent 24%),
+    linear-gradient(180deg, rgba(20, 23, 61, 0.98), rgba(21, 22, 57, 0.98));
+}
+
+.messenger-page.is-ascord .messenger-call-stage.is-empty-ascord .messenger-chat-header,
+.messenger-page.is-ascord .messenger-call-stage.is-empty-ascord .messenger-call-stage__header-slot,
+.messenger-page.is-ascord .messenger-call-stage.is-empty-ascord .messenger-call-stage__grid.is-empty-ascord > .messenger-call-empty--ascord {
+  background: transparent;
+}
+
+.messenger-page.is-ascord .messenger-call-stage.is-empty-ascord .messenger-chat-header {
+  box-shadow: none;
+  border-bottom: 0;
 }
 
 .messenger-page.is-ascord .messenger-call-stage__grid {
@@ -6330,6 +7683,16 @@ html[data-bs-theme="light"] .messenger-call-empty--ascord {
   color: #2e3338;
 }
 
+html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-stage.is-empty-ascord {
+  background:
+    radial-gradient(circle at 50% 88%, rgba(71, 82, 196, 0.3), transparent 24%),
+    linear-gradient(180deg, #eef2ff, #dde3ff);
+}
+
+html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-call-stage.is-empty-ascord .messenger-chat-header {
+  border-bottom: 0;
+}
+
 .messenger-call-empty__stage {
   gap: 12px;
 }
@@ -6381,6 +7744,50 @@ html[data-bs-theme="light"] .messenger-call-empty__copy {
   background: var(--mw-ascord-hover);
 }
 
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-voice-dock__action-row button {
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  background: #3a3c43;
+  color: #f2f3f5;
+  font-size: 1.1rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  width: 100%;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-voice-dock__action-row button:hover:not(:disabled) {
+  background: #44474f;
+  color: #ffffff;
+}
+
+html[data-bs-theme="dark"] .messenger-page.is-ascord .messenger-ascord-voice-dock__action-row button:disabled {
+  background: #32343a;
+  color: rgba(242, 243, 245, 0.42);
+  border-color: rgba(255, 255, 255, 0.03);
+}
+
+html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-ascord-voice-dock__action-row button {
+  width: 100%;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  background: #f3f4f7;
+  color: #4f5660;
+  font-size: 1.1rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-ascord-voice-dock__action-row button:hover:not(:disabled) {
+  background: #e8ebf0;
+  color: #2e3338;
+}
+
+html[data-bs-theme="light"] .messenger-page.is-ascord .messenger-ascord-voice-dock__action-row button:disabled {
+  background: #f6f7f9;
+  color: rgba(79, 86, 96, 0.42);
+  border-color: rgba(17, 24, 39, 0.06);
+}
+
 .messenger-ascord-voice-dock__copy strong,
 .messenger-ascord-voice-dock__identity strong {
   color: var(--mw-ascord-text);
@@ -6389,6 +7796,51 @@ html[data-bs-theme="light"] .messenger-call-empty__copy {
 .messenger-ascord-voice-dock__copy span,
 .messenger-ascord-voice-dock__identity span {
   color: var(--mw-ascord-text-faint);
+}
+
+html[data-bs-theme="dark"] .messenger-ascord-voice-dock__profile-main {
+  background: transparent;
+}
+
+html[data-bs-theme="dark"] .messenger-ascord-voice-dock__identity-face {
+  color: #b5bac1;
+}
+
+html[data-bs-theme="dark"] .messenger-ascord-voice-dock__profile-main:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-main {
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__identity-face {
+  color: #6a7480;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-main:hover {
+  background: rgba(17, 24, 39, 0.04);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-actions button {
+  color: #4f5660;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-actions button:hover:not(:disabled) {
+  background: rgba(17, 24, 39, 0.06);
+  color: #2e3338;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-actions button.is-muted,
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-actions button.is-deafened {
+  background: rgba(218, 55, 60, 0.12);
+  color: #9c1f2a;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-actions button.is-muted:hover:not(:disabled),
+html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-actions button.is-deafened:hover:not(:disabled) {
+  background: rgba(218, 55, 60, 0.16);
 }
 
 .messenger-ascord-call-dock {
@@ -6565,6 +8017,16 @@ html[data-bs-theme="light"] .messenger-modal--ascord .modal-content {
   color: #2e3338;
 }
 
+html[data-bs-theme="light"] .messenger-modal--ascord {
+  --mw-ascord-border: rgba(17, 24, 39, 0.1);
+  --mw-ascord-text: #2e3338;
+  --mw-ascord-text-faint: #6a7480;
+  --mw-ascord-accent: #4752c4;
+  --mw-ascord-accent-soft: rgba(71, 82, 196, 0.12);
+  --mw-ascord-modal: #f2f3f5;
+  --mw-ascord-input: #ffffff;
+}
+
 html[data-bs-theme="light"] .messenger-ascord-voice-dock__connection {
   background: #ffffff;
 }
@@ -6591,6 +8053,19 @@ html[data-bs-theme="light"] .messenger-modal--ascord .btn-link {
 
 html[data-bs-theme="light"] .messenger-ascord-server-menu button:hover {
   color: #2e3338;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-server-menu__section + .messenger-ascord-server-menu__section {
+  border-top-color: rgba(17, 24, 39, 0.08);
+}
+
+html[data-bs-theme="light"] .messenger-ascord-server-menu button.is-danger {
+  color: #d83c40 !important;
+}
+
+html[data-bs-theme="light"] .messenger-ascord-server-menu button.is-danger:hover {
+  background: rgba(237, 66, 69, 0.12) !important;
+  color: #b3262f !important;
 }
 
 html[data-bs-theme="light"] .messenger-ascord-voice-dock__copy span,
@@ -6632,6 +8107,19 @@ html[data-bs-theme="light"] .messenger-share-picker__hero {
   background: linear-gradient(180deg, rgba(88, 101, 242, 0.08), rgba(255, 255, 255, 0.92));
 }
 
+html[data-bs-theme="light"] .messenger-share-picker {
+  --messenger-share-picker-text: #2e3338;
+  --messenger-share-picker-text-soft: #6a7480;
+  --messenger-share-picker-card-bg: linear-gradient(180deg, rgba(88, 101, 242, 0.08), rgba(255, 255, 255, 0.92));
+  --messenger-share-picker-card-border: rgba(88, 101, 242, 0.14);
+}
+
+html[data-bs-theme="light"] .messenger-share-picker__primary-icon {
+  background: rgba(88, 101, 242, 0.12);
+  color: #4752c4;
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0.14);
+}
+
 .messenger-call-fullscreen__panel,
 .messenger-share-picker__body,
 .messenger-modal--ascord .modal-content {
@@ -6664,8 +8152,7 @@ html[data-bs-theme="light"] .messenger-share-picker__hero {
 }
 
 .messenger-share-picker__tabs button.is-active,
-.messenger-modal--ascord .btn-primary,
-.messenger-share-picker__primary {
+.messenger-modal--ascord .btn-primary {
   background: var(--mw-ascord-accent);
   border-color: var(--mw-ascord-accent);
   color: #ffffff;
@@ -6678,6 +8165,93 @@ html[data-bs-theme="light"] .messenger-share-picker__hero {
 
 html[data-bs-theme="light"] .messenger-modal--ascord .btn-close {
   filter: none;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-ascord-create-layout__type-radio {
+  border-color: rgba(17, 24, 39, 0.2);
+  background: rgba(17, 24, 39, 0.02);
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.04);
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-ascord-create-layout__type-item.is-active {
+  color: #2e3338 !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-ascord-create-layout__type-item.is-active .messenger-ascord-create-layout__type-radio {
+  border-color: #5865f2 !important;
+  background: #5865f2 !important;
+  box-shadow:
+    0 0 0 3px rgba(88, 101, 242, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2) !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-ascord-create-layout__type-item.is-active .messenger-ascord-create-layout__type-radio span {
+  background: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.14) !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-ascord-create-layout__switch {
+  background: rgba(17, 24, 39, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.06);
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-ascord-create-layout__switch.is-on {
+  background: #5865f2 !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 0 0 3px rgba(88, 101, 242, 0.18) !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-ascord-create-layout__privacy.is-active {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__item:hover {
+  background: #f2f3f5 !important;
+  border-color: rgba(17, 24, 39, 0.08) !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__item.is-selected {
+  background: rgba(88, 101, 242, 0.08) !important;
+  border-color: rgba(88, 101, 242, 0.34) !important;
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0.08) !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__item {
+  border-color: rgba(17, 24, 39, 0.08) !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__avatar {
+  color: #ffffff !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-avatar__status {
+  border-color: #ffffff !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__meta strong {
+  color: #1f2328 !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__meta span {
+  color: #747f8d !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__checkbox {
+  color: #5865f2 !important;
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0) !important;
+}
+
+html[data-bs-theme="light"] .messenger-modal--ascord .messenger-contact-picker.is-ascord-private .messenger-contact-picker__item.is-selected .messenger-contact-picker__checkbox {
+  background: rgba(88, 101, 242, 0.12) !important;
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0.24) !important;
 }
 
 .messenger-page.is-ascord .messenger-call-card__utility-hero {

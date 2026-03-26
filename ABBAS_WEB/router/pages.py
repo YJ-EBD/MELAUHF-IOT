@@ -566,6 +566,7 @@ def _build_profile_form(user_id: str, row: dict[str, Any] | None = None) -> dict
         "department": str(row.get("DEPARTMENT") or "").strip(),
         "location": str(row.get("LOCATION") or "").strip(),
         "bio": str(row.get("BIO") or "").strip(),
+        "presence_override": str(row.get("PRESENCE_OVERRIDE") or "").strip().lower(),
         "join_date": str(row.get("JOIN_DATE") or "").strip(),
         "profile_image_url": _profile_image_url_from_value(row.get("PROFILE_IMAGE_PATH") or ""),
         "display_name": display_name,

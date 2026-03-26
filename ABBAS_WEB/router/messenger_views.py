@@ -12,6 +12,26 @@ def _pages():
 
 
 def _messenger_presence_badge_label(state: str) -> str:
+    return _messenger_presence_badge_label_with_override(state, "")
+
+
+def _messenger_presence_override_value(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"online", "away", "dnd", "invisible"}:
+        return normalized
+    return ""
+
+
+def _messenger_presence_badge_label_with_override(state: str, override: Any = "") -> str:
+    normalized_override = _messenger_presence_override_value(override)
+    if normalized_override == "online":
+        return "온라인"
+    if normalized_override == "away":
+        return "자리비움"
+    if normalized_override == "dnd":
+        return "방해 금지"
+    if normalized_override == "invisible":
+        return "오프라인 표시"
     pages_module = _pages()
     normalized = pages_module._normalize_presence_state(state)
     if normalized == "live":
@@ -22,6 +42,19 @@ def _messenger_presence_badge_label(state: str) -> str:
 
 
 def _messenger_presence_tone(state: str) -> str:
+    return _messenger_presence_tone_with_override(state, "")
+
+
+def _messenger_presence_tone_with_override(state: str, override: Any = "") -> str:
+    normalized_override = _messenger_presence_override_value(override)
+    if normalized_override == "online":
+        return "online"
+    if normalized_override == "away":
+        return "away"
+    if normalized_override == "dnd":
+        return "dnd"
+    if normalized_override == "invisible":
+        return "offline"
     pages_module = _pages()
     normalized = pages_module._normalize_presence_state(state)
     if normalized == "live":
@@ -29,6 +62,17 @@ def _messenger_presence_tone(state: str) -> str:
     if normalized == "background":
         return "away"
     return "offline"
+
+
+def _messenger_presence_is_online(state: str, override: Any = "") -> bool:
+    normalized_override = _messenger_presence_override_value(override)
+    if normalized_override == "invisible":
+        return False
+    if normalized_override in {"online", "away", "dnd"}:
+        return True
+    pages_module = _pages()
+    normalized = pages_module._normalize_presence_state(state)
+    return normalized in {"live", "background"}
 
 
 def _messenger_time_text(value: Any) -> str:
@@ -220,6 +264,7 @@ def _messenger_user_view_from_row(
     profile_image_url = pages_module._profile_image_url_from_value(row.get("PROFILE_IMAGE_PATH") or row.get("profile_image_path") or "")
     presence = presence_map.get(user_id) or {}
     presence_state = pages_module._normalize_presence_state(presence.get("state") or "")
+    presence_override = _messenger_presence_override_value(row.get("PRESENCE_OVERRIDE") or row.get("presence_override") or "")
     return {
         "user_id": user_id,
         "display_name": display_name,
@@ -232,10 +277,11 @@ def _messenger_user_view_from_row(
         "profile_image_url": profile_image_url,
         "avatar_initial": pages_module._profile_avatar_initial(display_name, user_id),
         "presence_state": presence_state,
-        "presence_label": _messenger_presence_badge_label(presence_state),
-        "presence_tone": _messenger_presence_tone(presence_state),
+        "presence_override": presence_override,
+        "presence_label": _messenger_presence_badge_label_with_override(presence_state, presence_override),
+        "presence_tone": _messenger_presence_tone_with_override(presence_state, presence_override),
         "presence_page_text": str(presence.get("page_label") or "").strip(),
-        "is_online": presence_state in {"live", "background"},
+        "is_online": _messenger_presence_is_online(presence_state, presence_override),
         "is_self": user_id == (current_user_id or ""),
     }
 
@@ -837,6 +883,7 @@ def _messenger_room_view(
         avatar_url = str((other_member or {}).get("profile_image_url") or "")
         presence_state = str((other_member or {}).get("presence_state") or "inactive")
         presence_label = str((other_member or {}).get("presence_label") or "오프라인")
+        presence_tone = str((other_member or {}).get("presence_tone") or _messenger_presence_tone(presence_state))
         section = "direct"
     else:
         title = str(room.get("name") or "").strip() or "그룹 대화"
@@ -845,6 +892,7 @@ def _messenger_room_view(
         avatar_url = pages_module._messenger_room_avatar_url_from_value(room.get("avatar_path"))
         presence_state = "inactive"
         presence_label = "채널" if room_type == "channel" else "그룹"
+        presence_tone = _messenger_presence_tone(presence_state)
         section = "channel" if room_type == "channel" else "group"
 
     if bool(room.get("is_starred")):
@@ -872,7 +920,7 @@ def _messenger_room_view(
         "avatar_path": str(room.get("avatar_path") or "").strip(),
         "presence_state": presence_state,
         "presence_label": presence_label,
-        "presence_tone": _messenger_presence_tone(presence_state),
+        "presence_tone": presence_tone,
         "is_starred": bool(room.get("is_starred")),
         "is_muted": bool(room.get("is_muted")),
         "member_role": str(room.get("member_role") or "member").strip().lower() or "member",

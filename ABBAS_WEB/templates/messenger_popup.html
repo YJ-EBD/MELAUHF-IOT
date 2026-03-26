@@ -103,23 +103,28 @@
                 <i class="bi bi-chevron-down"></i>
               </button>
               <div class="messenger-ascord-server-menu" id="messengerAscordServerMenu" aria-hidden="true">
-                <button type="button" data-ascord-server-action="invite"><i class="bi bi-person-plus"></i><span>서버에 초대하기</span></button>
-                <button type="button" data-ascord-server-action="server-settings"><i class="bi bi-gear"></i><span>서버 설정</span></button>
-                <button type="button" data-ascord-server-action="create-channel"><i class="bi bi-plus-circle"></i><span>채널 만들기</span></button>
-                <button type="button" data-ascord-server-action="create-category"><i class="bi bi-folder-plus"></i><span>카테고리 만들기</span></button>
-                <button type="button" data-ascord-server-action="create-event"><i class="bi bi-calendar-event"></i><span>이벤트 만들기</span></button>
-                <button type="button" data-ascord-server-action="notification-settings"><i class="bi bi-bell"></i><span>알림 설정</span></button>
-                <button type="button" data-ascord-server-action="edit-profile"><i class="bi bi-pencil-square"></i><span>서버별 프로필 수정하기</span></button>
-                <button type="button" data-ascord-server-action="toggle-hide-muted"><i class="bi bi-eye-slash"></i><span>알림 끈 채널 숨기기</span></button>
-                <button type="button" class="is-danger" data-ascord-server-action="leave-server"><i class="bi bi-box-arrow-left"></i><span>서버 나가기</span></button>
+                <div class="messenger-ascord-server-menu__section">
+                  <button type="button" data-ascord-server-action="invite"><i class="bi bi-person-plus"></i><span>서버에 초대하기</span></button>
+                </div>
+                <div class="messenger-ascord-server-menu__section">
+                  <button type="button" data-ascord-server-action="create-channel"><i class="bi bi-plus-circle"></i><span>채널 만들기</span></button>
+                  <button type="button" data-ascord-server-action="create-category"><i class="bi bi-folder-plus"></i><span>카테고리 만들기</span></button>
+                  <button type="button" data-ascord-server-action="create-event"><i class="bi bi-calendar-event"></i><span>이벤트 만들기</span></button>
+                </div>
+                <div class="messenger-ascord-server-menu__section">
+                  <button type="button" data-ascord-server-action="server-settings"><i class="bi bi-gear"></i><span>서버 설정</span></button>
+                  <button type="button" data-ascord-server-action="notification-settings"><i class="bi bi-bell"></i><span>알림 설정</span></button>
+                  <button type="button" data-ascord-server-action="edit-profile"><i class="bi bi-pencil-square"></i><span>서버별 프로필 수정하기</span></button>
+                  <button type="button" data-ascord-server-action="toggle-hide-muted"><i class="bi bi-eye-slash"></i><span>알림 끈 채널 숨기기</span></button>
+                </div>
+                <div class="messenger-ascord-server-menu__section messenger-ascord-server-menu__section--danger">
+                  <button type="button" class="is-danger" data-ascord-server-action="leave-server"><i class="bi bi-box-arrow-left"></i><span>서버 나가기</span></button>
+                </div>
               </div>
             </div>
             <div class="messenger-sidebar__chrome-actions">
               <button class="messenger-sidebar__icon" id="messengerAscordInviteBtn" type="button" aria-label="초대하기">
                 <i class="bi bi-person-plus-fill"></i>
-              </button>
-              <button class="messenger-sidebar__icon" id="messengerSidebarSearchBtn" type="button" aria-label="검색">
-                <i class="bi bi-search"></i>
               </button>
             </div>
           </div>
@@ -183,6 +188,7 @@
         </aside>
 
         <section class="messenger-conversation" id="messengerConversationSection">
+          <div class="messenger-chat-header-anchor" id="messengerChatHeaderAnchor" aria-hidden="true"></div>
           <header class="messenger-chat-header" id="messengerChatHeader">
             <div class="messenger-chat-header__main">
               <span class="messenger-chat-header__avatar" id="messengerActiveRoomAvatar">A</span>
@@ -279,6 +285,7 @@
           </section>
 
           <section class="messenger-call-stage d-none" id="messengerCallStage">
+            <div class="messenger-call-stage__header-slot" id="messengerCallStageHeaderSlot"></div>
             <div class="messenger-call-stage__grid" id="messengerCallGrid">
               <div class="messenger-call-empty">
                 <i class="bi bi-camera-video-off"></i>
@@ -380,14 +387,66 @@
       </div>
       <div class="modal-body">
         <form id="messengerNewRoomForm" class="messenger-modal-form">
-          <div class="messenger-modal-mode" id="messengerNewRoomMode">
-            <button type="button" class="messenger-modal-mode__item is-active" data-mode="dm">1:1 대화</button>
-            <button type="button" class="messenger-modal-mode__item" data-mode="group">그룹방</button>
+          <div class="messenger-talk-create-layout" id="messengerTalkCreateLayout">
+            <div class="messenger-modal-mode" id="messengerNewRoomMode">
+              <button type="button" class="messenger-modal-mode__item is-active" data-mode="dm">1:1 대화</button>
+              <button type="button" class="messenger-modal-mode__item" data-mode="group">그룹방</button>
+            </div>
+          </div>
+
+          <div class="messenger-ascord-create-layout d-none" id="messengerAscordCreateLayout">
+            <p class="messenger-ascord-create-layout__subtitle" id="messengerAscordCreateSubtitle">.음성 채널에 속해 있음</p>
+
+            <section class="messenger-ascord-create-layout__section">
+              <span class="messenger-ascord-create-layout__eyebrow">채널 유형</span>
+              <div class="messenger-ascord-create-layout__type-list" id="messengerAscordChannelTypeList">
+                <button type="button" class="messenger-ascord-create-layout__type-item" data-ascord-channel-kind="text">
+                  <span class="messenger-ascord-create-layout__type-radio"><span></span></span>
+                  <span class="messenger-ascord-create-layout__type-icon"><i class="bi bi-hash"></i></span>
+                  <span class="messenger-ascord-create-layout__type-copy">
+                    <strong>텍스트</strong>
+                    <span>메시지, 이미지, GIF, 이모지, 의견, 농담을 전송하세요</span>
+                  </span>
+                </button>
+                <button type="button" class="messenger-ascord-create-layout__type-item is-active" data-ascord-channel-kind="voice">
+                  <span class="messenger-ascord-create-layout__type-radio"><span></span></span>
+                  <span class="messenger-ascord-create-layout__type-icon"><i class="bi bi-volume-up-fill"></i></span>
+                  <span class="messenger-ascord-create-layout__type-copy">
+                    <strong>음성</strong>
+                    <span>음성, 영상, 화면 공유로 함께 어울리세요</span>
+                  </span>
+                </button>
+                <button type="button" class="messenger-ascord-create-layout__type-item" data-ascord-channel-kind="forum">
+                  <span class="messenger-ascord-create-layout__type-radio"><span></span></span>
+                  <span class="messenger-ascord-create-layout__type-icon"><i class="bi bi-chat-square-text-fill"></i></span>
+                  <span class="messenger-ascord-create-layout__type-copy">
+                    <strong>포럼</strong>
+                    <span>체계적인 토론을 위한 공간을 만드세요</span>
+                  </span>
+                </button>
+              </div>
+            </section>
           </div>
 
           <div class="mb-3 d-none" id="messengerGroupNameWrap">
             <label class="form-label" for="messengerGroupNameInput">그룹방 이름</label>
-            <input class="form-control" id="messengerGroupNameInput" type="text" maxlength="80" placeholder="예: 서비스기획 TF">
+            <div class="messenger-ascord-create-layout__name-field">
+              <span class="messenger-ascord-create-layout__name-prefix d-none" id="messengerAscordCreateNamePrefix"><i class="bi bi-volume-up-fill"></i></span>
+              <input class="form-control" id="messengerGroupNameInput" type="text" maxlength="80" placeholder="예: 서비스기획 TF">
+              <button class="messenger-ascord-create-layout__name-emoji d-none" id="messengerAscordCreateEmojiBtn" type="button" aria-label="이모지 선택" tabindex="-1">
+                <i class="bi bi-emoji-smile"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="messenger-ascord-create-layout__privacy d-none" id="messengerAscordPrivateWrap">
+            <div class="messenger-ascord-create-layout__privacy-copy">
+              <strong>비공개 채널</strong>
+              <span>선택한 멤버들과 역할만 이 채널을 볼 수 있어요.</span>
+            </div>
+            <button class="messenger-ascord-create-layout__switch" id="messengerAscordPrivateToggle" type="button" aria-pressed="false">
+              <span></span>
+            </button>
           </div>
 
           <div class="mb-3 d-none" id="messengerGroupTopicWrap">
@@ -408,13 +467,15 @@
             </select>
           </div>
 
-          <div class="mb-3">
+          <div class="mb-3" id="messengerContactSearchWrap">
             <label class="form-label" for="messengerContactSearch">대화 상대 선택</label>
             <input class="form-control" id="messengerContactSearch" type="search" placeholder="이름, 닉네임, 부서로 찾기">
           </div>
 
-          <div class="messenger-contact-picker" id="messengerContactPicker">
-            <div class="messenger-empty-inline">구성원을 불러오는 중입니다.</div>
+          <div id="messengerContactPickerWrap">
+            <div class="messenger-contact-picker" id="messengerContactPicker">
+              <div class="messenger-empty-inline">구성원을 불러오는 중입니다.</div>
+            </div>
           </div>
         </form>
       </div>

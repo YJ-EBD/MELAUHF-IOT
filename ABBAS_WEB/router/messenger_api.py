@@ -16,6 +16,7 @@ def register_messenger_api_routes(router: APIRouter) -> None:
     re = pages_module.re
     secrets = pages_module.secrets
     time = pages_module.time
+    user_repo = pages_module.user_repo
     livekit_api = pages_module.livekit_api
     LIVEKIT_API_KEY = pages_module.LIVEKIT_API_KEY
     LIVEKIT_API_SECRET = pages_module.LIVEKIT_API_SECRET
@@ -24,6 +25,7 @@ def register_messenger_api_routes(router: APIRouter) -> None:
     MESSENGER_UPLOAD_MAX_BYTES = pages_module.MESSENGER_UPLOAD_MAX_BYTES
     MESSENGER_UPLOAD_PUBLIC_PREFIX = pages_module.MESSENGER_UPLOAD_PUBLIC_PREFIX
     MESSENGER_UPLOAD_STORAGE_DIR = pages_module.MESSENGER_UPLOAD_STORAGE_DIR
+    _MESSENGER_HUB = pages_module._MESSENGER_HUB
     _MESSENGER_CALL_HUB = pages_module._MESSENGER_CALL_HUB
     _approved_user_rows = pages_module._approved_user_rows
     _build_messenger_bootstrap_payload = pages_module._build_messenger_bootstrap_payload
@@ -177,7 +179,7 @@ def register_messenger_api_routes(router: APIRouter) -> None:
         preferred_mode = "video" if requested_mode == "video" and can_use_video else "audio"
 
         current_user = _request_user_row(request)
-        display_name = _display_user_name(current_user) or current_user_id
+        display_name = str(current_user.get("NAME") or "").strip() or _display_user_name(current_user) or current_user_id
         room_name = _livekit_room_name(room_id)
         participant_identity = "__".join(
             [
@@ -709,10 +711,8 @@ def register_messenger_api_routes(router: APIRouter) -> None:
             for item in membership_payload.get("active_members") or []
             if str(item.get("user_id") or "").strip()
         }
-        if target_user_id in active_member_ids:
-            return _messenger_json_error("이미 ASCORD 서버 멤버입니다.", 400)
-
-        await asyncio.to_thread(chat_repo.invite_workspace_members, "ascord", [target_user_id], current_user_id)
+        if target_user_id not in active_member_ids:
+            await asyncio.to_thread(chat_repo.invite_workspace_members, "ascord", [target_user_id], current_user_id)
 
         dm_room_id = await asyncio.to_thread(chat_repo.get_or_create_direct_room, current_user_id, target_user_id)
         base_url = str(request.base_url).rstrip("/")
@@ -1325,6 +1325,43 @@ def register_messenger_api_routes(router: APIRouter) -> None:
         if not profile_payload:
             return JSONResponse({"ok": False, "detail": "사용자 정보를 찾을 수 없습니다."}, status_code=404)
         return JSONResponse({"ok": True, "profile": profile_payload})
+
+    @router.post("/api/messenger/presence-status")
+    async def api_messenger_presence_status(
+        request: Request,
+        payload: dict[str, Any] = Body(default={}),
+    ):
+        current_user_id, error_response = _messenger_require_user_id(request)
+        if error_response is not None:
+            return error_response
+
+        next_status = str((payload or {}).get("status") or "").strip().lower()
+        if next_status not in {"online", "away", "dnd", "invisible"}:
+            return JSONResponse({"ok": False, "detail": "지원하지 않는 상태입니다."}, status_code=400)
+
+        try:
+            await asyncio.to_thread(
+                user_repo.update_user_presence_override,
+                user_id=current_user_id,
+                presence_override=next_status,
+            )
+            refreshed_row = await asyncio.to_thread(pages_module.read_user, current_user_id)
+            try:
+                request.state.user_row = refreshed_row or {}
+            except Exception:
+                pass
+            profile_payload = await asyncio.to_thread(_build_messenger_user_profile_payload, current_user_id, current_user_id)
+            active_sessions = await asyncio.to_thread(pages_module.list_active_sessions)
+            target_user_ids = pages_module._messenger_unique_user_ids(
+                [item.get("user_id") for item in list(active_sessions or [])] + [current_user_id]
+            )
+            for target_user_id in target_user_ids:
+                bootstrap_payload = await asyncio.to_thread(_build_messenger_bootstrap_payload, target_user_id, requested_room_id=0)
+                await _MESSENGER_HUB.send_to_user(target_user_id, {"type": "bootstrap", "payload": bootstrap_payload})
+        except Exception:
+            return JSONResponse({"ok": False, "detail": "상태를 저장하지 못했습니다."}, status_code=500)
+
+        return JSONResponse({"ok": True, "profile": profile_payload or {}})
 
 
 __all__ = ["register_messenger_api_routes"]

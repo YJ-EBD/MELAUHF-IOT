@@ -29,6 +29,13 @@ def _normalize_approval_status(status: str) -> str:
     return "approved"
 
 
+def _normalize_presence_override(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"online", "away", "dnd", "invisible"}:
+        return normalized
+    return ""
+
+
 def _bootstrap_admin_user_ids() -> list[str]:
     raw = (os.getenv("ABBAS_ADMIN_USER_IDS") or "").strip()
     if not raw:
@@ -68,6 +75,8 @@ def _ensure_schema_with_cur(cur) -> None:
         cur.execute("ALTER TABLE users ADD COLUMN bio VARCHAR(500) NOT NULL DEFAULT '' AFTER location")
     if "profile_image_path" not in cols:
         cur.execute("ALTER TABLE users ADD COLUMN profile_image_path VARCHAR(255) NOT NULL DEFAULT '' AFTER bio")
+    if "presence_override" not in cols:
+        cur.execute("ALTER TABLE users ADD COLUMN presence_override VARCHAR(16) NOT NULL DEFAULT '' AFTER profile_image_path")
     if "approval_status" not in cols:
         cur.execute("ALTER TABLE users ADD COLUMN approval_status VARCHAR(16) NOT NULL DEFAULT 'approved' AFTER role")
     if "approved_at" not in cols:
@@ -96,6 +105,18 @@ def _ensure_schema_with_cur(cur) -> None:
             WHERE approval_status IS NULL
                OR TRIM(approval_status)=''
                OR LOWER(TRIM(approval_status)) NOT IN ('pending', 'approved')
+            """
+        )
+    except Exception:
+        pass
+
+    try:
+        cur.execute(
+            """
+            UPDATE users
+            SET presence_override=''
+            WHERE presence_override IS NULL
+               OR LOWER(TRIM(COALESCE(presence_override, ''))) NOT IN ('', 'online', 'away', 'dnd', 'invisible')
             """
         )
     except Exception:
@@ -157,6 +178,7 @@ def _map_user_row(r: dict[str, Any]) -> Dict[str, str]:
         "LOCATION": str(r.get("location") or "").strip(),
         "BIO": str(r.get("bio") or "").strip(),
         "PROFILE_IMAGE_PATH": str(r.get("profile_image_path") or "").strip(),
+        "PRESENCE_OVERRIDE": _normalize_presence_override(r.get("presence_override")),
         "ROLE": _normalize_role(str(r.get("role") or "").strip()),
         "APPROVAL_STATUS": _normalize_approval_status(str(r.get("approval_status") or "").strip()),
         "APPROVED_AT": str(r.get("approved_at") or "").strip(),
@@ -188,6 +210,7 @@ def get_user_row(user_id: str) -> Optional[Dict[str, str]]:
                     COALESCE(NULLIF(TRIM(location), ''), '') AS location,
                     COALESCE(NULLIF(TRIM(bio), ''), '') AS bio,
                     COALESCE(NULLIF(TRIM(profile_image_path), ''), '') AS profile_image_path,
+                    COALESCE(NULLIF(TRIM(presence_override), ''), '') AS presence_override,
                     COALESCE(NULLIF(TRIM(role), ''), 'user') AS role,
                     COALESCE(NULLIF(TRIM(approval_status), ''), 'approved') AS approval_status,
                     COALESCE(DATE_FORMAT(approved_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS approved_at,
@@ -280,6 +303,7 @@ def list_user_rows() -> list[Dict[str, str]]:
                     COALESCE(NULLIF(TRIM(location), ''), '') AS location,
                     COALESCE(NULLIF(TRIM(bio), ''), '') AS bio,
                     COALESCE(NULLIF(TRIM(profile_image_path), ''), '') AS profile_image_path,
+                    COALESCE(NULLIF(TRIM(presence_override), ''), '') AS presence_override,
                     COALESCE(NULLIF(TRIM(role), ''), 'user') AS role,
                     COALESCE(NULLIF(TRIM(approval_status), ''), 'approved') AS approval_status,
                     COALESCE(DATE_FORMAT(approved_at, '%%Y-%%m-%%d %%H:%%i:%%s'), '') AS approved_at,
@@ -367,6 +391,27 @@ def update_user_password_hash(*, user_id: str, pw_hash: str) -> None:
                 """,
                 (
                     (pw_hash or "").strip(),
+                    uid,
+                ),
+            )
+
+
+def update_user_presence_override(*, user_id: str, presence_override: str) -> None:
+    uid = (user_id or "").strip()
+    presence_value = _normalize_presence_override(presence_override)
+    db = get_mysql()
+    with db.conn() as conn:
+        with conn.cursor() as cur:
+            _ensure_schema_with_cur(cur)
+            cur.execute(
+                """
+                UPDATE users
+                SET presence_override=%s,
+                    updated_at=NOW()
+                WHERE user_id=%s
+                """,
+                (
+                    presence_value,
                     uid,
                 ),
             )

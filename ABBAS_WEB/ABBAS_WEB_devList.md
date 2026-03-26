@@ -684,3 +684,19 @@
   - ASCORD 전용 초대 모달을 디스코드형 구조로 다시 정리하면서 라이트 모드 기준으로 색감과 섹션 배치를 다듬었고, 기존 `LIVE 채널`/`새 채널` 진입 요소를 정리한 뒤 `서버 멤버`와 `서버에 초대하기`를 분리해 볼 수 있는 아코디언형 초대 모달로 확장했다.
   - 백엔드에는 `chat_workspace_members` 테이블을 추가해 ASCORD 서버 초대 상태를 `active`/`invited`로 따로 관리하도록 했고, 서버 초대 모달 조회 API·ASCORD 초대 DM 전송 API·개인톡 초대 메시지 수락 API를 함께 연결했다.
   - 초대 버튼을 누르면 해당 사용자와의 ABBAS Talk 개인톡에 `ascord_invite` 카드 메시지가 전송되고, 받은 사용자는 메시지 카드의 `음성 채널 참가하기` 버튼으로 초대를 수락해 ASCORD 멤버 상태를 활성화하고 대상 음성채널 입장 흐름으로 이어지도록 구성했다. 이번 채팅 기준 검증은 `python3 -m py_compile`, `git diff --check`까지 완료했다.
+
+## 67. ASCORD 프로필·채널 생성·통화 스테이지 UX 후속 보정
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `DB/user_repo.py`
+  - `router/messenger_api.py`
+  - `router/messenger_payloads.py`
+  - `router/messenger_views.py`
+  - `router/pages.py`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+  - `templates/messenger_popup.html`
+- 간단한 설명
+  - ASCORD 하단 프로필 카드를 디스코드형 구조로 다시 정리하고, 프로필 메뉴·상태 서브메뉴·상태 override 저장을 연결해 `온라인/자리 비움/방해 금지/오프라인 표시`를 실제로 바꾸고 부트스트랩 응답과 하단 상태 표시에도 반영되게 보강했다.
+  - 채널 생성 모달은 디스코드형 레이아웃으로 재구성한 뒤 공개/비공개 채널 토글, 채널 타입 라디오, 비공개 멤버 선택 리스트, 선택 체크/테두리/상태점, 라이트·다크 테마별 강조색까지 후속 보정했다. 화면공유는 웹 제약에 맞춰 별도 ASCORD 선택 모달 없이 브라우저 공유 선택기로 바로 이어지게 정리했다.
+  - ASCORD 통화 스테이지는 빈 화면 헤더를 stage 내부로 재배치해 배경이 자연스럽게 이어지도록 정리했고, 실제 음성채널 입장 후에는 상단 헤더 슬롯이 hover 시 위에서 아래로 내려오는 애니메이션으로 보이게 맞췄다. 함께 워크스페이스 서버 메뉴를 카테고리 단위 구분선으로 정리하고 `서버 나가기`는 라이트·다크 모두 빨간 강조가 유지되게 다듬었다. 이번 채팅 기준 검증은 `python3 -m py_compile`, `git diff --check`까지 완료했다.
