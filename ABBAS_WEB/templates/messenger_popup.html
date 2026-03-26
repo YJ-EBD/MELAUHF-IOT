@@ -208,8 +208,8 @@
               <button class="messenger-header-action" type="button" id="messengerRoomRefreshBtn" disabled aria-label="대화 새로고침">
                 <i class="bi bi-arrow-repeat"></i>
               </button>
-              <button class="messenger-header-action" type="button" id="messengerRoomLinkBtn" aria-label="링크 복사" disabled>
-                <i class="bi bi-link-45deg"></i>
+              <button class="messenger-header-action" type="button" id="messengerRoomLinkBtn" aria-label="Notiba AI" aria-expanded="false" disabled>
+                <img src="/logo/Notiba_ai.png" alt="" class="messenger-notiba-ai-icon messenger-notiba-ai-icon--button">
               </button>
               <button class="messenger-header-action" type="button" id="messengerRoomMuteBtn" aria-label="알림" disabled>
                 <i class="bi bi-bell"></i>
@@ -333,6 +333,21 @@
               </button>
             </div>
           </footer>
+
+          <div class="messenger-room-drawer" id="messengerRoomDrawer" aria-hidden="true">
+            <aside class="messenger-room-drawer__panel" role="dialog" aria-modal="false" aria-labelledby="messengerRoomDrawerTitle">
+              <div class="messenger-room-drawer__head">
+                <div class="messenger-room-drawer__title-wrap">
+                  <span class="messenger-room-drawer__icon" id="messengerRoomDrawerIcon"><img src="/logo/Notiba_ai.png" alt="" class="messenger-notiba-ai-icon messenger-notiba-ai-icon--drawer"></span>
+                  <strong id="messengerRoomDrawerTitle">Notiba AI</strong>
+                </div>
+                <button class="messenger-room-drawer__close" id="messengerRoomDrawerCloseBtn" type="button" aria-label="패널 닫기">
+                  <i class="bi bi-x-lg"></i>
+                </button>
+              </div>
+              <div class="messenger-room-drawer__body"></div>
+            </aside>
+          </div>
         </section>
 
         <aside class="messenger-inspector" id="messengerInspector">

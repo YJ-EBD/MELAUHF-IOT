@@ -36,6 +36,7 @@
     sidebarMode: "rooms",
     roomMoreMenuOpen: false,
     contextMenuOpen: false,
+    roomDrawerOpen: false,
     ascordServerMenuOpen: false,
     composerPopover: "",
     messagesByRoom: {},
@@ -132,6 +133,7 @@
       url: "/static/img/messenger-room-presets/preset-" + String(itemNo).padStart(2, "0") + ".svg",
     };
   });
+  const NOTIBA_AI_ICON_SRC = "/logo/Notiba_ai.png";
   const CALL_PERMISSION_OPTIONS = [
     { value: "member", label: "모든 멤버" },
     { value: "admin", label: "ADMIN 이상" },
@@ -5940,6 +5942,9 @@
     }
 
     const enabled = !!room;
+    if (!enabled && state.roomDrawerOpen) {
+      setRoomDrawerOpen(false);
+    }
     if (dom.starToggleBtn) {
       dom.starToggleBtn.disabled = !enabled;
       dom.starToggleBtn.innerHTML = room && room.is_starred
@@ -5951,15 +5956,10 @@
     if (dom.roomRefreshBtn) dom.roomRefreshBtn.disabled = !enabled;
     if (dom.roomLinkBtn) {
       dom.roomLinkBtn.disabled = !enabled;
-      if (isAscord) {
-        dom.roomLinkBtn.innerHTML = '<i class="bi bi-chat-fill"></i>';
-        dom.roomLinkBtn.setAttribute("title", "채널 채팅");
-        dom.roomLinkBtn.setAttribute("aria-label", "채널 채팅");
-      } else {
-        dom.roomLinkBtn.innerHTML = '<i class="bi bi-link-45deg"></i>';
-        dom.roomLinkBtn.setAttribute("title", "링크 복사");
-        dom.roomLinkBtn.setAttribute("aria-label", "링크 복사");
-      }
+      dom.roomLinkBtn.innerHTML = notibaAiIconMarkup("messenger-notiba-ai-icon--button");
+      dom.roomLinkBtn.setAttribute("title", "Notiba AI");
+      dom.roomLinkBtn.setAttribute("aria-label", "Notiba AI");
+      dom.roomLinkBtn.setAttribute("aria-expanded", state.roomDrawerOpen ? "true" : "false");
     }
     if (dom.roomMuteBtn) {
       dom.roomMuteBtn.disabled = !enabled;
@@ -5978,7 +5978,48 @@
     if (dom.linkInsertBtn) dom.linkInsertBtn.disabled = !enabled || isAscord;
     if (dom.formatBtn) dom.formatBtn.disabled = !enabled || isAscord;
     renderRoomMoreMenu();
+    renderRoomDrawer();
     renderCallUi();
+  }
+
+  function notibaAiIconMarkup(extraClass) {
+    const className = ["messenger-notiba-ai-icon"];
+    if (extraClass) className.push(extraClass);
+    return '<img src="' + escapeAttribute(NOTIBA_AI_ICON_SRC) + '" alt="" class="' + escapeAttribute(className.join(" ")) + '" draggable="false">';
+  }
+
+  function roomDrawerIconMarkup(room) {
+    return notibaAiIconMarkup("messenger-notiba-ai-icon--drawer");
+  }
+
+  function renderRoomDrawer() {
+    if (!dom.roomDrawer || !dom.roomDrawerTitle || !dom.roomDrawerIcon) return;
+    const room = state.activeRoom;
+    if (!room) {
+      dom.roomDrawer.classList.remove("is-open");
+      dom.roomDrawer.setAttribute("aria-hidden", "true");
+      if (dom.roomLinkBtn) {
+        dom.roomLinkBtn.setAttribute("aria-expanded", "false");
+      }
+      return;
+    }
+    dom.roomDrawerIcon.innerHTML = roomDrawerIconMarkup(room);
+    dom.roomDrawerTitle.textContent = "Notiba AI";
+    dom.roomDrawer.classList.toggle("is-open", !!state.roomDrawerOpen);
+    dom.roomDrawer.setAttribute("aria-hidden", state.roomDrawerOpen ? "false" : "true");
+    if (dom.roomLinkBtn) {
+      dom.roomLinkBtn.setAttribute("aria-expanded", state.roomDrawerOpen ? "true" : "false");
+    }
+  }
+
+  function setRoomDrawerOpen(open) {
+    state.roomDrawerOpen = !!open && !!state.activeRoom;
+    renderRoomDrawer();
+  }
+
+  function toggleRoomDrawer() {
+    if (!state.activeRoom) return;
+    setRoomDrawerOpen(!state.roomDrawerOpen);
   }
 
   function resizeComposer() {
@@ -6045,6 +6086,7 @@
     setRoomMoreMenuOpen(false);
     setContextMenuOpen(false);
     setComposerPopover("");
+    setRoomDrawerOpen(false);
 
     if (!state.isOpen) {
       endPopupDrag();
@@ -10636,7 +10678,18 @@
 
     if (dom.sendBtn) dom.sendBtn.addEventListener("click", sendMessage);
     if (dom.starToggleBtn) dom.starToggleBtn.addEventListener("click", toggleStar);
-    if (dom.roomLinkBtn) dom.roomLinkBtn.addEventListener("click", copyRoomLink);
+    if (dom.roomLinkBtn) {
+      dom.roomLinkBtn.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleRoomDrawer();
+      });
+    }
+    if (dom.roomDrawerCloseBtn) {
+      dom.roomDrawerCloseBtn.addEventListener("click", function () {
+        setRoomDrawerOpen(false);
+      });
+    }
     if (dom.roomMuteBtn) dom.roomMuteBtn.addEventListener("click", toggleMuteRoom);
     if (dom.roomMoreBtn) {
       dom.roomMoreBtn.addEventListener("click", function (event) {
@@ -11109,6 +11162,10 @@
         closeCallFullscreen();
         return;
       }
+      if (event.key === "Escape" && state.roomDrawerOpen) {
+        setRoomDrawerOpen(false);
+        return;
+      }
       if (event.key === "Escape" && state.ascordServerMenuOpen) {
         setAscordServerMenuOpen(false);
         return;
@@ -11267,6 +11324,10 @@
     dom.roomMuteBtn = $("messengerRoomMuteBtn");
     dom.roomMoreBtn = $("messengerRoomMoreBtn");
     dom.roomMoreMenu = $("messengerRoomMoreMenu");
+    dom.roomDrawer = $("messengerRoomDrawer");
+    dom.roomDrawerIcon = $("messengerRoomDrawerIcon");
+    dom.roomDrawerTitle = $("messengerRoomDrawerTitle");
+    dom.roomDrawerCloseBtn = $("messengerRoomDrawerCloseBtn");
     dom.roomInfo = $("messengerRoomInfo");
     dom.participantPanelLabel = $("messengerParticipantPanelLabel");
     dom.participantList = $("messengerParticipantList");
