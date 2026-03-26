@@ -639,6 +639,21 @@
     }) || null;
   }
 
+  function preferredAscordRoom(rooms) {
+    const items = Array.isArray(rooms) ? rooms : currentViewRooms("ascord");
+    const normalizedRooms = items.filter(function (room) {
+      return !!room && isAscordRoom(room);
+    });
+    if (!normalizedRooms.length) return null;
+    return normalizedRooms.find(function (room) {
+      return normalizeText(room.room_key).toLowerCase() === "ascord:global";
+    }) || normalizedRooms.find(function (room) {
+      return normalizeText(room.title) === "전체 채널";
+    }) || stableAscordVoiceRooms(normalizedRooms.filter(function (room) {
+      return roomSupportsCalls(room);
+    }))[0] || normalizedRooms[0] || null;
+  }
+
   function roomMatchesView(room, mode) {
     const normalizedMode = sanitizeViewMode(mode || state.viewMode);
     return normalizedMode === "ascord" ? isAscordRoom(room) : isTalkRoom(room);
@@ -684,6 +699,12 @@
       return Number(joinedRoom.id || 0);
     }
     const rooms = currentViewRooms(normalizedMode);
+    if (normalizedMode === "ascord") {
+      const preferredAscord = preferredAscordRoom(rooms);
+      if (preferredAscord) {
+        return Number(preferredAscord.id || 0);
+      }
+    }
     return rooms.length ? Number((rooms[0] && rooms[0].id) || 0) : 0;
   }
 
@@ -2805,6 +2826,28 @@
         showRoomContextMenu(event, findRoomById(Number(button.getAttribute("data-room-id") || 0)));
       });
     });
+    Array.prototype.forEach.call(dom.roomList.querySelectorAll("[data-ascord-voice-room-id], .messenger-voice-room-card"), function (card) {
+      card.addEventListener("dblclick", function (event) {
+        if (state.viewMode !== "ascord") return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target) return;
+        if (!target.closest(".messenger-ascord-channel-row, .messenger-voice-room-card")) return;
+        if (target.closest("[data-ascord-join-room-id], [data-ascord-sidebar-action], [data-room-participant-user-id]")) return;
+        const roomId = Number(
+          card.getAttribute("data-ascord-voice-room-id")
+          || (target.closest("[data-room-id]") && target.closest("[data-room-id]").getAttribute("data-room-id"))
+          || 0
+        );
+        if (roomId <= 0) return;
+        const targetRoom = findRoomById(roomId);
+        if (!targetRoom || !roomSupportsCalls(targetRoom)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        joinAscordVoiceChannel(roomId).catch(function (error) {
+          showError((error && error.message) || "ASCORD 음성채널에 입장하지 못했습니다.");
+        });
+      });
+    });
     Array.prototype.forEach.call(dom.roomList.querySelectorAll("[data-room-create]"), function (button) {
       button.addEventListener("click", function (event) {
         event.stopPropagation();
@@ -4091,6 +4134,157 @@
       '<select data-call-device-kind="' + escapeAttribute(kind) + '"' + (disabled ? " disabled" : "") + ">" + options + "</select>",
       "</label>",
     ].join("");
+  }
+
+  function callJoinDeviceSelectId(kind) {
+    return "swalMessengerJoinDevice_" + normalizeText(kind);
+  }
+
+  function renderCallJoinDeviceControl(kind, label, icon, options) {
+    const settings = options || {};
+    const devices = Array.isArray(settings.devices) ? settings.devices : [];
+    const selectedValue = normalizeText(settings.selectedValue);
+    const disabled = !!settings.disabled;
+    const fieldId = callJoinDeviceSelectId(kind);
+    const optionsMarkup = devices.length
+      ? devices.map(function (device, index) {
+        const deviceId = normalizeText((device || {}).deviceId);
+        const isSelected = selectedValue && selectedValue === deviceId;
+        return '<option value="' + escapeAttribute(deviceId) + '"' + (isSelected ? " selected" : "") + '>' + escapeHtml(callDeviceLabel(kind, device, index)) + "</option>";
+      }).join("")
+      : '<option value="">' + escapeHtml(settings.emptyLabel || "장치를 찾지 못했습니다.") + "</option>";
+    return [
+      '<label class="messenger-device-control" for="' + escapeAttribute(fieldId) + '">',
+      '<span class="messenger-device-control__label"><i class="bi ' + escapeAttribute(icon) + '"></i><span>' + escapeHtml(label) + "</span></span>",
+      '<select id="' + escapeAttribute(fieldId) + '"' + (disabled ? " disabled" : "") + ">" + optionsMarkup + "</select>",
+      "</label>",
+    ].join("");
+  }
+
+  function callJoinDeviceStatus(room, mode) {
+    const targetRoom = room || state.activeRoom;
+    const requestedMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    const devices = state.call.devices || {};
+    const audioInputs = Array.isArray(devices.audioinput) ? devices.audioinput.slice() : [];
+    const audioOutputs = Array.isArray(devices.audiooutput) ? devices.audiooutput.slice() : [];
+    const wantsMic = !!targetRoom && canSpeakInCall(targetRoom);
+    return {
+      requestedMode: requestedMode,
+      wantsMic: wantsMic,
+      audioInputMissing: wantsMic && !audioInputs.length,
+      audioOutputMissing: !!state.call.audioOutputSupported && !audioOutputs.length,
+      audioInputs: audioInputs,
+      audioOutputs: audioOutputs,
+      audioOutputSupported: !!state.call.audioOutputSupported,
+    };
+  }
+
+  function renderCallJoinDeviceModalBody(status) {
+    const targetStatus = status || {};
+    const introParts = [];
+    if (targetStatus.audioInputMissing) {
+      introParts.push("마이크를 찾지 못했습니다. 그래도 참가를 누르면 듣기 전용으로 연결할 수 있습니다.");
+    }
+    if (targetStatus.audioOutputMissing) {
+      introParts.push("스피커 또는 헤드셋을 찾지 못했습니다. 장치를 연결한 뒤 새로고침으로 다시 확인할 수 있습니다.");
+    }
+    if (!introParts.length) {
+      introParts.push("현재 감지된 오디오 장치를 확인한 뒤 참가할 수 있습니다.");
+    }
+    const outputHelp = targetStatus.audioOutputSupported
+      ? "출력 장치를 선택하면 연결 후 바로 해당 장치로 재생을 시도합니다."
+      : "이 브라우저는 출력 장치 직접 전환을 제한해 시스템 기본 출력이 사용될 수 있습니다.";
+    return [
+      '<div class="messenger-device-stack">',
+      '<div class="messenger-device-hint">',
+      "<strong>장치 확인</strong>",
+      '<span>' + escapeHtml(introParts.join(" ")) + "</span>",
+      "</div>",
+      renderCallJoinDeviceControl("audioinput", "마이크", "bi-mic", {
+        devices: targetStatus.audioInputs,
+        selectedValue: normalizeText((state.call.selectedDevices || {}).audioinput),
+        emptyLabel: targetStatus.wantsMic
+          ? "입력 장치를 찾지 못했습니다. 듣기 전용으로 참가할 수 있습니다."
+          : "이 채널에서는 마이크 송출이 필요하지 않습니다.",
+      }),
+      renderCallJoinDeviceControl("audiooutput", "스피커 / 헤드셋", "bi-volume-up", {
+        devices: targetStatus.audioOutputs,
+        selectedValue: normalizeText((state.call.selectedDevices || {}).audiooutput),
+        disabled: !targetStatus.audioOutputSupported,
+        emptyLabel: targetStatus.audioOutputSupported
+          ? "출력 장치를 찾지 못했습니다."
+          : "브라우저 기본 출력이 사용됩니다.",
+      }),
+      '<div class="messenger-device-actions">',
+      '<button type="button" class="btn btn-outline-secondary" data-call-join-device-refresh><i class="bi bi-arrow-repeat"></i><span>장치 새로고침</span></button>',
+      "</div>",
+      '<div class="messenger-device-hint">',
+      "<strong>참가 안내</strong>",
+      '<span>' + escapeHtml(outputHelp) + "</span>",
+      "</div>",
+      "</div>",
+    ].join("");
+  }
+
+  async function ensureCallJoinDeviceSelection(room, mode) {
+    const targetRoom = room || state.activeRoom;
+    const requestedMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    await refreshCallDevices().catch(function () {});
+    let status = callJoinDeviceStatus(targetRoom, requestedMode);
+    if (!status.audioInputMissing && !status.audioOutputMissing) {
+      return {
+        enableMicrophone: !!status.wantsMic,
+        warning: "",
+      };
+    }
+    if (!hasSwal()) {
+      return {
+        enableMicrophone: !!status.wantsMic && !status.audioInputMissing,
+        warning: status.audioInputMissing ? "마이크가 없어 듣기 전용으로 참가합니다." : "",
+      };
+    }
+
+    const bodyId = "swalMessengerJoinDeviceBody";
+    const result = await fireDialog({
+      title: "오디오 장치 확인",
+      width: "38rem",
+      html: '<div class="app-swal-form"><div id="' + bodyId + '">' + renderCallJoinDeviceModalBody(status) + "</div></div>",
+      showCancelButton: true,
+      confirmButtonText: "참가",
+      cancelButtonText: "취소",
+      focusConfirm: false,
+      didOpen: function () {
+        const root = document.getElementById(bodyId);
+        if (!root) return;
+        root.addEventListener("click", function (event) {
+          const button = event.target instanceof Element ? event.target.closest("[data-call-join-device-refresh]") : null;
+          if (!button) return;
+          event.preventDefault();
+          button.setAttribute("disabled", "disabled");
+          refreshCallDevices().then(function () {
+            status = callJoinDeviceStatus(targetRoom, requestedMode);
+            root.innerHTML = renderCallJoinDeviceModalBody(status);
+          }).catch(function () {
+            showWarning("장치 목록을 새로 가져오지 못했습니다.");
+          }).finally(function () {
+            button.removeAttribute("disabled");
+          });
+        });
+      },
+      preConfirm: function () {
+        const audioInputSelect = document.getElementById(callJoinDeviceSelectId("audioinput"));
+        const audioOutputSelect = document.getElementById(callJoinDeviceSelectId("audiooutput"));
+        state.call.selectedDevices.audioinput = normalizeText(audioInputSelect && !audioInputSelect.disabled ? audioInputSelect.value : "");
+        state.call.selectedDevices.audiooutput = normalizeText(audioOutputSelect && !audioOutputSelect.disabled ? audioOutputSelect.value : "");
+        persistCallPreferences();
+        status = callJoinDeviceStatus(targetRoom, requestedMode);
+        return {
+          enableMicrophone: !!status.wantsMic && !status.audioInputMissing,
+          warning: status.audioInputMissing ? "마이크가 없어 듣기 전용으로 참가합니다." : "",
+        };
+      },
+    });
+    return result && result.isConfirmed ? (result.value || null) : null;
   }
 
   function renderAscordParticipantCard(summary) {
@@ -5971,8 +6165,10 @@
     return normalizeText((error && error.message) || error) || "통화에 필요한 장치를 준비하지 못했습니다.";
   }
 
-  async function warmupCallCapturePermissions(mode) {
+  async function warmupCallCapturePermissions(mode, options) {
+    const settings = options || {};
     const requestedMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
+    const audioRequired = settings.audioRequired !== false;
     if (!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function")) {
       return { effectiveMode: requestedMode, warning: "" };
     }
@@ -5984,6 +6180,24 @@
     };
 
     if (requestedMode === "video") {
+      if (!audioRequired) {
+        try {
+          await requestDevices({ audio: false, video: true });
+          await refreshCallDevices().catch(function () {});
+          return { effectiveMode: "video", warning: "" };
+        } catch (error) {
+          await refreshCallDevices().catch(function () {});
+          if (livekitPermissionDenied(error) || livekitDeviceMissing(error)) {
+            return {
+              effectiveMode: "audio",
+              warning: livekitPermissionDenied(error)
+                ? "카메라 권한이 없어 듣기 전용으로 입장합니다."
+                : "카메라 장치를 준비하지 못해 듣기 전용으로 입장합니다.",
+            };
+          }
+          throw error;
+        }
+      }
       try {
         await requestDevices({ audio: true, video: true });
         await refreshCallDevices().catch(function () {});
@@ -6004,6 +6218,10 @@
       }
     }
 
+    if (!audioRequired) {
+      await refreshCallDevices().catch(function () {});
+      return { effectiveMode: "audio", warning: "" };
+    }
     await requestDevices({ audio: true, video: false });
     await refreshCallDevices().catch(function () {});
     return { effectiveMode: "audio", warning: "" };
@@ -6159,7 +6377,8 @@
     });
   }
 
-  async function connectLiveKitRoom(roomId, mode) {
+  async function connectLiveKitRoom(roomId, mode, mediaOptions) {
+    const options = mediaOptions || {};
     const targetRoomId = Number(roomId || 0);
     const requestedMode = normalizeText(mode).toLowerCase() === "video" ? "video" : "audio";
     if (targetRoomId <= 0) return null;
@@ -6185,6 +6404,8 @@
         throw new Error("통화 세션 정보를 불러오지 못했습니다.");
       }
       const effectiveMode = normalizeText(session.preferred_mode).toLowerCase() === "video" ? "video" : "audio";
+      const shouldEnableMicrophone = options.enableMicrophone !== false;
+      const shouldEnableCamera = effectiveMode === "video" && !!options.enableCamera;
 
       const sdk = livekitSdk();
       const videoCaptureDefaults = sdk.VideoPresets && sdk.VideoPresets.h720
@@ -6211,14 +6432,11 @@
         } catch (_) {}
         let mediaEnableError = null;
         try {
-          if (effectiveMode === "video" && room.localParticipant.enableCameraAndMicrophone) {
+          if (shouldEnableCamera && shouldEnableMicrophone && room.localParticipant.enableCameraAndMicrophone) {
             await room.localParticipant.enableCameraAndMicrophone();
-          } else if (effectiveMode === "video") {
-            await room.localParticipant.setMicrophoneEnabled(true);
-            await room.localParticipant.setCameraEnabled(true);
           } else {
-            await room.localParticipant.setMicrophoneEnabled(true);
-            await room.localParticipant.setCameraEnabled(false);
+            await room.localParticipant.setMicrophoneEnabled(shouldEnableMicrophone);
+            await room.localParticipant.setCameraEnabled(shouldEnableCamera);
           }
         } catch (mediaError) {
           mediaEnableError = mediaError || null;
@@ -7075,7 +7293,11 @@
       nextMode = "audio";
       await showToast("warning", "이 채널에서는 카메라 권한이 제한되어 음성으로만 입장합니다.");
     }
-    state.call.requestedAudioEnabled = canSpeakInCall(room);
+    const joinDeviceResult = await ensureCallJoinDeviceSelection(room, nextMode);
+    if (!joinDeviceResult) {
+      return;
+    }
+    state.call.requestedAudioEnabled = canSpeakInCall(room) && !!joinDeviceResult.enableMicrophone;
     state.call.micBeforeDeafen = state.call.requestedAudioEnabled;
     state.call.deafened = false;
     state.call.pushToTalkPressed = false;
@@ -7084,16 +7306,22 @@
     renderCallUi();
     try {
       try {
-        const warmupResult = await warmupCallCapturePermissions(nextMode);
+        const warmupResult = await warmupCallCapturePermissions(nextMode, {
+          audioRequired: !!state.call.requestedAudioEnabled,
+        });
         nextMode = normalizeText((warmupResult && warmupResult.effectiveMode) || nextMode).toLowerCase() === "video" ? "video" : "audio";
-        if (warmupResult && warmupResult.warning) {
-          await showToast("warning", warmupResult.warning);
+        const joinWarning = normalizeText((joinDeviceResult && joinDeviceResult.warning) || (warmupResult && warmupResult.warning));
+        if (joinWarning) {
+          await showToast("warning", joinWarning);
         }
       } catch (error) {
         await showError(formatCallCaptureWarmupError(error, nextMode), "장치 권한 확인");
         return;
       }
-      await connectLiveKitRoom(targetRoomId, nextMode);
+      await connectLiveKitRoom(targetRoomId, nextMode, {
+        enableMicrophone: !!state.call.requestedAudioEnabled,
+        enableCamera: nextMode === "video",
+      });
       if (state.call.pushToTalk || state.call.deafened || !state.call.requestedAudioEnabled) {
         await syncCallTransmitState();
       } else {

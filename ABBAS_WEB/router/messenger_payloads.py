@@ -17,6 +17,25 @@ def _build_messenger_room_views(current_user_id: str, user_directory: dict[str, 
     return [room for room in room_views if room]
 
 
+def _preferred_bootstrap_room_id(room_views: list[dict[str, Any]]) -> int:
+    rooms = [room for room in (room_views or []) if isinstance(room, dict)]
+    if not rooms:
+        return 0
+
+    for room in rooms:
+        if str(room.get("room_key") or "").strip().lower() == "ascord:global":
+            return int(room.get("id") or 0)
+
+    for room in rooms:
+        if (
+            str(room.get("app_domain") or "").strip().lower() == "ascord"
+            and str(room.get("title") or "").strip() == "전체 채널"
+        ):
+            return int(room.get("id") or 0)
+
+    return int(rooms[0].get("id") or 0)
+
+
 def _messenger_notification_aliases(current_user_id: str, current_user: dict[str, Any] | None) -> list[str]:
     current_user = current_user or {}
     candidates = [
@@ -128,7 +147,7 @@ def _build_messenger_bootstrap_payload(current_user_id: str, *, requested_room_i
     if requested_room_id > 0 and any(int(room.get("id") or 0) == int(requested_room_id) for room in room_views):
         selected_room_id = int(requested_room_id)
     elif room_views:
-        selected_room_id = int(room_views[0].get("id") or 0)
+        selected_room_id = _preferred_bootstrap_room_id(room_views)
     if selected_room_id > 0:
         selected_recent_calls = pages_module.chat_repo.list_call_logs_for_room(selected_room_id, limit=6)
         room_views = [
