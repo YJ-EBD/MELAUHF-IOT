@@ -1332,6 +1332,10 @@ body.messenger-popup-open {
   gap: 8px;
 }
 
+.messenger-page:not(.is-ascord) #messengerRoomLinkBtn {
+  display: none;
+}
+
 .messenger-chat-header-anchor {
   display: none;
 }
@@ -8005,8 +8009,7 @@ html[data-bs-theme="light"] .messenger-ascord-voice-dock__profile-actions button
   transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
 }
 
-#messengerCallStage:hover + #messengerAscordCallDock,
-#messengerAscordCallDock:hover {
+.messenger-page.is-ascord.is-ascord-call-dock-visible .messenger-ascord-call-dock {
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0);

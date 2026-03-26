@@ -37,6 +37,7 @@
     roomMoreMenuOpen: false,
     contextMenuOpen: false,
     roomDrawerOpen: false,
+    ascordCallDockVisibilityTimer: 0,
     ascordServerMenuOpen: false,
     composerPopover: "",
     messagesByRoom: {},
@@ -5547,6 +5548,7 @@
     dom.ascordCallDock.classList.toggle("d-none", !(isAscord && joinedHere));
     if (!(isAscord && joinedHere)) {
       dom.ascordCallDock.innerHTML = "";
+      syncAscordCallDockVisibility();
       return;
     }
     dom.ascordCallDock.innerHTML = [
@@ -5562,6 +5564,31 @@
       '<button type="button" class="' + (state.call.deafened ? "is-deafened" : "") + '" data-ascord-call-dock-action="toggle-deafen"><i class="bi bi-headset"></i></button>',
       '</div>',
     ].join("");
+    syncAscordCallDockVisibility();
+  }
+
+  function shouldShowAscordCallDock() {
+    if (!dom.root || !dom.callStage || !dom.ascordCallDock) return false;
+    if (state.viewMode !== "ascord") return false;
+    if (dom.ascordCallDock.classList.contains("d-none")) return false;
+    if (!dom.root.classList.contains("is-ascord-call-joined")) return false;
+    return dom.callStage.matches(":hover") || dom.ascordCallDock.matches(":hover");
+  }
+
+  function syncAscordCallDockVisibility() {
+    if (!dom.root) return;
+    dom.root.classList.toggle("is-ascord-call-dock-visible", shouldShowAscordCallDock());
+  }
+
+  function scheduleAscordCallDockVisibilitySync(delay) {
+    if (state.ascordCallDockVisibilityTimer) {
+      window.clearTimeout(state.ascordCallDockVisibilityTimer);
+      state.ascordCallDockVisibilityTimer = 0;
+    }
+    state.ascordCallDockVisibilityTimer = window.setTimeout(function () {
+      state.ascordCallDockVisibilityTimer = 0;
+      syncAscordCallDockVisibility();
+    }, Math.max(0, Number(delay) || 0));
   }
 
   function callRenderItemById(itemId) {
@@ -6015,6 +6042,19 @@
   function setRoomDrawerOpen(open) {
     state.roomDrawerOpen = !!open && !!state.activeRoom;
     renderRoomDrawer();
+    if (state.roomDrawerOpen) {
+      if (dom.roomLinkBtn && typeof dom.roomLinkBtn.blur === "function") {
+        dom.roomLinkBtn.blur();
+      }
+      window.setTimeout(function () {
+        if (!state.roomDrawerOpen || !dom.roomDrawerCloseBtn || typeof dom.roomDrawerCloseBtn.focus !== "function") return;
+        try {
+          dom.roomDrawerCloseBtn.focus({ preventScroll: true });
+        } catch (_) {
+          dom.roomDrawerCloseBtn.focus();
+        }
+      }, 0);
+    }
   }
 
   function toggleRoomDrawer() {
@@ -10851,8 +10891,20 @@
           showError((error && error.message) || "통화 도크 작업을 처리하지 못했습니다.");
         });
       });
+      dom.ascordCallDock.addEventListener("pointerenter", function () {
+        syncAscordCallDockVisibility();
+      });
+      dom.ascordCallDock.addEventListener("pointerleave", function () {
+        scheduleAscordCallDockVisibilitySync(24);
+      });
     }
     if (dom.callStage) {
+      dom.callStage.addEventListener("pointerenter", function () {
+        syncAscordCallDockVisibility();
+      });
+      dom.callStage.addEventListener("pointerleave", function () {
+        scheduleAscordCallDockVisibilitySync(24);
+      });
       dom.callStage.addEventListener("click", function (event) {
         const target = event.target instanceof Element ? event.target.closest("[data-call-prompt-action]") : null;
         if (target && !target.hasAttribute("disabled")) {

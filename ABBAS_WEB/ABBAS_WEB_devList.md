@@ -723,3 +723,13 @@
   - `messengerRoomLinkBtn`은 더 이상 대화 링크를 복사하지 않고, 오른쪽에서 왼쪽으로 슬라이드 인되는 패널을 여는 버튼으로 유지하면서 패널 타이틀을 `Notiba AI`로 고정했다. 버튼과 패널 좌측 아이콘은 `/logo/Notiba_ai.png`를 공용으로 사용하도록 연결했고, `/logo` 정적 경로도 함께 마운트했다.
   - 사용자 제공 `Notiba_ai.png`를 기준으로 버튼/드로어 아이콘 크기를 단계적으로 키우고, `messengerRoomLinkBtn` 안에서 아이콘이 정중앙에 보이도록 padding 제거와 위치 보정까지 반영했다. 라이트/다크 모드의 기존 패널 색상은 유지하면서 아이콘만 자연스럽게 교체되게 정리했다.
   - ASCORD 음성채팅에서는 카메라 카드와 전체화면 슬롯이 영상 비율 때문에 늘어나지 않도록 카드 높이를 고정하고 `object-fit: contain` 기준으로 바꿔, 남는 위아래 공간은 검은 배경 또는 전체화면 배경으로 처리되게 보강했다. 이번 채팅 기준 검증은 `python3 -m py_compile`, `git diff --check`까지 완료했다.
+
+## 70. Notiba AI 버튼 노출 범위 조정과 ASCORD hover 안정화
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `static/css/messenger.css`
+  - `static/js/messenger.js`
+- 간단한 설명
+  - ABBAS Talk에서는 헤더 액션 전체를 숨기지 않고, `messenger-notiba-ai-icon messenger-notiba-ai-icon--button`을 사용하는 `messengerRoomLinkBtn`만 감추도록 범위를 다시 좁혔다.
+  - ASCORD 음성채팅 중 하단 `messenger-ascord-call-dock`가 hover 해제 후 한 번씩 남아 있던 문제는 CSS 인접 hover 의존을 끊고, `pointerenter/pointerleave` 기반의 visible 클래스 동기화로 바꿔 안정적으로 내려가게 보강했다.
+  - `Notiba AI` 창을 열었을 때는 `messengerRoomLinkBtn`에 남아 있던 focus 때문에 상단 `messenger-chat-header`가 자동으로 올라가지 않던 문제를 함께 정리해, 버튼 focus를 지우고 drawer 닫기 버튼으로 넘기도록 수정했다. 이번 채팅 기준 검증은 `git diff --check`까지 완료했다.
