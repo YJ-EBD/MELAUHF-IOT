@@ -218,9 +218,18 @@
     streamStart: "/sounds/ascord_stream_start.mp3",
     streamStop: "/sounds/ascord_stream_stop.mp3",
   };
-  const NOTIBA_STT_MERGE_WINDOW_MS = 5000;
-  const NOTIBA_STT_MERGE_MAX_CHARS = 220;
-  const NOTIBA_REALTIME_PARTIAL_PUSH_MS = 120;
+  const DEFAULT_NOTIBA_CLIENT_TUNING = {
+    mergeWindowMs: 5000,
+    mergeMaxChars: 220,
+    partialPushMs: 120,
+    reconnectMs: 700,
+    audioConstraints: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  };
 
   function $(id) {
     return document.getElementById(id);
@@ -241,6 +250,52 @@
 
   function clampNumber(value, min, max) {
     return Math.min(Math.max(value, min), max);
+  }
+
+  function finiteNumberOrDefault(value, fallback) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+  }
+
+  function booleanOrDefault(value, fallback) {
+    if (typeof value === "boolean") return value;
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized) return fallback;
+    if (["1", "true", "yes", "y", "on"].indexOf(normalized) >= 0) return true;
+    if (["0", "false", "no", "n", "off"].indexOf(normalized) >= 0) return false;
+    return fallback;
+  }
+
+  function notibaClientTuning() {
+    const settings = state.notiba.settings || {};
+    const tuning = (settings && settings.client_tuning) || {};
+    const audioConstraints = (tuning && tuning.audio_constraints) || {};
+    return {
+      mergeWindowMs: clampNumber(finiteNumberOrDefault(tuning.merge_window_ms, DEFAULT_NOTIBA_CLIENT_TUNING.mergeWindowMs), 0, 120000),
+      mergeMaxChars: clampNumber(finiteNumberOrDefault(tuning.merge_max_chars, DEFAULT_NOTIBA_CLIENT_TUNING.mergeMaxChars), 40, 4000),
+      partialPushMs: clampNumber(finiteNumberOrDefault(tuning.partial_push_ms, DEFAULT_NOTIBA_CLIENT_TUNING.partialPushMs), 40, 5000),
+      reconnectMs: clampNumber(finiteNumberOrDefault(tuning.reconnect_ms, DEFAULT_NOTIBA_CLIENT_TUNING.reconnectMs), 100, 15000),
+      audioConstraints: {
+        channelCount: clampNumber(finiteNumberOrDefault(audioConstraints.channel_count, DEFAULT_NOTIBA_CLIENT_TUNING.audioConstraints.channelCount), 1, 2),
+        echoCancellation: booleanOrDefault(audioConstraints.echo_cancellation, DEFAULT_NOTIBA_CLIENT_TUNING.audioConstraints.echoCancellation),
+        noiseSuppression: booleanOrDefault(audioConstraints.noise_suppression, DEFAULT_NOTIBA_CLIENT_TUNING.audioConstraints.noiseSuppression),
+        autoGainControl: booleanOrDefault(audioConstraints.auto_gain_control, DEFAULT_NOTIBA_CLIENT_TUNING.audioConstraints.autoGainControl),
+      },
+    };
+  }
+
+  function notibaCaptureAudioConstraints(deviceId) {
+    const tuning = notibaClientTuning();
+    const audioConstraints = {
+      channelCount: tuning.audioConstraints.channelCount,
+      echoCancellation: tuning.audioConstraints.echoCancellation,
+      noiseSuppression: tuning.audioConstraints.noiseSuppression,
+      autoGainControl: tuning.audioConstraints.autoGainControl,
+    };
+    if (normalizeText(deviceId)) {
+      audioConstraints.deviceId = { exact: normalizeText(deviceId) };
+    }
+    return audioConstraints;
   }
 
   function delayMs(ms) {
@@ -266,6 +321,7 @@
   function mergedTranscriptEntries(entries) {
     const sortedEntries = sortTranscriptEntries(entries);
     const merged = [];
+    const tuning = notibaClientTuning();
     sortedEntries.forEach(function (entry) {
       const payload = entry && typeof entry === "object" ? Object.assign({}, entry) : null;
       if (!payload) return;
@@ -280,8 +336,8 @@
       const shouldMerge = !!previous
         && !!previousUserId
         && previousUserId === nextUserId
-        && (nextSpokenAt <= 0 || previousSpokenAt <= 0 || ((nextSpokenAt - previousSpokenAt) * 1000) <= NOTIBA_STT_MERGE_WINDOW_MS)
-        && ((previousText + " " + text).trim().length <= NOTIBA_STT_MERGE_MAX_CHARS);
+        && (nextSpokenAt <= 0 || previousSpokenAt <= 0 || ((nextSpokenAt - previousSpokenAt) * 1000) <= tuning.mergeWindowMs)
+        && ((previousText + " " + text).trim().length <= tuning.mergeMaxChars);
       if (!shouldMerge) {
         payload._notiba_last_spoken_at = nextSpokenAt;
         merged.push(payload);
@@ -7220,6 +7276,7 @@
     if (capture.reconnectTimer || !shouldKeepNotibaCaptureActive()) {
       return;
     }
+    const tuning = notibaClientTuning();
     if (message) {
       capture.error = normalizeText(message);
     }
@@ -7230,7 +7287,7 @@
       }
       if (!shouldKeepNotibaCaptureActive()) return;
       startNotibaCapture().catch(function () {});
-    }, 700);
+    }, tuning.reconnectMs);
     if (state.roomDrawerOpen) {
       renderRoomDrawer();
     }
@@ -7391,13 +7448,14 @@
     const capture = state.notiba.capture;
     const normalizedItemId = normalizeText(itemId);
     if (!normalizedItemId) return;
+    const tuning = notibaClientTuning();
     if (capture.partialTimers[normalizedItemId]) {
       window.clearTimeout(capture.partialTimers[normalizedItemId]);
     }
     capture.partialTimers[normalizedItemId] = window.setTimeout(function () {
       delete capture.partialTimers[normalizedItemId];
       flushNotibaPartialEvent(roomId, callId, normalizedItemId);
-    }, NOTIBA_REALTIME_PARTIAL_PUSH_MS);
+    }, tuning.partialPushMs);
   }
 
   function handleNotibaRealtimeMessage(event) {
@@ -7502,17 +7560,26 @@
     const callId = normalizeText((callForRoom(roomId) || {}).call_id || state.notiba.callIdByRoomId[roomId]);
     const deviceId = normalizeText((state.call.selectedDevices || {}).audioinput);
     try {
-      const audioConstraints = {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      };
-      if (deviceId) {
-        audioConstraints.deviceId = { exact: deviceId };
+      const sessionResponse = await fetch("/api/messenger/rooms/" + roomId + "/call/transcription/session", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const sessionPayload = await sessionResponse.json().catch(function () {
+        return {};
+      });
+      if (!sessionResponse.ok || !sessionPayload.ok) {
+        const detail = normalizeText(sessionPayload.detail || "Notiba AI 세션을 열지 못했습니다.");
+        throw new Error(detail);
+      }
+      if (sessionPayload.settings) {
+        state.notiba.settings = sessionPayload.settings;
+      }
+      const ephemeralKey = normalizeText(sessionPayload.value);
+      if (!ephemeralKey) {
+        throw new Error("Notiba AI 세션 토큰을 받지 못했습니다.");
       }
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints,
+        audio: notibaCaptureAudioConstraints(deviceId),
         video: false,
       });
       if (!shouldKeepNotibaCaptureActive() || Number(state.call.joinedRoomId || 0) !== roomId) {
@@ -7550,24 +7617,6 @@
         throw new Error("Notiba AI용 마이크 트랙을 찾지 못했습니다.");
       }
       const sender = peerConnection.addTrack(track, stream);
-      const sessionResponse = await fetch("/api/messenger/rooms/" + roomId + "/call/transcription/session", {
-        method: "POST",
-        cache: "no-store",
-      });
-      const sessionPayload = await sessionResponse.json().catch(function () {
-        return {};
-      });
-      if (!sessionResponse.ok || !sessionPayload.ok) {
-        const detail = normalizeText(sessionPayload.detail || "Notiba AI 세션을 열지 못했습니다.");
-        throw new Error(detail);
-      }
-      if (sessionPayload.settings) {
-        state.notiba.settings = sessionPayload.settings;
-      }
-      const ephemeralKey = normalizeText(sessionPayload.value);
-      if (!ephemeralKey) {
-        throw new Error("Notiba AI 세션 토큰을 받지 못했습니다.");
-      }
       const openAiBaseUrl = normalizeText((sessionPayload.settings && sessionPayload.settings.api_base_url) || "https://api.openai.com").replace(/\/+$/, "");
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
