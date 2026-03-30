@@ -34,12 +34,53 @@ static void melauhfPowerSet(bool on);
 #ifndef ATMEGA_TX_PIN
 #define ATMEGA_TX_PIN 5
 #endif
+#ifndef ATMEGA_RESET_PIN
+#define ATMEGA_RESET_PIN 24
+#endif
+#ifndef ATMEGA_RESET_ASSERT_LEVEL
+#define ATMEGA_RESET_ASSERT_LEVEL HIGH
+#endif
 
 static const uint32_t ATMEGA_BAUD = 115200;
 static const uint32_t DWIN_BAUD   = 115200;
 
 HardwareSerial DWIN(1);
 HardwareSerial ATMEGA(2);
+static volatile bool g_atmegaOtaInProgress = false;
+static const uint32_t ATMEGA_RESET_PULSE_MS = 200;
+static const uint32_t ATMEGA_BOOTLOADER_WAIT_MS = 1500;
+static const uint32_t ATMEGA_AVR109_REPLY_TIMEOUT_MS = 250;
+static const uint32_t ATMEGA_HEX_LINE_TIMEOUT_MS = 4000;
+static const uint32_t ATMEGA_OTA_HTTP_IDLE_TIMEOUT_MS = 15000;
+static const uint32_t ATMEGA_BOOT_REPORT_RESYNC_GAP_MS = 3000;
+static const uint16_t ATMEGA_AVR109_BLOCK_CAP = 256;
+static const char* SD_ATMEGA_OTA_HEX_PATH = "/AtmegaOta.hex";
+
+static const uint8_t ATMEGA_OTA_IDLE = 0;
+static const uint8_t ATMEGA_OTA_DOWNLOADING = 1;
+static const uint8_t ATMEGA_OTA_ENTERING_BOOT = 2;
+static const uint8_t ATMEGA_OTA_FLASHING = 3;
+static const uint8_t ATMEGA_OTA_REBOOTING = 4;
+static const uint8_t ATMEGA_OTA_OK = 5;
+static const uint8_t ATMEGA_OTA_FAIL = 6;
+
+static volatile uint8_t g_atmegaOtaState = ATMEGA_OTA_IDLE;
+static bool g_atmegaOtaLastBridgeEnabled = true;
+static uint32_t g_atmegaOtaBytesDone = 0;
+static uint32_t g_atmegaOtaBytesTotal = 0;
+static uint32_t g_atmegaOtaFlashBlocks = 0;
+static uint32_t g_atmegaOtaStartedAtMs = 0;
+static char g_atmegaOtaStatusText[96] = "idle";
+static char g_atmegaOtaSourceText[192] = {0};
+static char g_atmegaOtaExpectedSha256[65] = {0};
+
+struct AtmegaHexRecord {
+  uint8_t len;
+  uint16_t addr;
+  uint8_t type;
+  uint8_t data[255];
+};
+
 static SemaphoreHandle_t g_dwinTxMutex = nullptr;
 static volatile uint8_t g_dwinCurrentPage = 0xFF;
 static void sdAppendPageLog(uint8_t page);
@@ -51,6 +92,7 @@ static bool sdProbeAndMount(bool forceRemount);
 static void teQueueRunEventFromAtmega(uint8_t runState, uint32_t totalEnergy);
 static void teTick();
 static void tePublishMetricsToAtmega(bool force);
+static void teInvalidatePublishedMetrics();
 static void teEnsureLedgerFileReady();
 static void teResetSubscriptionState();
 static void teResetLocalState();
@@ -67,6 +109,13 @@ static void webFirmwareImmediateCheckTick();
 static void webFirmwareDecisionTick();
 static void dwinWriteWord(uint16_t addr, uint16_t value);
 static void page62WifiIconTick();
+static const char* deviceIdC();
+static const char* deviceTokenC();
+static bool webPrepareSecureClient();
+static void urlEncodeValue(const char* src, char* out, size_t outSz);
+static bool atmegaOtaHandleCommand(const String& arg);
+static void atmegaOtaPrintStatus();
+static void atmegaForceStateResync(const char* reason, bool includeEnergy);
 
 static const uint16_t CRC_TABLE[256] PROGMEM = {
   0x0000,0xc0c1,0xc181,0x0140,0xc301,0x03c0,0x0280,0xc241,
@@ -149,6 +198,29 @@ static void dwinWriteWord(uint16_t addr, uint16_t value) {
     (uint8_t)(crc & 0xFF)
   };
   dwin_write_raw_atomic(frame, sizeof(frame));
+}
+
+static inline bool atmegaAppChannelAvailable() {
+  return !g_atmegaOtaInProgress;
+}
+
+static size_t atmegaAppWriteBytes(const uint8_t* data, size_t len, bool flushNow = true) {
+  if (!data || len == 0 || !atmegaAppChannelAvailable()) return 0;
+  size_t written = ATMEGA.write(data, len);
+  if (flushNow) ATMEGA.flush();
+  return written;
+}
+
+static size_t atmegaAppWriteByte(uint8_t b) {
+  if (!atmegaAppChannelAvailable()) return 0;
+  return ATMEGA.write(b);
+}
+
+static size_t atmegaAppPrintLine(const char* line) {
+  if (!line || !line[0] || !atmegaAppChannelAvailable()) return 0;
+  size_t written = ATMEGA.print(line);
+  ATMEGA.flush();
+  return written;
 }
 
 struct _DwinParser {
@@ -406,6 +478,9 @@ static bool     g_webOtaSessionSkipUntilReboot = false;
 static volatile int8_t g_webOtaDecisionReqValue = -1; // -1:none, 0:skip, 1:accept
 static uint64_t g_webOtaPromptReleaseId = 0;
 static uint64_t g_webOtaPromptSizeBytes = 0;
+static char     g_atmegaReportedVersion[32] = {0};
+static char     g_atmegaReportedBuildId[64] = {0};
+static uint32_t g_atmegaReportedAtMs = 0;
 static uint8_t  g_lastRkcPage = 0xFF;
 static uint16_t g_lastRkcKey = 0x0000;
 static uint32_t g_lastRkcMs = 0;
@@ -597,6 +672,37 @@ static bool atmegaHandleAsciiByte(uint8_t b) {
                         g_atmegaPendingHaveSsid ? 1U : 0U,
                         g_atmegaPendingHavePass ? 1U : 0U);
         }
+      } else if (strcmp(g_atmegaLineBuf, "FW|B") == 0) {
+        Serial.println("[AT->ESP] FW boot notice");
+        atmegaForceStateResync("fw_boot", true);
+      } else if (strncmp(g_atmegaLineBuf, "FW|A|", 5) == 0) {
+        char* savePtr = nullptr;
+        char* versionTxt = strtok_r(&g_atmegaLineBuf[5], "|", &savePtr);
+        char* buildTxt = strtok_r(nullptr, "|", &savePtr);
+        if (versionTxt && versionTxt[0]) {
+          char newVersion[sizeof(g_atmegaReportedVersion)];
+          char newBuildId[sizeof(g_atmegaReportedBuildId)];
+          bool changed = false;
+          bool rebootLikely = false;
+          uint32_t nowMs = millis();
+
+          atmegaCopyCredField(newVersion, sizeof(newVersion), versionTxt);
+          atmegaCopyCredField(newBuildId, sizeof(newBuildId), buildTxt ? buildTxt : "");
+          changed = (strcmp(g_atmegaReportedVersion, newVersion) != 0) ||
+                    (strcmp(g_atmegaReportedBuildId, newBuildId) != 0);
+          rebootLikely = (g_atmegaReportedAtMs != 0) &&
+                         ((uint32_t)(nowMs - g_atmegaReportedAtMs) > ATMEGA_BOOT_REPORT_RESYNC_GAP_MS);
+
+          atmegaCopyCredField(g_atmegaReportedVersion, sizeof(g_atmegaReportedVersion), newVersion);
+          atmegaCopyCredField(g_atmegaReportedBuildId, sizeof(g_atmegaReportedBuildId), newBuildId);
+          g_atmegaReportedAtMs = nowMs;
+          Serial.printf("[AT->ESP] FW version=%s build=%s\n",
+                        g_atmegaReportedVersion,
+                        g_atmegaReportedBuildId[0] ? g_atmegaReportedBuildId : "-");
+          if (changed || rebootLikely) {
+            atmegaForceStateResync(rebootLikely ? "fw_report_reboot" : "fw_report", true);
+          }
+        }
       } else if (strncmp(g_atmegaLineBuf, "OTA|DEC|", 8) == 0) {
         unsigned long dec = strtoul(&g_atmegaLineBuf[8], nullptr, 10);
         if (dec <= 1UL) {
@@ -688,8 +794,7 @@ static void atmegaPublishSubscriptionStateSimple(char stateCode) {
   g_atmegaSubRemainingDays = 0;
   g_lastAtmegaSubPublishMs = millis();
 
-  ATMEGA.write((const uint8_t*)line, (size_t)n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, (size_t)n);
 }
 
 static void applyRegisteredReadyPage(const char* reason) {
@@ -815,6 +920,17 @@ static void print_status() {
                 (unsigned)g_capLen,
                 g_replayActive ? "ON" : "OFF",
                 (unsigned)g_replayCount);
+  Serial.printf("[STATUS] atfw=%s (%s), age=%lu ms\n",
+                g_atmegaReportedVersion[0] ? g_atmegaReportedVersion : "-",
+                g_atmegaReportedBuildId[0] ? g_atmegaReportedBuildId : "-",
+                (unsigned long)(g_atmegaReportedAtMs ? (millis() - g_atmegaReportedAtMs) : 0U));
+  Serial.printf("[STATUS] atota=%u, text=%s, bytes=%lu/%lu, blocks=%lu, source=%s\n",
+                (unsigned)g_atmegaOtaState,
+                g_atmegaOtaStatusText,
+                (unsigned long)g_atmegaOtaBytesDone,
+                (unsigned long)g_atmegaOtaBytesTotal,
+                (unsigned long)g_atmegaOtaFlashBlocks,
+                g_atmegaOtaSourceText[0] ? g_atmegaOtaSourceText : "-");
 }
 
 static void atmegaRequestPageChange(uint8_t page) {
@@ -822,8 +938,7 @@ static void atmegaRequestPageChange(uint8_t page) {
   int n = snprintf(line, sizeof(line), "@PAGE|%u\n", (unsigned)page);
   if (n <= 0) return;
   if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
-  ATMEGA.write((const uint8_t*)line, (size_t)n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, (size_t)n);
   Serial.printf("[ESP->AT] PAGE|%u\n", (unsigned)page);
 }
 
@@ -848,6 +963,13 @@ static void handle_command(const String &lineRaw) {
     Serial.println("  status");
     Serial.println("  bridge on|off");
     Serial.println("  ping");
+    Serial.println("  atreset");
+    Serial.println("  atbl");
+    Serial.println("  atota status");
+    Serial.println("  atota probe");
+    Serial.println("  atota file <sd_path>");
+    Serial.println("  atota url <path_or_url> [sha256]");
+    Serial.println("  check_ota");
     Serial.println("  reset_subscription");
     Serial.println("  reset_state");
     Serial.println("  page <n> / page1,page2,...");
@@ -880,7 +1002,31 @@ static void handle_command(const String &lineRaw) {
     g_pingWaiting = true;
     g_pingSentAt = millis();
     g_pingLine = "";
-    ATMEGA.write("ping\r\n");
+    atmegaAppPrintLine("ping\r\n");
+    return;
+  }
+
+  if (op == "atreset") {
+    if (g_atmegaOtaInProgress) {
+      Serial.println("[ATOTA] busy");
+      return;
+    }
+    atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+    Serial.println("[ATOTA] target reset pulse sent");
+    return;
+  }
+
+  if (op == "atbl") {
+    if (g_atmegaOtaInProgress) {
+      Serial.println("[ATOTA] busy");
+      return;
+    }
+    (void)atmegaOtaProbeBootloader(true);
+    return;
+  }
+
+  if (op == "atota") {
+    (void)atmegaOtaHandleCommand(arg);
     return;
   }
 
@@ -893,6 +1039,12 @@ static void handle_command(const String &lineRaw) {
   if (op == "reset_state" || op == "resetstate") {
     teResetLocalState();
     Serial.println("[CMD] local state reset");
+    return;
+  }
+
+  if (op == "check_ota" || op == "checkota") {
+    webScheduleImmediateFirmwareCheck("manual_command");
+    Serial.println("[CMD] ota check scheduled");
     return;
   }
 
@@ -993,6 +1145,11 @@ static bool at2dFeedFrame(uint8_t b, const uint8_t*& frame, uint16_t& frameLen) 
 }
 
 static void pump_atmega_to_dwin(uint32_t now) {
+  if (g_atmegaOtaInProgress) {
+    _dwinForwardReset();
+    return;
+  }
+
   if (!g_bridgeEnabled) {
     _dwinForwardReset();
   }
@@ -1083,7 +1240,7 @@ static void pump_dwin_to_atmega(uint32_t now) {
     mark_dwin_rx_byte(b);
     tele_sniff_dwin_to_atmega(b, now);
     if (g_bridgeEnabled) {
-      ATMEGA.write(b);
+      atmegaAppWriteByte(b);
     }
   }
 }
@@ -1096,6 +1253,8 @@ static void mel_bridgeSetup() {
   Serial.println("[MEL] bridge init...");
   Serial.printf("[MEL] ATmega UART2 pins: RX=%d TX=%d @%lu\n", ATMEGA_RX_PIN, ATMEGA_TX_PIN, (unsigned long)ATMEGA_BAUD);
   Serial.printf("[MEL] DWIN  UART1 pins: RX=%d TX=%d @%lu\n", DWIN_RX_PIN, DWIN_TX_PIN, (unsigned long)DWIN_BAUD);
+  pinMode(ATMEGA_RESET_PIN, OUTPUT);
+  atmegaResetRelease();
   ATMEGA.begin(ATMEGA_BAUD, SERIAL_8N1, ATMEGA_RX_PIN, ATMEGA_TX_PIN);
   DWIN.begin(DWIN_BAUD, SERIAL_8N1, DWIN_RX_PIN, DWIN_TX_PIN);
   if (!g_dwinTxMutex) {
@@ -1127,7 +1286,7 @@ static void mel_bridgeTask(void *param) {
       didWork = true;
     }
 
-    if (ATMEGA.available()) {
+    if (!g_atmegaOtaInProgress && ATMEGA.available()) {
       pump_atmega_to_dwin(now);
       didWork = true;
     } else {
@@ -1237,6 +1396,12 @@ static uint8_t g_page62WifiIconLastLevel = 0xFF;
 static uint32_t g_page62WifiIconLastPushMs = 0;
 static uint8_t g_atmegaBootUiStateLast = 0xFF;
 static uint8_t g_atmegaBootUiRetryLast = 0xFF;
+static char g_atmegaBootUiStatePending = 0;
+static uint8_t g_atmegaBootUiRetryPending = 0;
+static uint32_t g_atmegaBootUiRepublishLastMs = 0;
+static uint32_t g_atmegaBootUiRepublishUntilMs = 0;
+static const uint32_t ATMEGA_BOOT_UI_REPUBLISH_MS = 1000;
+static const uint32_t ATMEGA_BOOT_UI_REPUBLISH_WINDOW_MS = 20000;
 
 #ifndef WEB_SERVER_BASE_URL
 #define WEB_SERVER_BASE_URL "https://www.yjcooperation.com"
@@ -1250,6 +1415,9 @@ static uint8_t g_atmegaBootUiRetryLast = 0xFF;
 #endif
 #ifndef FIRMWARE_BUILD_ID
 #define FIRMWARE_BUILD_ID "ota-base"
+#endif
+#ifndef ATMEGA_FIRMWARE_FAMILY
+#define ATMEGA_FIRMWARE_FAMILY "ABBAS_ATMEGA128_MELAUHF"
 #endif
 
 #ifndef DEVICE_MODEL
@@ -2294,6 +2462,14 @@ static const char* firmwareBuildIdC() {
   return FIRMWARE_BUILD_ID;
 }
 
+static const char* atmegaFirmwareFamilyC() {
+  return ATMEGA_FIRMWARE_FAMILY;
+}
+
+static bool isAtmegaTargetFamily(const char* family) {
+  return (family && family[0] && strcmp(family, atmegaFirmwareFamilyC()) == 0);
+}
+
 static void otaSetPendingBootReport(bool pending, uint64_t releaseId = 0) {
   prefs.begin("abba-s", false);
   prefs.putBool("ota_pending", pending);
@@ -2364,8 +2540,7 @@ static void atmegaPublishOtaSessionReset() {
   static const char* kResetLine = "@OTA|RST\n";
   const size_t n = strlen(kResetLine);
   if (n == 0) return;
-  ATMEGA.write((const uint8_t*)kResetLine, n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)kResetLine, n);
   Serial.println("[ESP->AT] OTA session reset");
 }
 
@@ -2385,9 +2560,721 @@ static void atmegaPublishOtaPrompt(const char* currentVersion, const char* targe
   int n = snprintf(line, sizeof(line), "@OTA|Q|%s|%s\n", currentSafe, targetSafe);
   if (n <= 0) return;
   if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
-  ATMEGA.write((const uint8_t*)line, (size_t)n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, (size_t)n);
   Serial.printf("[ESP->AT] OTA prompt cur=%s target=%s\n", currentSafe, targetSafe);
+}
+
+static const char* atmegaOtaStateC(uint8_t state) {
+  switch (state) {
+    case ATMEGA_OTA_IDLE: return "idle";
+    case ATMEGA_OTA_DOWNLOADING: return "downloading";
+    case ATMEGA_OTA_ENTERING_BOOT: return "entering_boot";
+    case ATMEGA_OTA_FLASHING: return "flashing";
+    case ATMEGA_OTA_REBOOTING: return "rebooting";
+    case ATMEGA_OTA_OK: return "ok";
+    case ATMEGA_OTA_FAIL: return "fail";
+  }
+  return "unknown";
+}
+
+static void atmegaOtaSetState(uint8_t state, const char* text) {
+  g_atmegaOtaState = state;
+  snprintf(g_atmegaOtaStatusText, sizeof(g_atmegaOtaStatusText), "%s", (text && text[0]) ? text : atmegaOtaStateC(state));
+}
+
+static void atmegaResetHold() {
+  digitalWrite(ATMEGA_RESET_PIN, ATMEGA_RESET_ASSERT_LEVEL);
+}
+
+static void atmegaResetRelease() {
+  digitalWrite(ATMEGA_RESET_PIN, (ATMEGA_RESET_ASSERT_LEVEL == HIGH) ? LOW : HIGH);
+}
+
+static void atmegaResetPulse(uint32_t pulseMs) {
+  atmegaResetHold();
+  delay(pulseMs);
+  atmegaResetRelease();
+}
+
+static void atmegaDrainRx() {
+  while (ATMEGA.available()) {
+    (void)ATMEGA.read();
+  }
+}
+
+static bool atmegaReadExact(uint8_t* out, size_t len, uint32_t timeoutMs) {
+  if (!out && len != 0) return false;
+  size_t got = 0;
+  uint32_t startMs = millis();
+  while (got < len) {
+    while (ATMEGA.available()) {
+      int v = ATMEGA.read();
+      if (v < 0) break;
+      out[got++] = (uint8_t)v;
+      startMs = millis();
+      if (got >= len) return true;
+    }
+    if ((uint32_t)(millis() - startMs) > timeoutMs) return false;
+    delay(1);
+  }
+  return true;
+}
+
+static bool atmegaReadExpectByte(uint8_t expected, uint32_t timeoutMs) {
+  uint8_t b = 0;
+  if (!atmegaReadExact(&b, 1, timeoutMs)) return false;
+  return b == expected;
+}
+
+static bool atmegaAvr109ReadSignature(uint8_t sig[3]) {
+  uint8_t cmd = 's';
+  ATMEGA.write(&cmd, 1);
+  return atmegaReadExact(sig, 3, ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+}
+
+static bool atmegaAvr109EnterProgMode() {
+  uint8_t cmd = 'P';
+  ATMEGA.write(&cmd, 1);
+  return atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+}
+
+static bool atmegaAvr109LeaveProgMode() {
+  uint8_t cmd = 'L';
+  ATMEGA.write(&cmd, 1);
+  return atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+}
+
+static bool atmegaAvr109QueryBlockSize(uint16_t& blockSizeOut) {
+  uint8_t cmd = 'b';
+  uint8_t reply[3] = {0};
+  blockSizeOut = ATMEGA_AVR109_BLOCK_CAP;
+  ATMEGA.write(&cmd, 1);
+  if (!atmegaReadExact(reply, sizeof(reply), ATMEGA_AVR109_REPLY_TIMEOUT_MS)) return false;
+  if (reply[0] != 'Y') return false;
+  uint16_t remoteSize = (uint16_t)(((uint16_t)reply[1] << 8) | reply[2]);
+  if (remoteSize == 0) return false;
+  if (remoteSize > ATMEGA_AVR109_BLOCK_CAP) remoteSize = ATMEGA_AVR109_BLOCK_CAP;
+  blockSizeOut = remoteSize;
+  return true;
+}
+
+static bool atmegaAvr109SetWordAddress(uint16_t wordAddr) {
+  uint8_t cmd[3];
+  cmd[0] = 'A';
+  cmd[1] = (uint8_t)(wordAddr >> 8);
+  cmd[2] = (uint8_t)(wordAddr & 0xFF);
+  ATMEGA.write(cmd, sizeof(cmd));
+  return atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+}
+
+static bool atmegaAvr109BlockLoadFlash(const uint8_t* data, uint16_t len) {
+  if (!data || len == 0) return false;
+  uint8_t hdr[4];
+  hdr[0] = 'B';
+  hdr[1] = (uint8_t)(len >> 8);
+  hdr[2] = (uint8_t)(len & 0xFF);
+  hdr[3] = 'F';
+  ATMEGA.write(hdr, sizeof(hdr));
+  ATMEGA.write(data, len);
+  return atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+}
+
+static bool atmegaBootloaderHandshake(char* detailOut, size_t detailSz, uint16_t* blockSizeOut = nullptr) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+  if (blockSizeOut) *blockSizeOut = ATMEGA_AVR109_BLOCK_CAP;
+
+  atmegaDrainRx();
+  atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+  delay(40);
+
+  uint8_t sig[3] = {0};
+  bool found = false;
+  uint32_t deadline = millis() + ATMEGA_BOOTLOADER_WAIT_MS;
+  while ((int32_t)(millis() - deadline) < 0) {
+    atmegaDrainRx();
+    if (atmegaAvr109ReadSignature(sig) &&
+        sig[0] == 0x1E && sig[1] == 0x97 && sig[2] == 0x02) {
+      found = true;
+      break;
+    }
+    delay(25);
+  }
+
+  if (!found) {
+    if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "bootloader_signature_timeout");
+    return false;
+  }
+
+  if (!atmegaAvr109EnterProgMode()) {
+    if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "prog_mode_enter_failed");
+    return false;
+  }
+
+  uint16_t blockSize = ATMEGA_AVR109_BLOCK_CAP;
+  if (!atmegaAvr109QueryBlockSize(blockSize)) {
+    if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "block_size_query_failed");
+    return false;
+  }
+
+  if (blockSizeOut) *blockSizeOut = blockSize;
+  if (detailOut && detailSz > 0) {
+    snprintf(detailOut, detailSz, "sig=%02X%02X%02X block=%u",
+             (unsigned)sig[0], (unsigned)sig[1], (unsigned)sig[2], (unsigned)blockSize);
+  }
+  return true;
+}
+
+static int hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+  if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+  return -1;
+}
+
+static bool hexParseByte(const char* p, uint8_t& out) {
+  int hi = hexNibble(p[0]);
+  int lo = hexNibble(p[1]);
+  if (hi < 0 || lo < 0) return false;
+  out = (uint8_t)((hi << 4) | lo);
+  return true;
+}
+
+static bool atmegaParseHexLine(const char* line, AtmegaHexRecord& rec, char* errOut, size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  if (!line || line[0] != ':') {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_missing_colon");
+    return false;
+  }
+
+  size_t lineLen = strlen(line);
+  if (lineLen < 11) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_line_too_short");
+    return false;
+  }
+
+  uint8_t sum = 0;
+  uint8_t count = 0;
+  uint8_t addrHi = 0;
+  uint8_t addrLo = 0;
+  uint8_t type = 0;
+  if (!hexParseByte(&line[1], count) ||
+      !hexParseByte(&line[3], addrHi) ||
+      !hexParseByte(&line[5], addrLo) ||
+      !hexParseByte(&line[7], type)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_header_parse_failed");
+    return false;
+  }
+
+  size_t expectedChars = 1U + (size_t)(count + 5U) * 2U;
+  if (lineLen < expectedChars) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_line_truncated");
+    return false;
+  }
+
+  sum = (uint8_t)(sum + count + addrHi + addrLo + type);
+  rec.len = count;
+  rec.addr = (uint16_t)(((uint16_t)addrHi << 8) | addrLo);
+  rec.type = type;
+
+  for (uint16_t i = 0; i < count; i++) {
+    uint8_t v = 0;
+    if (!hexParseByte(&line[9 + i * 2], v)) {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_data_parse_failed");
+      return false;
+    }
+    rec.data[i] = v;
+    sum = (uint8_t)(sum + v);
+  }
+
+  uint8_t check = 0;
+  if (!hexParseByte(&line[9 + count * 2], check)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_checksum_parse_failed");
+    return false;
+  }
+  sum = (uint8_t)(sum + check);
+  if (sum != 0) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_checksum_mismatch");
+    return false;
+  }
+
+  return true;
+}
+
+static bool atmegaHexFlushBlock(uint32_t blockStartByteAddr,
+                                const uint8_t* blockData,
+                                size_t blockLen,
+                                char* errOut,
+                                size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  if (!blockData || blockLen == 0) return true;
+  if (blockStartByteAddr & 1U) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "flash_addr_not_even");
+    return false;
+  }
+  if (blockStartByteAddr > 0x1FFFFUL) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "flash_addr_out_of_range");
+    return false;
+  }
+
+  uint8_t tmp[ATMEGA_AVR109_BLOCK_CAP + 1];
+  size_t writeLen = blockLen;
+  if (writeLen > sizeof(tmp)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "flash_block_too_large");
+    return false;
+  }
+  memcpy(tmp, blockData, writeLen);
+  if (writeLen & 1U) {
+    tmp[writeLen++] = 0xFF;
+  }
+  if (writeLen > 0xFFFFU) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "flash_block_len_invalid");
+    return false;
+  }
+
+  uint16_t wordAddr = (uint16_t)(blockStartByteAddr >> 1);
+  if (!atmegaAvr109SetWordAddress(wordAddr)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "set_address_failed");
+    return false;
+  }
+  if (!atmegaAvr109BlockLoadFlash(tmp, (uint16_t)writeLen)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "block_load_failed");
+    return false;
+  }
+
+  g_atmegaOtaFlashBlocks++;
+  g_atmegaOtaBytesDone += (uint32_t)blockLen;
+  if ((g_atmegaOtaFlashBlocks & 0x07U) == 0U) {
+    Serial.printf("[ATOTA] flash blocks=%lu bytes=%lu/%lu\n",
+                  (unsigned long)g_atmegaOtaFlashBlocks,
+                  (unsigned long)g_atmegaOtaBytesDone,
+                  (unsigned long)g_atmegaOtaBytesTotal);
+  }
+  return true;
+}
+
+static bool atmegaProgramHexFile(File& file, const char* sourceLabel, char* errOut, size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  if (!file) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_file_open_failed");
+    return false;
+  }
+
+  char bootDetail[64];
+  uint16_t blockCap = ATMEGA_AVR109_BLOCK_CAP;
+  atmegaOtaSetState(ATMEGA_OTA_ENTERING_BOOT, "entering_bootloader");
+  if (!atmegaBootloaderHandshake(bootDetail, sizeof(bootDetail), &blockCap)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "%s", bootDetail[0] ? bootDetail : "bootloader_handshake_failed");
+    return false;
+  }
+  Serial.printf("[ATOTA] bootloader ready %s\n", bootDetail);
+
+  atmegaOtaSetState(ATMEGA_OTA_FLASHING, "flashing");
+  g_atmegaOtaBytesDone = 0;
+  g_atmegaOtaFlashBlocks = 0;
+  g_atmegaOtaBytesTotal = (uint32_t)file.size();
+
+  uint8_t blockBuf[ATMEGA_AVR109_BLOCK_CAP];
+  uint32_t blockStart = 0;
+  size_t blockLen = 0;
+  uint32_t baseAddr = 0;
+  bool eofSeen = false;
+  char lineBuf[620];
+  AtmegaHexRecord rec;
+  uint32_t lineNo = 0;
+
+  while (file.available()) {
+    size_t rawLen = file.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1U);
+    if (rawLen == 0 && !file.available()) break;
+    lineBuf[rawLen] = 0;
+    while (rawLen > 0 && (lineBuf[rawLen - 1] == '\r' || lineBuf[rawLen - 1] == '\n')) {
+      lineBuf[--rawLen] = 0;
+    }
+    if (rawLen == 0) continue;
+    lineNo++;
+
+    char parseErr[48];
+    if (!atmegaParseHexLine(lineBuf, rec, parseErr, sizeof(parseErr))) {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "%s@line%lu", parseErr, (unsigned long)lineNo);
+      return false;
+    }
+
+    if (rec.type == 0x00) {
+      uint32_t absAddr = baseAddr + rec.addr;
+      size_t offset = 0;
+      while (offset < rec.len) {
+        if (blockLen == 0) {
+          blockStart = absAddr;
+        } else if (absAddr != (blockStart + blockLen) || blockLen >= blockCap) {
+          if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
+          blockLen = 0;
+          blockStart = absAddr;
+        }
+
+        size_t room = blockCap - blockLen;
+        size_t chunk = (size_t)(rec.len - offset);
+        if (chunk > room) chunk = room;
+        memcpy(&blockBuf[blockLen], &rec.data[offset], chunk);
+        blockLen += chunk;
+        absAddr += chunk;
+        offset += chunk;
+      }
+    } else if (rec.type == 0x01) {
+      eofSeen = true;
+      break;
+    } else if (rec.type == 0x04) {
+      if (blockLen > 0) {
+        if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
+        blockLen = 0;
+      }
+      if (rec.len != 2) {
+        if (errOut && errSz > 0) snprintf(errOut, errSz, "ela_len_invalid@line%lu", (unsigned long)lineNo);
+        return false;
+      }
+      baseAddr = (uint32_t)((((uint32_t)rec.data[0] << 8) | rec.data[1]) << 16);
+    } else if (rec.type == 0x02) {
+      if (blockLen > 0) {
+        if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
+        blockLen = 0;
+      }
+      if (rec.len != 2) {
+        if (errOut && errSz > 0) snprintf(errOut, errSz, "esa_len_invalid@line%lu", (unsigned long)lineNo);
+        return false;
+      }
+      baseAddr = (uint32_t)((((uint32_t)rec.data[0] << 8) | rec.data[1]) << 4);
+    } else if (rec.type == 0x03 || rec.type == 0x05) {
+      continue;
+    } else {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_record_type_%02X@line%lu", (unsigned)rec.type, (unsigned long)lineNo);
+      return false;
+    }
+  }
+
+  if (blockLen > 0) {
+    if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
+  }
+
+  if (!eofSeen) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_missing_eof");
+    return false;
+  }
+
+  (void)atmegaAvr109LeaveProgMode();
+  atmegaOtaSetState(ATMEGA_OTA_REBOOTING, "rebooting_target");
+  atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+  Serial.printf("[ATOTA] flash done source=%s blocks=%lu bytes=%lu\n",
+                (sourceLabel && sourceLabel[0]) ? sourceLabel : "-",
+                (unsigned long)g_atmegaOtaFlashBlocks,
+                (unsigned long)g_atmegaOtaBytesDone);
+  return true;
+}
+
+static bool atmegaOtaDownloadUrlToSd(const char* sourcePathOrUrl, const char* expectedSha256, char* errOut, size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  if (!sourcePathOrUrl || !sourcePathOrUrl[0]) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "url_missing");
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "wifi_not_connected");
+    return false;
+  }
+  if (!sdProbeAndMount(false)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "sd_not_ready");
+    return false;
+  }
+
+  char url[512];
+  if (strncmp(sourcePathOrUrl, "http://", 7) == 0 || strncmp(sourcePathOrUrl, "https://", 8) == 0) {
+    snprintf(url, sizeof(url), "%s", sourcePathOrUrl);
+  } else {
+    urlEncodeValue(deviceIdC(), g_otaDidEnc, sizeof(g_otaDidEnc));
+    char path[384];
+    snprintf(path, sizeof(path), "%s%sdevice_id=%s",
+             sourcePathOrUrl,
+             strchr(sourcePathOrUrl, '?') ? "&" : "?",
+             g_otaDidEnc);
+    snprintf(url, sizeof(url), "%s%s", WEB_SERVER_BASE_URL, path);
+  }
+
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setConnectTimeout((int32_t)WEB_OTA_HTTP_CONNECT_TIMEOUT_MS);
+  http.setTimeout((uint16_t)WEB_OTA_HTTP_RESPONSE_TIMEOUT_MS);
+
+  const bool isHttps = (strncmp(url, "https://", 8) == 0);
+  bool begun = false;
+  if (isHttps) {
+    if (!webPrepareSecureClient()) {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "secure_client_prepare_failed");
+      return false;
+    }
+    begun = http.begin(webSecureClient, url);
+  } else {
+    begun = http.begin(webPlainClient, url);
+  }
+  if (!begun) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "http_begin_failed");
+    return false;
+  }
+
+  http.addHeader("X-Auth-Token", deviceTokenC());
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "http_status_%d", code);
+    http.end();
+    return false;
+  }
+
+  if (SD.exists(SD_ATMEGA_OTA_HEX_PATH)) {
+    SD.remove(SD_ATMEGA_OTA_HEX_PATH);
+  }
+  File out = SD.open(SD_ATMEGA_OTA_HEX_PATH, FILE_WRITE);
+  if (!out) {
+    http.end();
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "sd_open_failed");
+    return false;
+  }
+
+  WiFiClient* stream = http.getStreamPtr();
+  if (!stream) {
+    out.close();
+    SD.remove(SD_ATMEGA_OTA_HEX_PATH);
+    http.end();
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "http_stream_missing");
+    return false;
+  }
+
+  mbedtls_sha256_init(&g_otaShaCtx);
+  mbedtls_sha256_starts(&g_otaShaCtx, 0);
+
+  uint64_t written = 0;
+  int contentLength = http.getSize();
+  g_atmegaOtaBytesDone = 0;
+  g_atmegaOtaBytesTotal = (contentLength > 0) ? (uint32_t)contentLength : 0;
+
+  uint32_t lastDataMs = millis();
+  while (http.connected() || stream->available() > 0) {
+    size_t avail = stream->available();
+    if (avail == 0) {
+      if ((uint32_t)(millis() - lastDataMs) > ATMEGA_OTA_HTTP_IDLE_TIMEOUT_MS) break;
+      delay(1);
+      continue;
+    }
+    if (avail > sizeof(g_otaDownloadBuf)) avail = sizeof(g_otaDownloadBuf);
+    int readLen = stream->readBytes(g_otaDownloadBuf, avail);
+    if (readLen <= 0) {
+      delay(1);
+      continue;
+    }
+    lastDataMs = millis();
+    size_t writeLen = out.write(g_otaDownloadBuf, (size_t)readLen);
+    if (writeLen != (size_t)readLen) {
+      mbedtls_sha256_free(&g_otaShaCtx);
+      out.close();
+      SD.remove(SD_ATMEGA_OTA_HEX_PATH);
+      http.end();
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "sd_write_failed");
+      return false;
+    }
+    mbedtls_sha256_update(&g_otaShaCtx, g_otaDownloadBuf, (size_t)readLen);
+    written += (uint64_t)writeLen;
+    g_atmegaOtaBytesDone = (uint32_t)written;
+  }
+
+  out.close();
+  http.end();
+
+  memset(g_otaShaRaw, 0, sizeof(g_otaShaRaw));
+  memset(g_otaShaHex, 0, sizeof(g_otaShaHex));
+  mbedtls_sha256_finish(&g_otaShaCtx, g_otaShaRaw);
+  mbedtls_sha256_free(&g_otaShaCtx);
+  for (size_t i = 0; i < sizeof(g_otaShaRaw); i++) {
+    snprintf(&g_otaShaHex[i * 2], 3, "%02x", (unsigned int)g_otaShaRaw[i]);
+  }
+
+  if (contentLength > 0 && written != (uint64_t)contentLength) {
+    SD.remove(SD_ATMEGA_OTA_HEX_PATH);
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "content_length_mismatch");
+    return false;
+  }
+  if (expectedSha256 && expectedSha256[0] && strcasecmp(expectedSha256, g_otaShaHex) != 0) {
+    SD.remove(SD_ATMEGA_OTA_HEX_PATH);
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "sha256_mismatch");
+    return false;
+  }
+
+  Serial.printf("[ATOTA] download ok file=%s bytes=%llu sha=%s\n",
+                SD_ATMEGA_OTA_HEX_PATH,
+                (unsigned long long)written,
+                g_otaShaHex);
+  return true;
+}
+
+static bool atmegaOtaRunFromFilePath(const char* path, char* errOut, size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  if (!path || !path[0]) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "file_path_missing");
+    return false;
+  }
+  if (g_runActive) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "device_run_active");
+    return false;
+  }
+  if (!sdProbeAndMount(false)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "sd_not_ready");
+    return false;
+  }
+  if (!SD.exists(path)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "file_not_found");
+    return false;
+  }
+
+  File file = SD.open(path, FILE_READ);
+  if (!file) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "file_open_failed");
+    return false;
+  }
+
+  g_atmegaOtaLastBridgeEnabled = g_bridgeEnabled;
+  g_bridgeEnabled = false;
+  g_atmegaOtaInProgress = true;
+  g_atmegaOtaStartedAtMs = millis();
+  snprintf(g_atmegaOtaSourceText, sizeof(g_atmegaOtaSourceText), "%s", path);
+  atmegaOtaSetState(ATMEGA_OTA_ENTERING_BOOT, "starting");
+
+  bool ok = atmegaProgramHexFile(file, path, errOut, errSz);
+  file.close();
+
+  g_atmegaOtaInProgress = false;
+  g_bridgeEnabled = g_atmegaOtaLastBridgeEnabled;
+  if (ok) {
+    atmegaOtaSetState(ATMEGA_OTA_OK, "flash_complete");
+  } else {
+    atmegaOtaSetState(ATMEGA_OTA_FAIL, (errOut && errOut[0]) ? errOut : "flash_failed");
+  }
+  return ok;
+}
+
+static bool atmegaOtaRunFromUrl(const char* sourcePathOrUrl, const char* expectedSha256, char* errOut, size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  if (g_runActive) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "device_run_active");
+    return false;
+  }
+
+  snprintf(g_atmegaOtaExpectedSha256, sizeof(g_atmegaOtaExpectedSha256), "%s",
+           (expectedSha256 && expectedSha256[0]) ? expectedSha256 : "");
+  snprintf(g_atmegaOtaSourceText, sizeof(g_atmegaOtaSourceText), "%s",
+           (sourcePathOrUrl && sourcePathOrUrl[0]) ? sourcePathOrUrl : "-");
+
+  atmegaOtaSetState(ATMEGA_OTA_DOWNLOADING, "downloading_hex");
+  if (!atmegaOtaDownloadUrlToSd(sourcePathOrUrl, expectedSha256, errOut, errSz)) {
+    atmegaOtaSetState(ATMEGA_OTA_FAIL, (errOut && errOut[0]) ? errOut : "download_failed");
+    return false;
+  }
+
+  return atmegaOtaRunFromFilePath(SD_ATMEGA_OTA_HEX_PATH, errOut, errSz);
+}
+
+static bool atmegaOtaProbeBootloader(bool rebootToApp) {
+  char detail[64];
+  uint16_t blockSize = 0;
+
+  g_atmegaOtaLastBridgeEnabled = g_bridgeEnabled;
+  g_bridgeEnabled = false;
+  g_atmegaOtaInProgress = true;
+  atmegaOtaSetState(ATMEGA_OTA_ENTERING_BOOT, "probing_bootloader");
+
+  bool ok = atmegaBootloaderHandshake(detail, sizeof(detail), &blockSize);
+  if (rebootToApp) {
+    (void)atmegaAvr109LeaveProgMode();
+    atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+  }
+
+  g_atmegaOtaInProgress = false;
+  g_bridgeEnabled = g_atmegaOtaLastBridgeEnabled;
+
+  if (ok) {
+    atmegaOtaSetState(ATMEGA_OTA_OK, "bootloader_ready");
+    Serial.printf("[ATOTA] bootloader OK %s\n", detail);
+  } else {
+    atmegaOtaSetState(ATMEGA_OTA_FAIL, detail[0] ? detail : "bootloader_probe_failed");
+    Serial.printf("[ATOTA] bootloader FAIL %s\n", detail[0] ? detail : "-");
+  }
+  return ok;
+}
+
+static void atmegaOtaPrintStatus() {
+  Serial.printf("[ATOTA] state=%s text=%s source=%s bytes=%lu/%lu blocks=%lu active=%u bridge=%u elapsed=%lu ms\n",
+                atmegaOtaStateC(g_atmegaOtaState),
+                g_atmegaOtaStatusText,
+                g_atmegaOtaSourceText[0] ? g_atmegaOtaSourceText : "-",
+                (unsigned long)g_atmegaOtaBytesDone,
+                (unsigned long)g_atmegaOtaBytesTotal,
+                (unsigned long)g_atmegaOtaFlashBlocks,
+                g_atmegaOtaInProgress ? 1U : 0U,
+                g_bridgeEnabled ? 1U : 0U,
+                (unsigned long)(g_atmegaOtaStartedAtMs ? (millis() - g_atmegaOtaStartedAtMs) : 0U));
+}
+
+static bool atmegaOtaHandleCommand(const String& arg) {
+  String rest = arg;
+  rest.trim();
+  if (!rest.length()) {
+    Serial.println("Usage: atota status | atota probe | atota file <sd_path> | atota url <path_or_url> [sha256]");
+    return true;
+  }
+
+  String sub = rest;
+  String tail;
+  int sp = rest.indexOf(' ');
+  if (sp >= 0) {
+    sub = rest.substring(0, sp);
+    tail = rest.substring(sp + 1);
+    tail.trim();
+  }
+  sub.toLowerCase();
+
+  if (sub == "status") {
+    atmegaOtaPrintStatus();
+    return true;
+  }
+  if (sub == "probe" || sub == "bl") {
+    atmegaOtaProbeBootloader(true);
+    return true;
+  }
+  if (sub == "file") {
+    char err[96];
+    if (!tail.length()) {
+      Serial.println("Usage: atota file <sd_path>");
+      return true;
+    }
+    bool ok = atmegaOtaRunFromFilePath(tail.c_str(), err, sizeof(err));
+    Serial.printf("[ATOTA] file result=%s reason=%s\n", ok ? "ok" : "fail", ok ? "-" : err);
+    return true;
+  }
+  if (sub == "url") {
+    if (!tail.length()) {
+      Serial.println("Usage: atota url <path_or_url> [sha256]");
+      return true;
+    }
+    String src = tail;
+    String sha;
+    int shaSp = tail.indexOf(' ');
+    if (shaSp >= 0) {
+      src = tail.substring(0, shaSp);
+      sha = tail.substring(shaSp + 1);
+      src.trim();
+      sha.trim();
+    }
+    char err[96];
+    bool ok = atmegaOtaRunFromUrl(src.c_str(), sha.length() ? sha.c_str() : nullptr, err, sizeof(err));
+    Serial.printf("[ATOTA] url result=%s reason=%s\n", ok ? "ok" : "fail", ok ? "-" : err);
+    return true;
+  }
+
+  Serial.println("Usage: atota status | atota probe | atota file <sd_path> | atota url <path_or_url> [sha256]");
+  return true;
 }
 
 static bool webPrepareSecureClient() {
@@ -2531,8 +3418,29 @@ static void atmegaPublishRegistrationState(bool registered) {
   if (n <= 0) return;
   if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
   g_lastAtmegaRegPublishMs = millis();
-  ATMEGA.write((const uint8_t*)line, (size_t)n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, (size_t)n);
+}
+
+static void atmegaForceStateResync(const char* reason, bool includeEnergy) {
+  g_lastAtmegaRegPublishMs = 0;
+  g_lastAtmegaSubPublishMs = 0;
+  g_page63LastStatusMs = 0;
+  g_page63LastStatusConnected = 0xFF;
+  g_atmegaBootUiRepublishLastMs = 0;
+
+  if (portalMode) {
+    notifyAtmegaBootUiState('A', 0U);
+  }
+  if (includeEnergy) {
+    teInvalidatePublishedMetrics();
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    notifyAtmegaWifiConnectResult(true);
+  }
+
+  Serial.printf("[AT-SYNC] force resync (%s, energy=%u)\n",
+                (reason && reason[0]) ? reason : "-",
+                includeEnergy ? 1U : 0U);
 }
 
 static void atmegaRepublishStateTick() {
@@ -2839,13 +3747,23 @@ static bool jsonExtractUint64Value(const String& body, const char* key, uint64_t
   return true;
 }
 
-static void jsonAppendFirmwareFields(String& out) {
-  jsonAppendQuotedField(out, "fw", firmwareFamilyC());
-  jsonAppendQuotedField(out, "fw_version", firmwareVersionC());
-  jsonAppendQuotedField(out, "fw_build_id", firmwareBuildIdC());
+static void jsonAppendFirmwareFields(
+    String& out,
+    const char* family = nullptr,
+    const char* version = nullptr,
+    const char* buildId = nullptr) {
+  jsonAppendQuotedField(out, "fw", (family && family[0]) ? family : firmwareFamilyC());
+  jsonAppendQuotedField(out, "fw_version", (version && version[0]) ? version : firmwareVersionC());
+  jsonAppendQuotedField(out, "fw_build_id", (buildId && buildId[0]) ? buildId : firmwareBuildIdC());
 }
 
-static bool webPostOtaReport(const char* state, uint64_t releaseId, const char* message) {
+static bool webPostOtaReportWithIdentity(
+    const char* state,
+    uint64_t releaseId,
+    const char* message,
+    const char* family = nullptr,
+    const char* version = nullptr,
+    const char* buildId = nullptr) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
   char ip[16];
@@ -2861,7 +3779,7 @@ static bool webPostOtaReport(const char* state, uint64_t releaseId, const char* 
   jsonAppendQuotedField(json, "state", (state && state[0]) ? state : "idle");
   jsonAppendQuotedField(json, "message", (message && message[0]) ? message : "");
   jsonAppendUint64Field(json, "release_id", releaseId);
-  jsonAppendFirmwareFields(json);
+  jsonAppendFirmwareFields(json, family, version, buildId);
   json += "}";
 
   String body;
@@ -2871,6 +3789,10 @@ static bool webPostOtaReport(const char* state, uint64_t releaseId, const char* 
     Serial.printf("[OTA] report failed state=%s code=%d\n", (state ? state : "-"), code);
   }
   return ok;
+}
+
+static bool webPostOtaReport(const char* state, uint64_t releaseId, const char* message) {
+  return webPostOtaReportWithIdentity(state, releaseId, message);
 }
 
 static bool webDownloadAndApplyFirmware(
@@ -3169,7 +4091,8 @@ static void webFirmwareCheckTick(bool force) {
     webLogFirmwareSkip("ota_session_skip_until_reboot");
     return;
   }
-  if (g_otaTargetFamily[0] && strcmp(g_otaTargetFamily, firmwareFamilyC()) != 0) {
+  bool targetIsAtmega = isAtmegaTargetFamily(g_otaTargetFamily);
+  if (g_otaTargetFamily[0] && !targetIsAtmega && strcmp(g_otaTargetFamily, firmwareFamilyC()) != 0) {
     Serial.printf("[OTA] skipped family mismatch target=%s current=%s\n", g_otaTargetFamily, firmwareFamilyC());
     webPostOtaReport("failed", releaseId, "family_mismatch");
     return;
@@ -3200,13 +4123,17 @@ static void webFirmwareCheckTick(bool force) {
   }
 
   if (!g_webOtaPromptShownThisBoot) {
+    const char* currentPromptVersion = firmwareVersionC();
     g_webOtaPromptShownThisBoot = true;
     g_webOtaAwaitingUserDecision = true;
     g_webOtaApprovedByUser = false;
     g_webOtaDecisionReqValue = -1;
     g_webOtaPromptReleaseId = releaseId;
     g_webOtaPromptSizeBytes = sizeBytes;
-    atmegaPublishOtaPrompt(firmwareVersionC(), g_otaTargetVersion);
+    if (targetIsAtmega) {
+      currentPromptVersion = g_atmegaReportedVersion[0] ? g_atmegaReportedVersion : "-";
+    }
+    atmegaPublishOtaPrompt(currentPromptVersion, g_otaTargetVersion);
     webPostOtaReport("pending_user", releaseId, "awaiting_user_decision");
     Serial.printf("[OTA] waiting user decision release=%llu\n", (unsigned long long)releaseId);
     return;
@@ -3255,18 +4182,30 @@ static void webFirmwareDecisionTick() {
 
   uint64_t releaseId = g_webOtaPromptReleaseId;
   uint64_t sizeBytes = g_webOtaPromptSizeBytes;
-  webPostOtaReport("downloading", releaseId, "ota download started");
+  bool targetIsAtmega = isAtmegaTargetFamily(g_otaTargetFamily);
+  webPostOtaReport("downloading", releaseId, targetIsAtmega ? "atmega_ota_download_started" : "ota download started");
 
-  if (!webDownloadAndApplyFirmware(
-          g_otaDownloadPath,
-          releaseId,
-          g_otaTargetFamily,
-          g_otaTargetVersion,
-          g_otaTargetBuildId,
-          sizeBytes,
-          g_otaExpectedSha256,
-          g_otaErrorMsg,
-          sizeof(g_otaErrorMsg))) {
+  bool applyOk = false;
+  if (targetIsAtmega) {
+    applyOk = atmegaOtaRunFromUrl(
+        g_otaDownloadPath,
+        g_otaExpectedSha256,
+        g_otaErrorMsg,
+        sizeof(g_otaErrorMsg));
+  } else {
+    applyOk = webDownloadAndApplyFirmware(
+        g_otaDownloadPath,
+        releaseId,
+        g_otaTargetFamily,
+        g_otaTargetVersion,
+        g_otaTargetBuildId,
+        sizeBytes,
+        g_otaExpectedSha256,
+        g_otaErrorMsg,
+        sizeof(g_otaErrorMsg));
+  }
+
+  if (!applyOk) {
     Serial.printf("[OTA] apply failed release=%llu reason=%s\n",
                   (unsigned long long)releaseId,
                   g_otaErrorMsg[0] ? g_otaErrorMsg : "unknown");
@@ -3274,6 +4213,25 @@ static void webFirmwareDecisionTick() {
     g_webOtaAwaitingUserDecision = false;
     g_webOtaApprovedByUser = false;
     g_webOtaSessionSkipUntilReboot = true;
+    if (targetIsAtmega) {
+      atmegaPublishOtaSessionReset();
+    }
+    atmegaRequestPageChange(DWIN_PAGE_DEVICE_READY);
+    return;
+  }
+
+  if (targetIsAtmega) {
+    webPostOtaReportWithIdentity(
+        "success",
+        releaseId,
+        "atmega firmware applied",
+        g_otaTargetFamily,
+        g_otaTargetVersion,
+        g_otaTargetBuildId);
+    g_webOtaAwaitingUserDecision = false;
+    g_webOtaApprovedByUser = false;
+    g_webOtaPromptReleaseId = 0;
+    g_webOtaPromptSizeBytes = 0;
     atmegaRequestPageChange(DWIN_PAGE_DEVICE_READY);
   }
 }
@@ -3572,6 +4530,9 @@ static bool webHandlePendingCommand(const String& body) {
     lastWebTelemetryMs = 0;
   } else if (strcasecmp(command, "PING") == 0) {
     Serial.println("[WEB] pending command PING");
+  } else if (strcasecmp(command, "CHECK_OTA") == 0 || strcasecmp(command, "CHECKOTA") == 0) {
+    Serial.println("[WEB] pending command CHECK_OTA");
+    webScheduleImmediateFirmwareCheck("pending_command");
   } else if (strncasecmp(command, "PAGE", 4) == 0) {
     Serial.printf("[WEB] pending command %s\n", command);
     handle_command(String(command));
@@ -4038,8 +4999,7 @@ static void teSendMetricToAtmega(char key, uint64_t value) {
   char line[52];
   uint32_t v = teClampU32(value);
   snprintf(line, sizeof(line), "@ENG|%c|%lu\n", key, (unsigned long)v);
-  ATMEGA.write((const uint8_t*)line, strlen(line));
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, strlen(line));
   Serial.printf("[ESP->AT] ENG|%c|%lu\n", key, (unsigned long)v);
 }
 
@@ -4234,8 +5194,7 @@ static void atmegaPublishSubscriptionActive(const char* planLabel, const char* r
   g_lastAtmegaSubPublishMs = millis();
 
   snprintf(line, sizeof(line), "@SUB|A|%s|%s|%d\n", planSafe, rangeSafe, remainingDays);
-  ATMEGA.write((const uint8_t*)line, strlen(line));
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, strlen(line));
 }
 
 static void dwinRenderSubscriptionActive(const char* plan, const char* startDate, const char* expiryDate, int remainingDays) {
@@ -5620,13 +6579,31 @@ static void handleConnectPost() {
 static void notifyAtmegaWifiConnectResult(bool ok) {
   char line[24];
   snprintf(line, sizeof(line), "@WIFI|R|%u\n", ok ? 1U : 0U);
-  ATMEGA.print(line);
+  atmegaAppPrintLine(line);
   Serial.printf("[ESP->AT] WIFI result=%u\n", ok ? 1U : 0U);
 }
 
-static void notifyAtmegaBootUiState(char state, uint8_t retryAttempt) {
+static void atmegaPublishBootUiStateRaw(char state, uint8_t retryAttempt, bool logToSerial) {
   char line[24];
+
+  if (state == 'C' && retryAttempt > 0U) {
+    snprintf(line, sizeof(line), "@P63|M|%c|%u\n", state, retryAttempt);
+  } else {
+    snprintf(line, sizeof(line), "@P63|M|%c\n", state);
+  }
+  atmegaAppPrintLine(line);
+
+  if (!logToSerial) return;
+  if (state == 'C' && retryAttempt > 0U) {
+    Serial.printf("[ESP->AT] boot wifi phase=%c retry=%u\n", state, retryAttempt);
+  } else {
+    Serial.printf("[ESP->AT] boot wifi phase=%c\n", state);
+  }
+}
+
+static void notifyAtmegaBootUiState(char state, uint8_t retryAttempt) {
   uint8_t stateId = 0xFF;
+  uint32_t nowMs = millis();
 
   switch (state) {
     case 'C': stateId = 1U; break;
@@ -5636,23 +6613,38 @@ static void notifyAtmegaBootUiState(char state, uint8_t retryAttempt) {
   }
 
   if (state != 'C') retryAttempt = 0U;
+  g_atmegaBootUiStatePending = state;
+  g_atmegaBootUiRetryPending = retryAttempt;
+  g_atmegaBootUiRepublishUntilMs = nowMs + ATMEGA_BOOT_UI_REPUBLISH_WINDOW_MS;
 
   if ((stateId == g_atmegaBootUiStateLast) &&
       (retryAttempt == g_atmegaBootUiRetryLast)) return;
   g_atmegaBootUiStateLast = stateId;
   g_atmegaBootUiRetryLast = retryAttempt;
+  g_atmegaBootUiRepublishLastMs = nowMs;
+  atmegaPublishBootUiStateRaw(state, retryAttempt, true);
+}
 
-  if (state == 'C' && retryAttempt > 0U) {
-    snprintf(line, sizeof(line), "@P63|M|%c|%u\n", state, retryAttempt);
-  } else {
-    snprintf(line, sizeof(line), "@P63|M|%c\n", state);
+static void atmegaBootUiRepublishTick() {
+  uint32_t nowMs = millis();
+  bool keepAlive = false;
+
+  if (g_atmegaBootUiStatePending == 0) return;
+  keepAlive = ((g_atmegaBootUiStatePending == 'A') && portalMode) ||
+              ((g_atmegaBootUiStatePending == 'C') &&
+               !portalMode &&
+               (WiFi.status() != WL_CONNECTED));
+  if (keepAlive) {
+    g_atmegaBootUiRepublishUntilMs = nowMs + ATMEGA_BOOT_UI_REPUBLISH_WINDOW_MS;
+  } else if ((int32_t)(nowMs - g_atmegaBootUiRepublishUntilMs) >= 0) {
+    g_atmegaBootUiStatePending = 0;
+    g_atmegaBootUiRetryPending = 0;
+    return;
   }
-  ATMEGA.print(line);
-  if (state == 'C' && retryAttempt > 0U) {
-    Serial.printf("[ESP->AT] boot wifi phase=%c retry=%u\n", state, retryAttempt);
-  } else {
-    Serial.printf("[ESP->AT] boot wifi phase=%c\n", state);
-  }
+  if ((uint32_t)(nowMs - g_atmegaBootUiRepublishLastMs) < ATMEGA_BOOT_UI_REPUBLISH_MS) return;
+
+  g_atmegaBootUiRepublishLastMs = nowMs;
+  atmegaPublishBootUiStateRaw(g_atmegaBootUiStatePending, g_atmegaBootUiRetryPending, false);
 }
 
 static void atmegaCredentialConnectTick() {
@@ -5725,6 +6717,7 @@ static void portalConnectTick() {
       if (portalShutdownAtMs == 0) portalShutdownAtMs = millis() + 15000;
       if (portalShutdownForceAtMs == 0) portalShutdownForceAtMs = millis() + 120000;
     }
+    atmegaForceStateResync("portal_connect_success", true);
     return;
   }
 
@@ -5746,6 +6739,7 @@ static void portalConnectTick() {
       notifyAtmegaWifiConnectResult(false);
       g_atmegaConnectFlowActive = false;
     }
+    atmegaForceStateResync("portal_connect_timeout", false);
   }
 }
 
@@ -5800,8 +6794,7 @@ static void page63SetScanBusyViaAtmega(bool on) {
   if (n <= 0) return;
   if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
   Serial.printf("[P63->AT] scan_busy=%u raw=\"%s\"\n", on ? 1U : 0U, line);
-  ATMEGA.write((const uint8_t*)line, (size_t)n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, (size_t)n);
 }
 
 static int runBlockingScanLikeWeb(bool* cooldown) {
@@ -5937,8 +6930,7 @@ static void page63SendSlotToAtmega(uint8_t slot, const char* text, const char* s
   if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
   Serial.printf("[P63->AT] slot=%u sec=%s lock=%u ssid='%s' raw=\"%s\"\n",
                 (unsigned)(slot + 1), safeSec, locked ? 1U : 0U, safe, line);
-  ATMEGA.write((const uint8_t*)line, (size_t)n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, (size_t)n);
   // ATmega side currently buffers one completed line at a time.
   // Small inter-line gap prevents slot bursts from collapsing to the last line.
   delay(4);
@@ -5952,8 +6944,7 @@ static void page63ClearSlotsViaAtmega() {
 
 static void page63ClearViaAtmega() {
   static const char kCmd[] = "@P63|C\n";
-  ATMEGA.write((const uint8_t*)kCmd, sizeof(kCmd) - 1);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)kCmd, sizeof(kCmd) - 1);
 }
 
 static void page63SetScanAnimViaAtmega(bool on) {
@@ -5962,8 +6953,7 @@ static void page63SetScanAnimViaAtmega(bool on) {
   if (n <= 0) return;
   if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
   Serial.printf("[P63->AT] scan_anim=%u raw=\"%s\"\n", on ? 1U : 0U, line);
-  ATMEGA.write((const uint8_t*)line, (size_t)n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, (size_t)n);
 }
 
 static void page63SendWiFiStatusToAtmega() {
@@ -5982,8 +6972,7 @@ static void page63SendWiFiStatusToAtmega() {
   int n = snprintf(line, sizeof(line), "@P63|W|%u\n", connected);
   if (n <= 0) return;
   if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
-  ATMEGA.write((const uint8_t*)line, (size_t)n);
-  ATMEGA.flush();
+  atmegaAppWriteBytes((const uint8_t*)line, (size_t)n);
   if (connected != prevConnected) {
     Serial.printf("[P63] status=%u to ATmega\n", (unsigned)connected);
   }
@@ -6185,9 +7174,13 @@ static void startPortal() {
   setBridgeEnabledForSubscription(true, "portal_start");
   page63ResetResults();
   g_page63ListDirty = true;
-  page63ClearSlotsViaAtmega();
-  page63ClearViaAtmega();
-  page63SetScanAnimViaAtmega(false);
+  // Avoid flooding ATmega boot-gate parsing with page63 slot traffic before the
+  // ESP has published the AP-ready boot phase.
+  if (g_dwinCurrentPage == DWIN_PAGE_WIFI_SCAN) {
+    page63ClearSlotsViaAtmega();
+    page63ClearViaAtmega();
+    page63SetScanAnimViaAtmega(false);
+  }
 
   Serial.println("[AP] Starting provisioning AP + Captive Portal...");
   Serial.printf("[AP] SSID='%s' PASS='%s'\n", AP_SSID, AP_PASS);
@@ -6228,6 +7221,7 @@ static void startPortal() {
     Serial.println("[AP] ✅ AP should be visible now. (If not, try 2.4GHz Wi-Fi list on phone)");
     notifyAtmegaBootUiState('A', 0U);
   }
+  atmegaForceStateResync(apOk ? "portal_started" : "portal_start_failed", false);
 
   dnsServer.start(DNS_PORT, "*", AP_IP);
   Serial.println("[DNS] Captive DNS started (* -> 192.168.4.1)");
@@ -6343,6 +7337,7 @@ void setup() {
       webRegisterTick(true);
       webDeviceRegisteredSyncTick(true);
       webSubscriptionSyncTick(true);
+      atmegaForceStateResync("boot_sta_connected", true);
       g_page63LastStatusMs = 0;
       g_page63LastStatusConnected = 0xFF;
       return;
@@ -6409,9 +7404,11 @@ void loop() {
       webRegisterTick(true);
       webDeviceRegisteredSyncTick(true);
       webSubscriptionSyncTick(true);
+      atmegaForceStateResync("sta_status_connected", true);
     } else {
       g_lastStaConnectedMs = 0;
       g_webFirmwareImmediateCheckPending = false;
+      atmegaForceStateResync("sta_status_disconnected", false);
     }
   }
 
@@ -6457,6 +7454,7 @@ void loop() {
 
   page63WifiTick();
   page62WifiIconTick();
+  atmegaBootUiRepublishTick();
   atmegaRepublishStateTick();
 
   if (portalShutdownAtMs > 0 && (int32_t)(millis() - portalShutdownAtMs) >= 0) {

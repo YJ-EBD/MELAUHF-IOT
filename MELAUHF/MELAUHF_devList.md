@@ -412,3 +412,15 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 인증/세션/Redis 보강, 메신저/플랫폼/통합관리/페이지 라우트 분리, 미사용 파일 정리와 Source Control 정리를 진행한 작업이었고 MELAUHF 펌웨어 코드는 수정하지 않았다.
   - MELAUHF 디렉토리는 기존 운전/페이지/UI/ESP 연동 로직을 그대로 유지한 채 `_devList` 기록만 갱신했다.
+
+## 48. ATmega 부트 게이트·에너지 동기화·OTA 복귀 안정화
+- 수정코드
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_boot.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_ota.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_subscription.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_uart_bridge.c`
+  - `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_wifi_flow.c`
+- 간단한 설명
+  - ATmega 펌웨어 쪽에서는 `@FW|B` 부트 알림과 버전 리포트 재전송, page68 부트 대기시간/조건 보정, page71 ATmega 버전 표기, page61·62·73 복귀 흐름 안정화, `OTA|RST` 수신 시 page74에서 확실히 빠져나오는 복구 로직을 추가했다.
+  - 동시에 ESP에서 들어오는 `PAGE|`, `P63|M|`, `OTA|` 계열을 우선 큐로 보강해 초기 부트와 OTA 실패 직후 중요한 제어 라인이 slot 렌더링에 밀리지 않게 했고, 부팅 직후 에너지/등록 상태가 늦게 와도 UI가 오류 페이지로 빠지지 않도록 가드했다.

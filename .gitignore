@@ -31,8 +31,16 @@ ABBAS_WEB/storage/device_logs/**/.TotalEnergy.txt.energy.part
 
 # Local OTA firmware artifacts
 ABBAS_WEB/storage/firmware/**/*.bin
+ABBAS_WEB/storage/firmware/**/*.hex
 ABBAS_WEB/static/uploads/**
 ABBAS_WEB/logo/KakaoTalk_*.png
 
 # Local comparison/reference firmware trees
 therma_med/
+
+# Local firmware build/temp outputs
+.tmp_mel_build/
+Arduino/build/
+Arduino/atmega128_uart_bootloader/build/
+Arduino/_pdfcheck/
+Arduino/*.lss

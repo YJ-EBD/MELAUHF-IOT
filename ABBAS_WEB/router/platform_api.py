@@ -12,6 +12,8 @@ from DB.runtime import get_mysql
 def register_platform_routes(router: APIRouter) -> None:
     from router import pages as pages_module
 
+    ATMEGA_FIRMWARE_FAMILY_DEFAULT = pages_module.ATMEGA_FIRMWARE_FAMILY_DEFAULT
+    ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES = pages_module.ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES
     templates = pages_module.templates
     _base_context = pages_module._base_context
     _build_plan_payload = pages_module._build_plan_payload
@@ -63,40 +65,57 @@ def register_platform_routes(router: APIRouter) -> None:
     def api_firmware_payload():
         return {"ok": True, **_build_firmware_payload()}
 
-    @router.post("/api/firmware/releases")
-    async def api_firmware_create_release(
+    @router.get("/api/firmware/atmega/payload")
+    def api_firmware_atmega_payload():
+        return {
+            "ok": True,
+            **_build_firmware_payload(
+                family_filter=ATMEGA_FIRMWARE_FAMILY_DEFAULT,
+                default_family=ATMEGA_FIRMWARE_FAMILY_DEFAULT,
+                max_upload_bytes=ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES,
+            ),
+        }
+
+    async def _api_firmware_create_release_impl(
         request: Request,
-        family: str = Form(...),
-        version: str = Form(...),
-        build_id: str = Form(""),
-        notes: str = Form(""),
-        force_update: str = Form("0"),
-        firmware_file: UploadFile = File(...),
+        *,
+        family: str,
+        version: str,
+        build_id: str,
+        notes: str,
+        force_update: str,
+        firmware_file: UploadFile,
+        default_family: str,
+        allowed_extensions: tuple[str, ...],
+        max_upload_bytes: int,
     ):
-        family_value = _sanitize_firmware_token(family, FIRMWARE_FAMILY_DEFAULT)
+        family_value = _sanitize_firmware_token(family, default_family)
         version_value = _sanitize_firmware_token(version)
         build_value = _sanitize_firmware_token(build_id, "build")
         if not version_value:
             raise HTTPException(status_code=400, detail="version required")
 
         filename = str(firmware_file.filename or "firmware.bin").strip() or "firmware.bin"
-        if not filename.lower().endswith(".bin"):
-            raise HTTPException(status_code=400, detail="firmware file must be .bin")
+        ext = filename.lower()
+        if not any(ext.endswith(suffix) for suffix in allowed_extensions):
+            suffix_text = ", ".join(allowed_extensions)
+            raise HTTPException(status_code=400, detail=f"firmware file must be {suffix_text}")
 
         raw = await firmware_file.read()
         if not raw:
             raise HTTPException(status_code=400, detail="firmware file required")
-        if len(raw) > FIRMWARE_MAX_UPLOAD_BYTES:
+        if len(raw) > max_upload_bytes:
             raise HTTPException(
                 status_code=400,
-                detail=f"firmware exceeds OTA slot limit ({len(raw)} > {FIRMWARE_MAX_UPLOAD_BYTES} bytes)",
+                detail=f"firmware exceeds upload limit ({len(raw)} > {max_upload_bytes} bytes)",
             )
 
         sha256 = hashlib.sha256(raw).hexdigest()
         release_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         target_dir = os.path.join(FIRMWARE_STORAGE_DIR, family_value)
         os.makedirs(target_dir, exist_ok=True)
-        stored_name = f"{family_value}__{version_value}__{build_value}__{release_ts}.bin"
+        stored_ext = os.path.splitext(filename)[1] or allowed_extensions[0]
+        stored_name = f"{family_value}__{version_value}__{build_value}__{release_ts}{stored_ext}"
         file_path = os.path.join(target_dir, stored_name)
 
         with open(file_path, "wb") as fh:
@@ -138,6 +157,52 @@ def register_platform_routes(router: APIRouter) -> None:
                 "download_path": _release_download_path(int(release.get("id") or 0)),
             },
         }
+
+    @router.post("/api/firmware/releases")
+    async def api_firmware_create_release(
+        request: Request,
+        family: str = Form(...),
+        version: str = Form(...),
+        build_id: str = Form(""),
+        notes: str = Form(""),
+        force_update: str = Form("0"),
+        firmware_file: UploadFile = File(...),
+    ):
+        return await _api_firmware_create_release_impl(
+            request,
+            family=family,
+            version=version,
+            build_id=build_id,
+            notes=notes,
+            force_update=force_update,
+            firmware_file=firmware_file,
+            default_family=FIRMWARE_FAMILY_DEFAULT,
+            allowed_extensions=(".bin",),
+            max_upload_bytes=FIRMWARE_MAX_UPLOAD_BYTES,
+        )
+
+    @router.post("/api/firmware/atmega/releases")
+    async def api_firmware_create_atmega_release(
+        request: Request,
+        family: str = Form(ATMEGA_FIRMWARE_FAMILY_DEFAULT),
+        version: str = Form(...),
+        build_id: str = Form(""),
+        notes: str = Form(""),
+        force_update: str = Form("0"),
+        firmware_file: UploadFile = File(...),
+    ):
+        return await _api_firmware_create_release_impl(
+            request,
+            family=family or ATMEGA_FIRMWARE_FAMILY_DEFAULT,
+            version=version,
+            build_id=build_id,
+            notes=notes,
+            force_update=force_update,
+            firmware_file=firmware_file,
+            default_family=ATMEGA_FIRMWARE_FAMILY_DEFAULT,
+            allowed_extensions=(".hex",),
+            max_upload_bytes=ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES,
+        )
 
     @router.post("/api/firmware/releases/delete")
     def api_firmware_delete_releases(payload: dict[str, Any] = Body(...)):

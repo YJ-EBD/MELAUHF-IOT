@@ -20,6 +20,7 @@
     deleteBtn: $id("fwDeleteBtn"),
     refreshBtn: $id("fwRefreshBtn"),
     assignBtn: $id("fwAssignBtn"),
+    assignNowBtn: $id("fwAssignNowBtn"),
     clearBtn: $id("fwClearTargetBtn"),
     filterInput: $id("fwDeviceFilter"),
     releaseSelectAll: $id("fwSelectAllReleases"),
@@ -34,6 +35,11 @@
   };
 
   const defaultFamily = String(root.getAttribute("data-default-family") || "").trim();
+  const payloadApiPath = String(root.getAttribute("data-payload-api") || "/api/firmware/payload").trim();
+  const uploadApiPath = String(root.getAttribute("data-upload-api") || "/api/firmware/releases").trim();
+  const batchCommandApiPath = String(root.getAttribute("data-batch-command-api") || "/api/firmware/devices/queue-command").trim();
+  const immediateCommand = String(root.getAttribute("data-immediate-command") || "").trim();
+  const pageTitle = String(root.getAttribute("data-page-title") || "Firmware Manage").trim();
 
   function escHtml(value) {
     return String(value == null ? "" : value)
@@ -248,7 +254,7 @@
   async function loadPayload() {
     if (window.AppUI && window.AppUI.showLoading) window.AppUI.showLoading("펌웨어 관리 데이터를 불러오는 중...");
     try {
-      const payload = await fetchJson("/api/firmware/payload", { cache: "no-store" });
+      const payload = await fetchJson(payloadApiPath, { cache: "no-store" });
       state.payload = payload;
       renderAll();
     } finally {
@@ -265,7 +271,7 @@
 
     if (window.AppUI && window.AppUI.showLoading) window.AppUI.showLoading("펌웨어 업로드 중...");
     try {
-      const payload = await fetchJson("/api/firmware/releases", {
+      const payload = await fetchJson(uploadApiPath, {
         method: "POST",
         body: fd,
       });
@@ -307,6 +313,55 @@
       await loadPayload();
     } catch (error) {
       alert(`배정 실패: ${error.message}`);
+    } finally {
+      if (window.AppUI && window.AppUI.hideLoading) window.AppUI.hideLoading();
+    }
+  }
+
+  async function queueImmediateCommand(deviceIds, command) {
+    const cleanIds = Array.isArray(deviceIds)
+      ? deviceIds.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    const cleanCommand = String(command || "").trim();
+    if (!cleanIds.length || !cleanCommand) return;
+    await fetchJson(batchCommandApiPath, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_ids: cleanIds, command: cleanCommand }),
+    });
+  }
+
+  async function handleAssignAndRun() {
+    const release = getSelectedRelease();
+    if (!release) {
+      alert("먼저 릴리스를 선택하세요.");
+      return;
+    }
+    const deviceIds = getCheckedDeviceIds();
+    if (!deviceIds.length) {
+      alert("업데이트할 장비를 선택하세요.");
+      return;
+    }
+    if (!immediateCommand) {
+      alert("즉시 실행 명령이 설정되지 않았습니다.");
+      return;
+    }
+    if (!window.confirm(`${deviceIds.length}대 장비에 ${releaseLabel(release)} 릴리스를 배정하고 즉시 업데이트를 실행합니다.`)) {
+      return;
+    }
+
+    if (window.AppUI && window.AppUI.showLoading) window.AppUI.showLoading("릴리스를 배정하고 즉시 업데이트를 실행하는 중...");
+    try {
+      await fetchJson(`/api/firmware/releases/${Number(release.id || 0)}/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_ids: deviceIds }),
+      });
+      await queueImmediateCommand(deviceIds, immediateCommand);
+      await loadPayload();
+      alert(`${deviceIds.length}대 장비에 즉시 업데이트 명령을 전송했습니다.`);
+    } catch (error) {
+      alert(`즉시 실행 실패: ${error.message}`);
     } finally {
       if (window.AppUI && window.AppUI.hideLoading) window.AppUI.hideLoading();
     }
@@ -457,6 +512,9 @@
     if (els.assignBtn) {
       els.assignBtn.addEventListener("click", () => { handleAssign().catch((error) => alert(`배정 실패: ${error.message}`)); });
     }
+    if (els.assignNowBtn) {
+      els.assignNowBtn.addEventListener("click", () => { handleAssignAndRun().catch((error) => alert(`즉시 실행 실패: ${error.message}`)); });
+    }
     if (els.clearBtn) {
       els.clearBtn.addEventListener("click", () => { handleClearTargets().catch((error) => alert(`배정 해제 실패: ${error.message}`)); });
     }
@@ -470,6 +528,6 @@
 
   bindEvents();
   loadPayload().catch((error) => {
-    alert(`Firmware Manage 초기화 실패: ${error.message}`);
+    alert(`${pageTitle} 초기화 실패: ${error.message}`);
   });
 })();

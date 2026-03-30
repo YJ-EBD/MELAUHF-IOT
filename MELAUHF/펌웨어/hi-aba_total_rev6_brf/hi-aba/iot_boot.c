@@ -496,7 +496,9 @@ static U08 page68_run_boot_checks(U08 resumePage)
 	page68_set_step(3);
 	page68_boot_step_wait_ms(PAGE68_STEP_MIN_MS);
 	waitMs = PAGE68_WIFI_PHASE_WAIT_MS;
-	while ((waitMs > 0U) && (p63_boot_wifi_phase == P63_BOOT_WIFI_PHASE_NONE))
+	while ((waitMs > 0U) &&
+	       (p63_boot_wifi_phase == P63_BOOT_WIFI_PHASE_NONE) &&
+	       !(p63_wifi_status_seen && (p63_wifi_connected_state == 1U)))
 	{
 		page68_wait_step_10ms(&waitMs);
 	}
@@ -504,6 +506,16 @@ static U08 page68_run_boot_checks(U08 resumePage)
 	{
 		page68_fail_to_page10(errCode);
 		return 0U;
+	}
+	if ((p63_boot_wifi_phase == P63_BOOT_WIFI_PHASE_NONE) &&
+	    p63_wifi_status_seen &&
+	    (p63_wifi_connected_state == 1U))
+	{
+		// ESP may already be fully connected before ATmega reaches page68.
+		// Treat an observed connected heartbeat as a valid "connect in progress"
+		// hand-off so boot can continue without a fresh P63|M frame.
+		p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_CONNECTING;
+		p63_boot_wifi_retry_attempt = 0U;
 	}
 	if (p63_boot_wifi_phase == P63_BOOT_WIFI_PHASE_ERROR)
 	{

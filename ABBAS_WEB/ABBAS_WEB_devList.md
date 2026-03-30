@@ -773,3 +773,16 @@
   - Notiba AI의 OpenAI Realtime 전사 설정을 서버 코드 안의 고정 상수 대신 env 기반 로더로 재구성해, 모델명·언어·노이즈 리덕션·VAD threshold/prefix/silence·프롬프트·타임아웃을 `settings.env` 기준으로 바로 조절할 수 있게 정리했다.
   - 프론트에서 하드코딩되어 있던 Notiba AI 병합 시간, 최대 글자 수, partial 전송 주기, 재연결 지연, 마이크 캡처 옵션도 서버가 내려주는 `client_tuning` 값을 따라가도록 연결해, `settings.env` 한 곳에서 실사용 튜닝을 바꿀 수 있게 맞췄다.
   - 기존 Notiba AI 동작을 깨지 않도록 기본값은 이전과 동일하게 유지했고, 이번 채팅 기준 검증은 `python3 -m py_compile`, `git diff --check`, 런타임 설정값 로드 확인까지 완료했다.
+
+## 74. ATmega Firmware Manage 페이지와 즉시 OTA 명령 연동
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `router/page_routes.py`
+  - `router/pages.py`
+  - `router/platform_api.py`
+  - `static/js/firmware_manage.js`
+  - `templates/base.html`
+  - `templates/firmware_manage.html`
+- 간단한 설명
+  - 기존 ESP32용 펌웨어 관리 화면을 일반화해 `/firmware-manage-atmega` 페이지를 추가하고, ATmega 전용 family filter, HEX 업로드 허용, 요약/릴리스/디바이스 payload 분리, 관리자 네비게이션 진입점을 함께 붙였다.
+  - 서버에서는 ATmega 릴리스 업로드 API와 장비 일괄 명령 큐 API를 추가해 배정 직후 `CHECK_OTA`를 바로 넣을 수 있게 했고, 프론트 JS도 payload/upload/즉시실행 경로를 data attribute 기반으로 재사용하도록 정리해 ESP32/ATmega 관리 화면을 같은 템플릿으로 운용할 수 있게 맞췄다.

@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <defs>
+    <style>
+      .title { font: 700 30px Arial, sans-serif; fill: #132b45; }
+      .sub { font: 600 16px Arial, sans-serif; fill: #37536f; }
+      .chip { fill: #f7fbff; stroke: #30506e; stroke-width: 2.5; rx: 16; ry: 16; }
+      .part { fill: #fff; stroke: #58758f; stroke-width: 1.8; rx: 10; ry: 10; }
+      .note { fill: #f4faf4; stroke: #587f58; stroke-width: 1.5; rx: 12; ry: 12; }
+      .text { font: 15px Arial, sans-serif; fill: #17324d; }
+      .label { font: 700 18px Arial, sans-serif; fill: #17324d; }
+      .small { font: 13px Arial, sans-serif; fill: #46627d; }
+      .wire { stroke: #315d87; stroke-width: 3; fill: none; }
+      .gnd { stroke: #4c647a; stroke-width: 2; fill: none; }
+      .dot { fill: #315d87; }
+    </style>
+  </defs>
+
+  <text x="40" y="50" class="title">ESP32-C5 -> ATmega128 UART OTA Final</text>
+  <text x="40" y="80" class="sub">Initial ISP is done from PC. Board only needs UART + RESET control.</text>
+
+  <rect x="60" y="140" width="320" height="340" class="chip"/>
+  <text x="85" y="180" class="label">ESP32-C5</text>
+  <text x="85" y="225" class="text">GPIO5  : UART TX -> ATmega RXD0</text>
+  <text x="85" y="265" class="text">GPIO4  : UART RX <- ATmega TXD0</text>
+  <text x="85" y="305" class="text">GND    : Common GND</text>
+  <text x="85" y="345" class="text">GPIO24 : RESET control output</text>
+  <text x="85" y="405" class="small">Keep existing DWIN / SD / RGB / button wiring as-is.</text>
+
+  <rect x="820" y="140" width="320" height="340" class="chip"/>
+  <text x="845" y="180" class="label">ATmega128</text>
+  <text x="845" y="225" class="text">RXD0</text>
+  <text x="845" y="265" class="text">TXD0</text>
+  <text x="845" y="305" class="text">GND</text>
+  <text x="845" y="345" class="text">RESET</text>
+
+  <rect x="490" y="320" width="120" height="44" class="part"/>
+  <text x="530" y="348" class="text">R1 2.2k</text>
+
+  <rect x="650" y="280" width="120" height="120" class="part"/>
+  <text x="683" y="322" class="label">Q1</text>
+  <text x="675" y="348" class="text">2N3904</text>
+  <text x="667" y="372" class="small">B</text>
+  <text x="725" y="372" class="small">C</text>
+  <text x="695" y="395" class="small">E</text>
+
+  <rect x="920" y="375" width="110" height="44" class="part"/>
+  <text x="955" y="403" class="text">R2 10k</text>
+
+  <rect x="480" y="520" width="250" height="120" class="note"/>
+  <text x="505" y="555" class="label">Optional</text>
+  <text x="505" y="590" class="text">R3 100k</text>
+  <text x="505" y="620" class="small">Base pulldown to GND</text>
+
+  <path d="M380 225 H820" class="wire"/>
+  <text x="535" y="214" class="small">GPIO5 -> RXD0</text>
+
+  <path d="M820 265 H380" class="wire"/>
+  <text x="535" y="286" class="small">TXD0 -> GPIO4</text>
+
+  <path d="M380 305 H820" class="gnd"/>
+  <text x="536" y="296" class="small">Common GND</text>
+
+  <path d="M380 345 H490" class="wire"/>
+  <path d="M610 342 H650" class="wire"/>
+  <text x="470" y="311" class="small">GPIO24 -> RESET drive</text>
+
+  <path d="M770 342 H820" class="wire"/>
+  <text x="776" y="332" class="small">Collector -> RESET</text>
+
+  <path d="M710 400 V430" class="gnd"/>
+  <path d="M690 430 H730" class="gnd"/>
+  <path d="M695 438 H725" class="gnd"/>
+  <path d="M700 446 H720" class="gnd"/>
+
+  <path d="M1030 397 H1095 V345 H1140" class="wire"/>
+  <text x="970" y="365" class="small">RESET pull-up</text>
+  <path d="M975 375 V345" class="wire"/>
+  <path d="M955 345 H995" class="wire"/>
+  <text x="960" y="336" class="small">+5V</text>
+
+  <path d="M605 580 H650 V372" class="gnd"/>
+  <text x="520" y="575" class="small">Base -> 100k -> GND</text>
+
+  <rect x="60" y="540" width="330" height="120" class="note"/>
+  <text x="85" y="575" class="label">Add Only These</text>
+  <text x="85" y="607" class="text">1. GPIO24 wire</text>
+  <text x="85" y="635" class="text">2. Q1 2N3904</text>
+  <text x="210" y="635" class="text">3. R1 2.2k</text>
+  <text x="85" y="663" class="text">4. R2 10k</text>
+
+  <rect x="820" y="540" width="320" height="120" class="note"/>
+  <text x="845" y="575" class="label">Do Not Add</text>
+  <text x="845" y="607" class="text">No RESET capacitor</text>
+  <text x="845" y="635" class="text">No ESP<->ATmega SPI wiring for OTA</text>
+  <text x="845" y="663" class="text">No changes to existing UART pins</text>
+</svg>

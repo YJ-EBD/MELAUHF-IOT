@@ -288,6 +288,7 @@ static void ota_parse_line(char *line)
 	char *cmdTok;
 	char *currentTok;
 	char *targetTok;
+	U08 restorePage;
 
 	if (line == 0)
 	{
@@ -309,11 +310,16 @@ static void ota_parse_line(char *line)
 	if ((strcmp(cmdTok, "RST") == 0) || (strcmp(cmdTok, "RESET") == 0))
 	{
 		ota_boot_prompt_clear_pending();
-		if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) && (dwin_page_now == OTA_PAGE_FIRMWARE_UPDATE))
+		restorePage = ota_prev_page;
+		if ((restorePage == 0) || (restorePage == OTA_PAGE_FIRMWARE_UPDATE))
 		{
-			if ((ota_prev_page != 0) && (ota_prev_page != OTA_PAGE_FIRMWARE_UPDATE))
+			restorePage = WIFI_PAGE_CONNECTED;
+		}
+		if (dwin_page_now == OTA_PAGE_FIRMWARE_UPDATE)
+		{
+			if ((restorePage != 0) && (restorePage != OTA_PAGE_FIRMWARE_UPDATE))
 			{
-				pageChange(ota_prev_page);
+				pageChange(restorePage);
 			}
 		}
 		ota_prompt_flags = 0;

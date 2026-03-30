@@ -7,6 +7,8 @@ from fastapi.responses import RedirectResponse
 def register_page_routes(router: APIRouter) -> None:
     from router import pages as pages_module
 
+    ATMEGA_FIRMWARE_FAMILY_DEFAULT = pages_module.ATMEGA_FIRMWARE_FAMILY_DEFAULT
+    ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES = pages_module.ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES
     FIRMWARE_FAMILY_DEFAULT = pages_module.FIRMWARE_FAMILY_DEFAULT
     FIRMWARE_MAX_UPLOAD_BYTES = pages_module.FIRMWARE_MAX_UPLOAD_BYTES
     _base_context = pages_module._base_context
@@ -143,6 +145,62 @@ def register_page_routes(router: APIRouter) -> None:
                 families=payload.get("families") or [],
                 max_upload_bytes=int(payload.get("max_upload_bytes") or FIRMWARE_MAX_UPLOAD_BYTES),
                 default_family=str(payload.get("default_family") or FIRMWARE_FAMILY_DEFAULT),
+                payload_api_path="/api/firmware/payload",
+                upload_api_path="/api/firmware/releases",
+                batch_command_api_path="/api/firmware/devices/queue-command",
+                file_accept=".bin",
+                file_label="BIN 파일",
+                family_locked=False,
+                immediate_command="CHECK_OTA",
+                immediate_button_label="배정 후 즉시 실행",
+                upload_card_title="ESP32 펌웨어 업로드",
+                rules_title="운영 규칙",
+                rules_items=[
+                    "1. 릴리스를 업로드한 뒤 대상 장비에 배정합니다.",
+                    "2. 장비는 자체 OTA 체크 주기에 따라 새 릴리스를 확인하고 pull 방식으로 업데이트합니다.",
+                    "3. 장비가 새 버전으로 부팅 후 성공 보고를 보내면 배정 상태가 자동 해제됩니다.",
+                    "4. 운전 중 장비에는 OTA를 적용하지 않도록 펌웨어에서 차단합니다.",
+                    "5. 이 페이지는 OTA 관련 기능만 다루며, 기존 제어/구독 로직은 건드리지 않습니다.",
+                ],
+            ),
+        )
+
+    @router.get("/firmware-manage-atmega", name="firmware_manage_atmega")
+    def firmware_manage_atmega_page(request: Request):
+        payload = _build_firmware_payload(
+            family_filter=ATMEGA_FIRMWARE_FAMILY_DEFAULT,
+            default_family=ATMEGA_FIRMWARE_FAMILY_DEFAULT,
+            max_upload_bytes=ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES,
+        )
+        return templates.TemplateResponse(
+            "firmware_manage.html",
+            _base_context(
+                request,
+                "firmware_manage_atmega",
+                page_title="ATmega Firmware Manage",
+                summary=payload.get("summary") or {},
+                releases=payload.get("releases") or [],
+                devices=payload.get("devices") or [],
+                families=payload.get("families") or [],
+                max_upload_bytes=int(payload.get("max_upload_bytes") or ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES),
+                default_family=str(payload.get("default_family") or ATMEGA_FIRMWARE_FAMILY_DEFAULT),
+                payload_api_path="/api/firmware/atmega/payload",
+                upload_api_path="/api/firmware/atmega/releases",
+                batch_command_api_path="/api/firmware/devices/queue-command",
+                file_accept=".hex",
+                file_label="HEX 파일",
+                family_locked=True,
+                immediate_command="CHECK_OTA",
+                immediate_button_label="배정 후 즉시 업데이트",
+                upload_card_title="ATmega 펌웨어 업로드",
+                rules_title="ATmega OTA 절차",
+                rules_items=[
+                    "1. 최초 1회는 ISP로 부트로더와 퓨즈를 기록한 뒤 이 페이지를 사용합니다.",
+                    "2. 이 페이지에는 ATmega용 Intel HEX 펌웨어만 업로드합니다.",
+                    "3. 릴리스를 배정하면 ESP32-C5가 같은 장비의 ATmega128A를 UART OTA로 업데이트합니다.",
+                    "4. 즉시 업데이트 버튼을 누르면 장비에 CHECK_OTA 명령을 보내 바로 검사와 적용을 시도합니다.",
+                    "5. 업데이트 중에는 장비 운전을 멈춘 상태로 두는 것을 권장합니다.",
+                ],
             ),
         )
 

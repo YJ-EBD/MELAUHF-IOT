@@ -179,7 +179,24 @@ static void registration_restore_registered_page(void)
 
 	if (dwin_page_now == WIFI_PAGE_REGISTER_WAIT)
 	{
-		wifi_reboot_for_connected_state();
+		if ((targetPage == 0) || (targetPage == 0xFF))
+		{
+			targetPage = WIFI_PAGE_CONNECTED;
+		}
+		if (subscription_resolve_connected_target_page(targetPage, &targetPage))
+		{
+			if (targetPage == WIFI_PAGE_CONNECTED)
+			{
+				subscription_show_connected_page();
+			}
+			else if (dwin_page_now != targetPage)
+			{
+				pageChange(targetPage);
+				p63_wifi_page_last_sent = targetPage;
+				p63_boot_resume_page = targetPage;
+				p63_boot_waiting_status = 0;
+			}
+		}
 		return;
 	}
 
@@ -918,18 +935,31 @@ static void energy_render_page71(void)
 	}
 	versionLine[oi] = 0;
 	dwin_write_text(PAGE71_TEXT_VP_ESP_VERSION, versionLine, PAGE71_TEXT_LEN);
-	versionLine[0] = 'A';
-	versionLine[1] = 'T';
-	versionLine[2] = 'm';
-	versionLine[3] = 'e';
-	versionLine[4] = 'g';
-	versionLine[5] = 'a';
-	versionLine[6] = ' ';
-	versionLine[7] = 'V';
-	versionLine[8] = 'e';
-	versionLine[9] = 'r';
-	versionLine[10] = ' ';
-	versionLine[11] = 0;
+	oi = 0;
+	vi = 0;
+	versionLine[oi++] = 'A';
+	versionLine[oi++] = 'T';
+	versionLine[oi++] = 'm';
+	versionLine[oi++] = 'e';
+	versionLine[oi++] = 'g';
+	versionLine[oi++] = 'a';
+	versionLine[oi++] = ' ';
+	versionLine[oi++] = 'V';
+	versionLine[oi++] = 'e';
+	versionLine[oi++] = 'r';
+	versionLine[oi++] = ' ';
+	if (page71_atmega_version_text[0] != 0)
+	{
+		while ((page71_atmega_version_text[vi] != 0) && (oi < PAGE71_TEXT_LEN))
+		{
+			versionLine[oi++] = page71_atmega_version_text[vi++];
+		}
+	}
+	else
+	{
+		versionLine[oi++] = '-';
+	}
+	versionLine[oi] = 0;
 	dwin_write_text(PAGE71_TEXT_VP_ATMEGA_VERSION, versionLine, PAGE71_TEXT_LEN);
 
 	snprintf(buf, sizeof(buf), "%lu", (unsigned long)g_energy_used_j);
@@ -1193,8 +1223,11 @@ static U08 subscription_uart_line_is_priority(const char *line)
 	if ((strncmp(line, "REG|", 4) == 0) ||
 	    (strncmp(line, "SUB|", 4) == 0) ||
 	    (strncmp(line, "ENG|", 4) == 0) ||
+	    (strncmp(line, "PAGE|", 5) == 0) ||
+	    (strncmp(line, "P63|M|", 6) == 0) ||
 	    (strncmp(line, "P63|W|", 6) == 0) ||
-	    (strncmp(line, "WIFI|R|", 7) == 0))
+	    (strncmp(line, "WIFI|R|", 7) == 0) ||
+	    (strncmp(line, "OTA|", 4) == 0))
 	{
 		return 1U;
 	}

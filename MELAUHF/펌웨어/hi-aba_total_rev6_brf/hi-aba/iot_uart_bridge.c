@@ -95,12 +95,126 @@ void energy_uart_publish_run_event(U08 runActive, uint32_t totalEnergyNow)
 	}
 }
 
+static void atmega_fw_uart_publish_identity(void)
+{
+	char line[96];
+	const char *versionText = page71_atmega_version_text[0] ? page71_atmega_version_text : ATMEGA_FIRMWARE_VERSION;
+	const char *buildIdText = (ATMEGA_FIRMWARE_BUILD_ID[0] != 0) ? ATMEGA_FIRMWARE_BUILD_ID : "-";
+
+	snprintf(line, sizeof(line), "@FW|A|%s|%s\n", versionText, buildIdText);
+	UART1_TX_STR(line);
+	if (esp_bridge_uart0_seen)
+	{
+		UART0_TX_STR(line);
+	}
+}
+
+static void atmega_fw_uart_publish_boot_notice(void)
+{
+	static const char *line = "@FW|B\n";
+
+	UART1_TX_STR(line);
+	if (esp_bridge_uart0_seen)
+	{
+		UART0_TX_STR(line);
+	}
+}
+
+static void atmega_fw_publish_boot_report_if_due(void)
+{
+	uint32_t nowSec;
+
+	if (atmega_fw_boot_report_remaining == 0U)
+	{
+		return;
+	}
+
+	nowSec = ota_now_sec();
+	if (atmega_fw_boot_report_next_sec == 0U)
+	{
+		// Retry a few times after boot so ESP sees the identity even if it is
+		// still finishing its own startup when ATmega runtime begins.
+		atmega_fw_boot_report_next_sec = nowSec + ATMEGA_FW_BOOT_REPORT_START_DELAY_SEC;
+		return;
+	}
+	if (nowSec < atmega_fw_boot_report_next_sec)
+	{
+		return;
+	}
+
+	if (atmega_fw_boot_notice_pending)
+	{
+		atmega_fw_uart_publish_boot_notice();
+		atmega_fw_boot_notice_pending = 0U;
+	}
+	atmega_fw_uart_publish_identity();
+	if (atmega_fw_boot_report_remaining > 0U)
+	{
+		atmega_fw_boot_report_remaining--;
+	}
+	atmega_fw_boot_report_next_sec = nowSec + ATMEGA_FW_BOOT_REPORT_RETRY_SEC;
+}
+
+static inline void atmega_fw_rearm_boot_report(void)
+{
+	atmega_fw_boot_notice_pending = 1U;
+	atmega_fw_boot_report_remaining = ATMEGA_FW_BOOT_REPORT_RETRY_COUNT;
+	atmega_fw_boot_report_next_sec = 0U;
+}
+
 static inline void subscription_uart_reset_line(void)
 {
 	sub_uart_active = 0;
 	sub_uart_len = 0;
 	sub_uart_drop = 0;
 	sub_uart_bracket_mode = 0;
+}
+
+static inline U08 subscription_uart_parse_fast_boot_phase_isr(const char *line)
+{
+	const char *attemptPtr;
+	U08 attempt = 0U;
+
+	if (line == 0)
+	{
+		return 0U;
+	}
+	if (strncmp(line, "P63|M|", 6) != 0)
+	{
+		return 0U;
+	}
+
+	switch (line[6])
+	{
+		case 'C':
+			p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_CONNECTING;
+			attemptPtr = &line[7];
+			if (*attemptPtr == '|')
+			{
+				attemptPtr++;
+				while ((*attemptPtr >= '0') && (*attemptPtr <= '9'))
+				{
+					attempt = (U08)(attempt * 10U + (U08)(*attemptPtr - '0'));
+					attemptPtr++;
+				}
+			}
+			p63_boot_wifi_retry_attempt = attempt;
+			break;
+		case 'A':
+			p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_AP_READY;
+			p63_boot_wifi_retry_attempt = 0U;
+			break;
+		case 'E':
+			p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_ERROR;
+			p63_boot_wifi_retry_attempt = 0U;
+			break;
+		default:
+			p63_boot_wifi_phase = P63_BOOT_WIFI_PHASE_NONE;
+			p63_boot_wifi_retry_attempt = 0U;
+			break;
+	}
+
+	return 1U;
 }
 
 static inline U08 subscription_uart_is_text_char(uint8_t c)
@@ -152,6 +266,11 @@ static inline void subscription_uart_isr_feed(uint8_t c)
 			U08 copyLen;
 			U08 isPriority;
 			sub_uart_line[sub_uart_len] = 0;
+			if (subscription_uart_parse_fast_boot_phase_isr((const char *)sub_uart_line))
+			{
+				subscription_uart_reset_line();
+				return;
+			}
 			if (energy_parse_line_fast_isr((const char *)sub_uart_line))
 			{
 				subscription_uart_reset_line();
@@ -350,7 +469,11 @@ SIGNAL(USART0_RX_vect)
 	// [NEW FEATURE] Detect UART0-routed ESP bridge by command header bytes.
 	if ((c == '@') || (c == '['))
 	{
-		esp_bridge_uart0_seen = 1;
+		if (!esp_bridge_uart0_seen)
+		{
+			esp_bridge_uart0_seen = 1;
+			atmega_fw_rearm_boot_report();
+		}
 	}
 	// Some hardware revisions route ESP bridge text on UART0.
 	subscription_uart_isr_feed(c);

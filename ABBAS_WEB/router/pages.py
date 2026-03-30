@@ -154,8 +154,13 @@ DEVICE_LOG_ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__))
 DEVICE_LOG_UPLOAD_MAX_CHUNK_BYTES = 4096
 FIRMWARE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage", "firmware")
 FIRMWARE_FAMILY_DEFAULT = (os.getenv("ABBAS_FIRMWARE_FAMILY_DEFAULT", "ABBAS_ESP32C5_MELAUHF").strip() or "ABBAS_ESP32C5_MELAUHF")
+ATMEGA_FIRMWARE_FAMILY_DEFAULT = (
+    os.getenv("ABBAS_ATMEGA_FIRMWARE_FAMILY_DEFAULT", "ABBAS_ATMEGA128_MELAUHF").strip()
+    or "ABBAS_ATMEGA128_MELAUHF"
+)
 DEVICE_FIRMWARE_CHECK_INTERVAL_SEC = int(os.getenv("ABBAS_DEVICE_FIRMWARE_CHECK_SEC", "1800"))
 FIRMWARE_MAX_UPLOAD_BYTES = int(os.getenv("ABBAS_FIRMWARE_MAX_UPLOAD_BYTES", "3342336"))
+ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES = int(os.getenv("ABBAS_ATMEGA_FIRMWARE_MAX_UPLOAD_BYTES", str(1024 * 1024)))
 NAS_MODEL_CONTAINS = (os.getenv("ABBAS_NAS_MODEL_CONTAINS", "Backup+ Desk").strip() or "Backup+ Desk")
 NAS_LABEL_DEFAULT = (os.getenv("ABBAS_NAS_LABEL", "Seagate Backup+ Desk").strip() or "Seagate Backup+ Desk")
 NAS_ROOT_OVERRIDE = (os.getenv("ABBAS_NAS_ROOT") or "").strip()
@@ -309,10 +314,26 @@ def _release_download_path(release_id: int) -> str:
     return f"/api/device/ota/download/{int(release_id)}"
 
 
-def _build_firmware_summary(releases: list[dict[str, Any]], devices: list[dict[str, Any]]) -> dict[str, int]:
-    assigned = sum(1 for row in devices if int(row.get("target_release_id") or 0) > 0)
-    failures = sum(1 for row in devices if str(row.get("ota_state") or "").strip().lower() in {"failed", "error"})
-    current_known = sum(1 for row in devices if str(row.get("current_version") or "").strip())
+def _build_firmware_summary(
+    releases: list[dict[str, Any]],
+    devices: list[dict[str, Any]],
+    *,
+    family_filter: str = "",
+) -> dict[str, int]:
+    family_filter = str(family_filter or "").strip()
+    if family_filter:
+        assigned = sum(1 for row in devices if str(row.get("target_family") or "").strip() == family_filter)
+        failures = sum(
+            1
+            for row in devices
+            if str(row.get("target_family") or "").strip() == family_filter
+            and str(row.get("ota_state") or "").strip().lower() in {"failed", "error"}
+        )
+        current_known = sum(1 for row in devices if str(row.get("current_family") or "").strip() == family_filter)
+    else:
+        assigned = sum(1 for row in devices if int(row.get("target_release_id") or 0) > 0)
+        failures = sum(1 for row in devices if str(row.get("ota_state") or "").strip().lower() in {"failed", "error"})
+        current_known = sum(1 for row in devices if str(row.get("current_version") or "").strip())
     return {
         "release_count": len(releases),
         "device_count": len(devices),
@@ -322,8 +343,15 @@ def _build_firmware_summary(releases: list[dict[str, Any]], devices: list[dict[s
     }
 
 
-def _build_firmware_payload() -> dict[str, Any]:
-    releases = firmware_repo.list_releases()
+def _build_firmware_payload(
+    *,
+    family_filter: str = "",
+    default_family: str | None = None,
+    max_upload_bytes: int | None = None,
+) -> dict[str, Any]:
+    family_filter = str(family_filter or "").strip()
+    default_family_value = str(default_family or family_filter or FIRMWARE_FAMILY_DEFAULT).strip() or FIRMWARE_FAMILY_DEFAULT
+    releases = firmware_repo.list_releases(family=family_filter) if family_filter else firmware_repo.list_releases()
     devices = firmware_repo.list_device_rows()
     families = sorted(
         {
@@ -336,10 +364,10 @@ def _build_firmware_payload() -> dict[str, Any]:
             for row in devices
             if str(row.get("current_family") or "").strip()
         }
-        | {FIRMWARE_FAMILY_DEFAULT}
+        | {default_family_value}
     )
     return {
-        "summary": _build_firmware_summary(releases, devices),
+        "summary": _build_firmware_summary(releases, devices, family_filter=family_filter),
         "releases": [
             {
                 **row,
@@ -349,8 +377,9 @@ def _build_firmware_payload() -> dict[str, Any]:
         ],
         "devices": devices,
         "families": families,
-        "max_upload_bytes": int(FIRMWARE_MAX_UPLOAD_BYTES),
-        "default_family": FIRMWARE_FAMILY_DEFAULT,
+        "max_upload_bytes": int(max_upload_bytes or FIRMWARE_MAX_UPLOAD_BYTES),
+        "default_family": default_family_value,
+        "family_filter": family_filter,
     }
 
 
@@ -676,6 +705,7 @@ def _nav_items(*, is_admin: bool = False) -> list[dict[str, str]]:
         {"key": "data", "label": "데이터", "path": "/data"},
         {"key": "plan", "label": "플랜", "path": "/plan"},
         {"key": "firmware_manage", "label": "Firmware Manage", "path": "/firmware-manage"},
+        {"key": "firmware_manage_atmega", "label": "ATmega Firmware", "path": "/firmware-manage-atmega"},
         {"key": "settings", "label": "설정", "path": "/settings"},
     ]
     if is_admin:
@@ -5487,6 +5517,65 @@ def api_device_queue_command(request: Request, device_id: str, payload: dict[str
     )
 
     return {"ok": True, "command_id": int(queued.get("id") or 0), "status": str(queued.get("status") or "queued")}
+
+
+@router.post("/api/firmware/devices/queue-command")
+def api_firmware_queue_command(request: Request, payload: dict[str, Any] = Body(...)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+
+    command = str(payload.get("command") or "").strip()
+    device_ids_raw = payload.get("device_ids")
+    if not command:
+        raise HTTPException(status_code=400, detail="command required")
+    if not isinstance(device_ids_raw, list):
+        raise HTTPException(status_code=400, detail="device_ids must be a list")
+
+    normalized_ids = []
+    seen_ids = set()
+    for value in device_ids_raw:
+        did = _norm_device_id(str(value or "").strip())
+        if not did or did in seen_ids:
+            continue
+        seen_ids.add(did)
+        normalized_ids.append(did)
+    if not normalized_ids:
+        raise HTTPException(status_code=400, detail="device_ids required")
+
+    requested_by = _request_user_id(request) or "admin"
+    queued_ids: list[int] = []
+    skipped_ids: list[str] = []
+
+    for did in normalized_ids:
+        rec = device_repo.get_device_by_device_id(did)
+        if not rec:
+            skipped_ids.append(did)
+            continue
+        queued = device_ops_repo.queue_command(
+            device_id=did,
+            customer=str(rec.get("customer") or "-"),
+            command=command,
+            queued_by=requested_by,
+            queued_via="web",
+        )
+        queued_ids.append(int(queued.get("id") or 0))
+        runtime_key = _resolve_runtime_key(str(rec.get("customer") or "-"), str(rec.get("ip") or ""), did, str(rec.get("token") or ""))
+        _append_device_runtime_log(
+            runtime_key or _device_key(str(rec.get("customer") or "-"), did, str(rec.get("ip") or "")),
+            device_id=did,
+            customer=str(rec.get("customer") or "-"),
+            ip=str(rec.get("ip") or ""),
+            when=datetime.now(),
+            line=f"[CMD] queued #{int(queued.get('id') or 0)} {command} by {requested_by}",
+            source="command",
+        )
+
+    return {
+        "ok": True,
+        "queued_count": len(queued_ids),
+        "queued_command_ids": queued_ids,
+        "skipped_device_ids": skipped_ids,
+    }
 
 
 

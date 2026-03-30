@@ -61,16 +61,16 @@ static volatile U08 sub_uart_drop = 0;
 static volatile U08 sub_uart_bracket_mode = 0;
 // Keep enough room for active subscription lines while staying within
 // ATmega128A SRAM limits.
-#define SUB_UART_LINE_MAX 48
+#define SUB_UART_LINE_MAX 64
 static char sub_uart_line[SUB_UART_LINE_MAX];
 static volatile U08 sub_uart_q_head = 0;
 static volatile U08 sub_uart_q_tail = 0;
 static volatile U08 sub_uart_q_count = 0;
 // [NEW FEATURE] Set when ESP command headers are observed on UART0 wiring variant.
 static volatile U08 esp_bridge_uart0_seen = 0;
-// Keep RAM usage under ATmega128A 4KB SRAM limit while preserving
-// minimal burst buffering for ESP text commands.
-#define SUB_UART_Q_DEPTH 2
+// Preserve enough burst buffering so boot-gate critical ESP lines do not get
+// evicted by page63 slot renders during simultaneous power-on.
+#define SUB_UART_Q_DEPTH 6
 static char sub_uart_queue[SUB_UART_Q_DEPTH][SUB_UART_LINE_MAX];
 static inline void UART1_TX(uint8_t b);
 static inline void UART1_TX_STR(const char* s);
@@ -91,6 +91,7 @@ static U08 subscription_uart_line_is_priority(const char *line);
 static U08 energy_parse_line_fast_isr(const char *line);
 static void ota_finish_prompt(U08 accept);
 static void p63_wifi_status_set(U08 connected);
+static void atmega_fw_publish_boot_report_if_due(void);
 
 static volatile U08 p63_scan_req = 0;
 static volatile U08 p63_prev_req = 0;
@@ -214,6 +215,17 @@ static uint32_t p63_connected_wait_start_sec = 0;
 #define PAGE71_TEXT_LEN 20U
 #define PAGE71_ESP_VERSION_CACHE_LEN 12U
 #define PAGE71_DEFAULT_ESP_VERSION "26.3.13.1"
+#define PAGE71_ATMEGA_VERSION_CACHE_LEN 32U
+
+#ifndef ATMEGA_FIRMWARE_VERSION
+#define ATMEGA_FIRMWARE_VERSION "26.3.30.1"
+#endif
+#ifndef ATMEGA_FIRMWARE_BUILD_ID
+#define ATMEGA_FIRMWARE_BUILD_ID "local"
+#endif
+#define ATMEGA_FW_BOOT_REPORT_START_DELAY_SEC 1U
+#define ATMEGA_FW_BOOT_REPORT_RETRY_SEC 1U
+#define ATMEGA_FW_BOOT_REPORT_RETRY_COUNT 60U
 
 #define OTA_PROGRESS_PHASE_NONE      0
 #define OTA_PROGRESS_PHASE_DOWNLOAD  1
@@ -232,6 +244,10 @@ static volatile U08 ota_boot_prompt_pending = 0;
 static char ota_boot_current_version[OTA_VERSION_TEXT_LEN + 1] = {0};
 static char ota_boot_target_version[OTA_VERSION_TEXT_LEN + 1] = {0};
 static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAULT_ESP_VERSION;
+static char page71_atmega_version_text[PAGE71_ATMEGA_VERSION_CACHE_LEN] = {0};
+static volatile U08 atmega_fw_boot_notice_pending = 1U;
+static volatile U08 atmega_fw_boot_report_remaining = ATMEGA_FW_BOOT_REPORT_RETRY_COUNT;
+static uint32_t atmega_fw_boot_report_next_sec = 0;
 
 #define WIFI_FAIL_TEXT_VP 0xB222
 #define WIFI_FAIL_TEXT_LEN 32
@@ -251,9 +267,9 @@ static char page71_esp_version_text[PAGE71_ESP_VERSION_CACHE_LEN] = PAGE71_DEFAU
 #define PAGE68_WIFI_PHASE_WAIT_MS 15000
 // Cover ESP boot retry flow: 3 x 25s STA attempts + retry/AP startup overhead.
 #define PAGE68_WIFI_STATUS_FRAME_WAIT_MS 90000UL
-#define PAGE68_REG_STATUS_WAIT_MS 3200
-#define PAGE68_SUB_STATUS_WAIT_MS 3200
-#define PAGE68_ENERGY_STATUS_WAIT_MS 3200
+#define PAGE68_REG_STATUS_WAIT_MS 8000
+#define PAGE68_SUB_STATUS_WAIT_MS 8000
+#define PAGE68_ENERGY_STATUS_WAIT_MS 8000
 #define PAGE68_OTA_PROMPT_WAIT_MS 1000
 #define PAGE68_REFRESH_PERIOD_MS 250
 #define PAGE68_FAIL_PAGE 10
@@ -400,6 +416,7 @@ void subscription_ui_tick(void)
 	}
 
 	subscription_uart_pump_lines();
+	atmega_fw_publish_boot_report_if_due();
 	if ((ota_prompt_flags & OTA_PROMPT_FLAG_ACTIVE) && (dwin_page_now != OTA_PAGE_FIRMWARE_UPDATE))
 	{
 		pageChange(OTA_PAGE_FIRMWARE_UPDATE);
@@ -485,6 +502,10 @@ void IOT_mode_reset_boot_state(U08 bootResumePage)
 	ota_boot_prompt_pending = 0;
 	ota_boot_current_version[0] = 0;
 	ota_boot_target_version[0] = 0;
+	wifi_copy_field(page71_atmega_version_text, sizeof(page71_atmega_version_text), ATMEGA_FIRMWARE_VERSION);
+	atmega_fw_boot_notice_pending = 1U;
+	atmega_fw_boot_report_remaining = ATMEGA_FW_BOOT_REPORT_RETRY_COUNT;
+	atmega_fw_boot_report_next_sec = 0U;
 }
 
 U08 IOT_mode_prepare_boot_resume_page(U08 fallbackPage)

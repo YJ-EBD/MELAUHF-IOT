@@ -572,6 +572,16 @@ static void wifi_apply_connect_result(U08 ok)
 	}
 	if (ok)
 	{
+		// WIFI|R|1 should reboot only while the user is still inside the Wi-Fi
+		// setup/connect flow (page63~67/73). After the UI has already resumed to
+		// connected/runtime pages such as 61/62, later ESP resync frames must act
+		// as a heartbeat only; rebooting there drops runtime outputs and can loop
+		// back into page68 before state/ENG metrics finish republishing.
+		if (!wifi_is_guard_page(dwin_page_now))
+		{
+			p63_wifi_status_set(1U);
+			return;
+		}
 		wifi_reboot_for_connected_state();
 		return;
 	}

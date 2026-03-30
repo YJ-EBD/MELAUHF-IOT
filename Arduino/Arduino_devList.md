@@ -308,3 +308,28 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 인증/세션/Redis 보강, 메신저/플랫폼/통합관리/페이지 라우트 분리, 미사용 파일 정리와 Source Control 정리를 진행한 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
   - Arduino 디렉토리는 기존 `@SUB|`, `@ENG|`, `@OTA|`, `@WIFI|` 연동 구조와 디바이스 통신/OTA 동작을 그대로 유지한 채 `_devList` 기록만 갱신했다.
+
+## 41. ESP32-C5 ATmega UART OTA·부트 리포트·복구 안정화
+- 수정코드
+  - `ABBAS_ESPbyMELAUHF.ino`
+  - `ABBAS_ESPbyMELAUHF_GPIO24Test.ino`
+  - `ATmega_GPIO24_Reset_Test.ino`
+  - `ATmega_AVR109_Bootloader_Test/ATmega_AVR109_Bootloader_Test.ino`
+  - `atmega128_uart_bootloader/Makefile`
+  - `atmega128_uart_bootloader/bootloader.c`
+  - `tools/build_atmega_bundle.sh`
+  - `tools/build_melauhf_app.sh`
+  - `tools/merge_ihex.py`
+  - `ATmega128_Initial_ISP_Flash.md`
+  - `ATmega128_UART_Bootloader_Migration.md`
+  - `ATmega128_UART_OTA_Test_Runbook.md`
+  - `ESP32C5_ATmega128_Hybrid_UART_OTA_Schematic.md`
+  - `ESP32C5_ATmega128_OTA_Schematic.md`
+  - `ESP32C5_ATmega128_OTA_Schematic.svg`
+  - `ESP32C5_ATmega128_UART_OTA_FINAL.md`
+  - `ESP32C5_ATmega128_UART_OTA_ONEPAGE.md`
+  - `ESP32C5_ATmega128_UART_OTA_ONEPAGE.svg`
+  - `회로도.pdf`
+- 간단한 설명
+  - ESP32-C5 스케치에 ATmega128A 대상 UART OTA 흐름을 정리해 HEX 다운로드, SHA-256 검증, AVR109 부트로더 핸드셰이크, 플래시 진행 상태 관리, OTA 승인/실패 복귀, `FW|B` 부트 알림 기반 상태 재동기화까지 한 번에 연결했다.
+  - 실기 이슈였던 `74 Rebooting...` 잔류, ATmega 단독 재부팅 시 page68 `ERR68-22`, OTA 중 부트로더 응답을 브리지 태스크가 먹어버리던 경쟁 상태를 함께 보정했고, GPIO24 RESET 테스트 스케치·부트로더 테스트 스케치·빌드 스크립트·회로/운영 문서까지 같이 정리했다.

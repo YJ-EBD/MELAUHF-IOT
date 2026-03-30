@@ -1,7 +1,16 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div id="firmwareManageRoot" data-default-family="{{ default_family }}" data-max-upload-bytes="{{ max_upload_bytes }}">
+<div
+  id="firmwareManageRoot"
+  data-default-family="{{ default_family }}"
+  data-max-upload-bytes="{{ max_upload_bytes }}"
+  data-payload-api="{{ payload_api_path or '/api/firmware/payload' }}"
+  data-upload-api="{{ upload_api_path or '/api/firmware/releases' }}"
+  data-batch-command-api="{{ batch_command_api_path or '/api/firmware/devices/queue-command' }}"
+  data-immediate-command="{{ immediate_command or '' }}"
+  data-page-title="{{ page_title }}"
+>
   <div class="row g-3 mb-3">
     <div class="col-12 col-md-6 col-xl-3">
       <div class="card shadow-sm">
@@ -41,14 +50,22 @@
     <div class="col-12 col-xl-5">
       <div class="card shadow-sm h-100">
         <div class="card-header bg-white fw-semibold">
-          <i class="bi bi-cloud-arrow-up me-2"></i>펌웨어 업로드
+          <i class="bi bi-cloud-arrow-up me-2"></i>{{ upload_card_title or '펌웨어 업로드' }}
         </div>
         <div class="card-body">
           <form id="firmwareUploadForm" enctype="multipart/form-data">
             <div class="row g-3">
               <div class="col-12 col-md-6">
                 <label class="form-label">Family</label>
-                <input class="form-control" id="fwFamily" name="family" list="fwFamilyList" value="{{ default_family }}" required>
+                <input
+                  class="form-control"
+                  id="fwFamily"
+                  name="family"
+                  list="fwFamilyList"
+                  value="{{ default_family }}"
+                  {% if family_locked %}readonly{% endif %}
+                  required
+                >
                 <datalist id="fwFamilyList">
                   {% for family in families %}
                   <option value="{{ family }}"></option>
@@ -64,8 +81,8 @@
                 <input class="form-control" id="fwBuildId" name="build_id" placeholder="예: ota-r1">
               </div>
               <div class="col-12 col-md-6">
-                <label class="form-label">BIN 파일</label>
-                <input class="form-control" id="fwFile" name="firmware_file" type="file" accept=".bin" required>
+                <label class="form-label">{{ file_label or 'BIN 파일' }}</label>
+                <input class="form-control" id="fwFile" name="firmware_file" type="file" accept="{{ file_accept or '.bin' }}" required>
               </div>
               <div class="col-12">
                 <div class="form-check form-switch">
@@ -95,14 +112,12 @@
     <div class="col-12 col-xl-7">
       <div class="card shadow-sm h-100">
         <div class="card-header bg-white fw-semibold">
-          <i class="bi bi-info-circle me-2"></i>운영 규칙
+          <i class="bi bi-info-circle me-2"></i>{{ rules_title or '운영 규칙' }}
         </div>
         <div class="card-body small text-secondary">
-          <div class="mb-2">1. 릴리스를 업로드한 뒤 대상 장비에 배정합니다.</div>
-          <div class="mb-2">2. 장비는 자체 OTA 체크 주기에 따라 새 릴리스를 확인하고 pull 방식으로 업데이트합니다.</div>
-          <div class="mb-2">3. 장비가 새 버전으로 부팅 후 성공 보고를 보내면 배정 상태가 자동 해제됩니다.</div>
-          <div class="mb-2">4. 운전 중 장비에는 OTA를 적용하지 않도록 펌웨어에서 차단합니다.</div>
-          <div class="mb-0">5. 이 페이지는 OTA 관련 기능만 다루며, 기존 제어/구독 로직은 건드리지 않습니다.</div>
+          {% for rule in rules_items or [] %}
+          <div class="{% if not loop.last %}mb-2{% else %}mb-0{% endif %}">{{ rule }}</div>
+          {% endfor %}
         </div>
       </div>
     </div>
@@ -173,6 +188,11 @@
         <button class="btn btn-sm btn-primary" id="fwAssignBtn" type="button">
           <i class="bi bi-send-check me-1"></i>선택 장비에 배정
         </button>
+        {% if immediate_command %}
+        <button class="btn btn-sm btn-success" id="fwAssignNowBtn" type="button">
+          <i class="bi bi-lightning-charge me-1"></i>{{ immediate_button_label or '배정 후 즉시 실행' }}
+        </button>
+        {% endif %}
         <button class="btn btn-sm btn-outline-danger" id="fwClearTargetBtn" type="button">
           <i class="bi bi-x-circle me-1"></i>배정 해제
         </button>

@@ -52,7 +52,7 @@
   {% set section_key = 'records' %}
   {% set section_title = '기록/데이터' %}
   {% set section_sub = '로그, 저장 데이터, NAS 파일 자산을 한 흐름으로 관리하는 공간입니다.' %}
-{% elif nav_active in ['plan', 'firmware_manage'] %}
+{% elif nav_active in ['plan', 'firmware_manage', 'firmware_manage_atmega'] %}
   {% set section_key = 'lifecycle' %}
   {% set section_title = '플랜/배포' %}
   {% set section_sub = '구독 상태와 OTA 배포 자산을 같은 맥락에서 정리하는 영역입니다.' %}
@@ -93,6 +93,9 @@
 {% elif nav_active == 'firmware_manage' %}
   {% set page_icon = 'bi-cloud-arrow-up-fill' %}
   {% set page_description = '펌웨어 릴리스 업로드, 배정, OTA 상태 추적까지 배포 라이프사이클을 관리합니다.' %}
+{% elif nav_active == 'firmware_manage_atmega' %}
+  {% set page_icon = 'bi-cpu-fill' %}
+  {% set page_description = 'ATmega 전용 릴리스 업로드와 배정, UART OTA 상태를 같은 디자인으로 관리합니다.' %}
 {% elif nav_active == 'settings' %}
   {% set page_icon = 'bi-gear-fill' %}
   {% set page_description = '콘솔 동작 방식과 화면 옵션을 점검하고 저장하는 기본 설정 화면입니다.' %}
@@ -295,6 +298,11 @@
           <a class="section-nav__item {% if nav_active == 'firmware_manage' %}is-active{% endif %}" href="/firmware-manage">
             <span class="section-nav__icon"><i class="bi bi-cloud-arrow-up-fill"></i></span>
             <span class="section-nav__label">Firmware Manage</span>
+            <i class="bi bi-chevron-right section-nav__arrow"></i>
+          </a>
+          <a class="section-nav__item {% if nav_active == 'firmware_manage_atmega' %}is-active{% endif %}" href="/firmware-manage-atmega">
+            <span class="section-nav__icon"><i class="bi bi-cpu-fill"></i></span>
+            <span class="section-nav__label">ATmega Firmware</span>
             <i class="bi bi-chevron-right section-nav__arrow"></i>
           </a>
         {% elif section_key == 'profile' %}
