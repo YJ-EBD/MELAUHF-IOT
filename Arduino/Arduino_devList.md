@@ -343,3 +343,11 @@
 - 간단한 설명
   - 이번 채팅에서는 `ATmega_Web_UART_OTA_Minimal`에서만 ATmega UART OTA를 끝까지 실기 검증했고, `flashblk` 블록 스트리밍 경로와 시작 재시도/세그먼트 지연 설정을 정리해 `hi-aba.hex` 84,514B 전체를 `ping/probe/peek` 검증까지 포함해 완주하는 기준선을 확보했다.
   - 최종적으로 검증된 안전 경로는 `chunk=256`, `segment_blocks=12`, `window_blocks=6`, `gap=250us`, `settle=100ms`, `segment_delay=1.0s`이며, full run 실측은 `93.887s`였다. 단일 bootloader 세션 기반 50초대 단축 실험도 병행했지만 아직 완전히 안정화되지는 않아 메인 스케치 적용은 보류하고, 업로드 설정/명령/검증 절차를 별도 MD로 문서화했다.
+
+## 43. ABBAS 메인 스케치에 ATmega 세그먼트 OTA 전략 이식 및 재검증
+- 수정코드
+  - `ABBAS_ESPbyMELAUHF.ino`
+  - `Arduino_devList.md`
+- 간단한 설명
+  - 이번 채팅에서는 `ATmega_Web_UART_OTA_Minimal`에서 같은 검증 조건으로 `flashblk` 전체 OTA를 여러 차례 다시 실행해 `hi-aba.hex` 완주와 `ping/probe/peek` 후속 검증이 반복 재현되는지 확인했고, 실측 총 시간은 다시 `93.881s`, `93.893s` 수준으로 안정적으로 수렴했다.
+  - 그 기준을 바탕으로 `ABBAS_ESPbyMELAUHF.ino`의 ATmega OTA 경로를 단일 장시간 세션 방식에서 `chunk=256`, `segment_blocks=12`, `start_retries=3`, `retry_delay=1500ms`, `segment_delay=1000ms`, high-to-low 세그먼트 재진입 방식으로 옮겼다. 다만 메인 스케치는 현재 ESP32-C5 플래시 사용량이 `105%`라 실제 업로드 전에는 용량 정리가 추가로 필요하다.

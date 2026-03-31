@@ -2,6 +2,7 @@
 struct _DwinParser;
 struct _DwinForwardParser;
 struct AtmegaHexRecord;
+struct AtmegaOtaSegment;
 struct TeFileStats;
 struct WebLogUploadJob;
 static void melauhfPowerSet(bool on);
@@ -87,11 +88,15 @@ static const uint32_t ATMEGA_POST_BLOCK_RESET_SETTLE_MS = 100;
 // needs to match the bootloader's native maximum block size.
 static const uint16_t ATMEGA_AVR109_BLOCK_CAP = 256;
 static const uint16_t ATMEGA_AVR109_STREAM_BLOCK_CAP = 256;
-// Field verification shows this UART path can sustain long continuous AVR109
-// writes, but mid-update bootloader re-entry is the unstable step. Keep the
-// full flash in a single bootloader session and avoid rollover entirely.
+// Keep each bootloader session short and let the higher-level OTA flow reopen
+// the bootloader between segments, matching the minimal sketch's validated path.
 static const uint16_t ATMEGA_AVR109_SESSION_BLOCK_CAP = 0xFFFF;
+static const uint16_t ATMEGA_AVR109_SEGMENT_BLOCK_CAP = 12;
+static const uint16_t ATMEGA_AVR109_SEGMENT_MAX = 96;
 static const uint8_t ATMEGA_AVR109_BLOCK_RETRIES = 3;
+static const uint8_t ATMEGA_AVR109_SEGMENT_START_RETRIES = 3;
+static const uint32_t ATMEGA_AVR109_SEGMENT_START_RETRY_DELAY_MS = 1500;
+static const uint32_t ATMEGA_AVR109_SEGMENT_DELAY_MS = 1000;
 static const char* SD_ATMEGA_OTA_HEX_PATH = "/AtmegaOta.hex";
 static const bool ATMEGA_AVR109_SKIP_CHIP_ERASE = true;
 
@@ -119,6 +124,17 @@ struct AtmegaHexRecord {
   uint8_t type;
   uint8_t data[255];
 };
+
+struct AtmegaOtaSegment {
+  uint32_t fileStartOffset;
+  uint32_t fileEndOffset;
+  uint32_t initialBaseAddr;
+  uint32_t startAddr;
+  uint32_t endAddr;
+  uint32_t payloadBytes;
+};
+
+static AtmegaOtaSegment g_atmegaOtaSegments[ATMEGA_AVR109_SEGMENT_MAX];
 
 static SemaphoreHandle_t g_dwinTxMutex = nullptr;
 static volatile uint8_t g_dwinCurrentPage = 0xFF;
@@ -157,6 +173,11 @@ static void atmegaOtaPrintStatus();
 static void atmegaForceStateResync(const char* reason, bool includeEnergy);
 static void atmegaDrainRx();
 static void dwinDrainRx();
+static bool atmegaHexFlushBlock(uint32_t blockStartByteAddr,
+                                const uint8_t* blockData,
+                                size_t blockLen,
+                                char* errOut,
+                                size_t errSz);
 
 static const uint16_t CRC_TABLE[256] PROGMEM = {
   0x0000,0xc0c1,0xc181,0x0140,0xc301,0x03c0,0x0280,0xc241,
@@ -1364,11 +1385,14 @@ static void mel_bridgeSetup() {
                 (unsigned long)ATMEGA_BOOTLOADER_BAUD,
                 (unsigned long)ATMEGA_BOOTLOADER_FALLBACK_BAUD,
                 (unsigned long)ATMEGA_BOOTLOADER_ALT_BAUD);
-  Serial.printf("[MEL] ATOTA profile: block_cap=%u stream_cap=%u session_cap=%u retries=%u\n",
+  Serial.printf("[MEL] ATOTA profile: block_cap=%u stream_cap=%u session_cap=%u segment_blocks=%u retries=%u start_retries=%u delay_ms=%lu\n",
                 (unsigned)ATMEGA_AVR109_BLOCK_CAP,
                 (unsigned)ATMEGA_AVR109_STREAM_BLOCK_CAP,
                 (unsigned)ATMEGA_AVR109_SESSION_BLOCK_CAP,
-                (unsigned)ATMEGA_AVR109_BLOCK_RETRIES);
+                (unsigned)ATMEGA_AVR109_SEGMENT_BLOCK_CAP,
+                (unsigned)ATMEGA_AVR109_BLOCK_RETRIES,
+                (unsigned)ATMEGA_AVR109_SEGMENT_START_RETRIES,
+                (unsigned long)ATMEGA_AVR109_SEGMENT_DELAY_MS);
   Serial.printf("[MEL] DWIN  UART1 pins: RX=%d TX=%d @%lu\n", DWIN_RX_PIN, DWIN_TX_PIN, (unsigned long)DWIN_BAUD);
   pinMode(ATMEGA_RESET_PIN, OUTPUT);
   atmegaResetRelease();
@@ -3420,6 +3444,291 @@ static bool atmegaParseHexLine(const char* line, AtmegaHexRecord& rec, char* err
   return true;
 }
 
+static bool atmegaHexBuildSegmentPlan(File& file,
+                                      uint16_t blockCap,
+                                      AtmegaOtaSegment* segments,
+                                      size_t segmentCap,
+                                      size_t& segmentCountOut,
+                                      uint32_t& payloadTotalOut,
+                                      char* errOut,
+                                      size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  segmentCountOut = 0;
+  payloadTotalOut = 0;
+
+  if (!segments || segmentCap == 0) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_plan_invalid");
+    return false;
+  }
+  if (!file) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_plan_file_invalid");
+    return false;
+  }
+
+  uint32_t payloadCap = (uint32_t)blockCap * (uint32_t)ATMEGA_AVR109_SEGMENT_BLOCK_CAP;
+  if (payloadCap == 0) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_payload_cap_invalid");
+    return false;
+  }
+  if (!file.seek(0)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_plan_seek_failed");
+    return false;
+  }
+
+  uint32_t baseAddr = 0;
+  uint32_t lineNo = 0;
+  char lineBuf[620];
+  AtmegaHexRecord rec;
+  AtmegaOtaSegment currentSeg = {};
+  bool haveSegment = false;
+
+  while (file.available()) {
+    uint32_t lineStartOffset = (uint32_t)file.position();
+    size_t rawLen = file.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1U);
+    uint32_t lineEndOffset = (uint32_t)file.position();
+    if (rawLen == 0 && !file.available()) break;
+    lineBuf[rawLen] = 0;
+    while (rawLen > 0 && (lineBuf[rawLen - 1] == '\r' || lineBuf[rawLen - 1] == '\n')) {
+      lineBuf[--rawLen] = 0;
+    }
+    if (rawLen == 0) continue;
+    lineNo++;
+
+    char parseErr[48];
+    if (!atmegaParseHexLine(lineBuf, rec, parseErr, sizeof(parseErr))) {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "%s@line%lu", parseErr, (unsigned long)lineNo);
+      return false;
+    }
+
+    if (rec.type == 0x00) {
+      uint32_t absAddr = baseAddr + rec.addr;
+      if (!haveSegment || ((currentSeg.payloadBytes + rec.len) > payloadCap && currentSeg.payloadBytes > 0)) {
+        if (haveSegment) {
+          if (segmentCountOut >= segmentCap) {
+            if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_plan_overflow");
+            return false;
+          }
+          segments[segmentCountOut++] = currentSeg;
+        }
+
+        memset(&currentSeg, 0, sizeof(currentSeg));
+        currentSeg.fileStartOffset = lineStartOffset;
+        currentSeg.fileEndOffset = lineEndOffset;
+        currentSeg.initialBaseAddr = baseAddr;
+        currentSeg.startAddr = absAddr;
+        currentSeg.endAddr = absAddr + (rec.len ? (uint32_t)rec.len - 1U : 0U);
+        currentSeg.payloadBytes = 0;
+        haveSegment = true;
+      }
+
+      currentSeg.fileEndOffset = lineEndOffset;
+      if (currentSeg.payloadBytes == 0) {
+        currentSeg.fileStartOffset = lineStartOffset;
+        currentSeg.initialBaseAddr = baseAddr;
+        currentSeg.startAddr = absAddr;
+      }
+      if (rec.len > 0) {
+        currentSeg.endAddr = absAddr + (uint32_t)rec.len - 1U;
+        currentSeg.payloadBytes += rec.len;
+        payloadTotalOut += rec.len;
+      }
+    } else if (rec.type == 0x04) {
+      if (haveSegment) currentSeg.fileEndOffset = lineEndOffset;
+      if (rec.len != 2) {
+        if (errOut && errSz > 0) snprintf(errOut, errSz, "ela_len_invalid@line%lu", (unsigned long)lineNo);
+        return false;
+      }
+      baseAddr = (uint32_t)((((uint32_t)rec.data[0] << 8) | rec.data[1]) << 16);
+    } else if (rec.type == 0x02) {
+      if (haveSegment) currentSeg.fileEndOffset = lineEndOffset;
+      if (rec.len != 2) {
+        if (errOut && errSz > 0) snprintf(errOut, errSz, "esa_len_invalid@line%lu", (unsigned long)lineNo);
+        return false;
+      }
+      baseAddr = (uint32_t)((((uint32_t)rec.data[0] << 8) | rec.data[1]) << 4);
+    } else if (rec.type == 0x01 || rec.type == 0x03 || rec.type == 0x05) {
+      continue;
+    } else {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_record_type_%02X@line%lu", (unsigned)rec.type, (unsigned long)lineNo);
+      return false;
+    }
+  }
+
+  if (haveSegment) {
+    if (segmentCountOut >= segmentCap) {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_plan_overflow");
+      return false;
+    }
+    segments[segmentCountOut++] = currentSeg;
+  }
+
+  if (segmentCountOut == 0 || payloadTotalOut == 0) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_plan_empty");
+    return false;
+  }
+  return true;
+}
+
+static bool atmegaStartSegmentBootloaderSession(uint16_t& blockCapOut, char* errOut, size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  blockCapOut = ATMEGA_AVR109_BLOCK_CAP;
+
+  char bootDetail[96];
+  char lastBootDetail[96] = {0};
+  char eraseDetail[32];
+  for (uint8_t attempt = 1; attempt <= ATMEGA_AVR109_SEGMENT_START_RETRIES; attempt++) {
+    if (atmegaBootloaderHandshakeAuto(bootDetail, sizeof(bootDetail), &blockCapOut)) {
+      g_atmegaBootSessionBlocks = 0;
+      blockCapOut = atmegaAvr109HostFlashChunkCap(blockCapOut);
+      Serial.printf("[ATOTA] bootloader ready %s\n", bootDetail);
+      Serial.printf("[ATOTA] transport session_cap=%u block_cap=%u retries=%u\n",
+                    (unsigned)ATMEGA_AVR109_SESSION_BLOCK_CAP,
+                    (unsigned)blockCapOut,
+                    (unsigned)ATMEGA_AVR109_BLOCK_RETRIES);
+      Serial.printf("[ATOTA] block tx gap=%lu us\n", (unsigned long)atmegaAvr109BlockTxGapUs());
+      Serial.printf("[ATOTA] host block cap=%u\n", (unsigned)blockCapOut);
+
+      if (ATMEGA_AVR109_SKIP_CHIP_ERASE) {
+        Serial.println("[ATOTA] chip erase skipped -> page erase on write");
+      } else {
+        Serial.println("[ATOTA] chip erase start");
+        if (!atmegaAvr109ChipEraseDetailed(eraseDetail, sizeof(eraseDetail))) {
+          if (errOut && errSz > 0) {
+            snprintf(errOut, errSz, "chip_erase_failed_%s", eraseDetail[0] ? eraseDetail : "unknown");
+          }
+          return false;
+        }
+        Serial.println("[ATOTA] chip erase ok");
+      }
+      return true;
+    }
+
+    snprintf(lastBootDetail, sizeof(lastBootDetail), "%s", bootDetail[0] ? bootDetail : "bootloader_handshake_failed");
+
+    if (attempt >= ATMEGA_AVR109_SEGMENT_START_RETRIES) break;
+    Serial.printf("[ATOTA] segment start retry %u/%u reason=%s\n",
+                  (unsigned)attempt,
+                  (unsigned)ATMEGA_AVR109_SEGMENT_START_RETRIES,
+                  lastBootDetail);
+    delay(ATMEGA_AVR109_SEGMENT_START_RETRY_DELAY_MS);
+  }
+
+  if (errOut && errSz > 0) {
+    snprintf(errOut, errSz, "%s", lastBootDetail[0] ? lastBootDetail : "bootloader_handshake_failed");
+  }
+  return false;
+}
+
+static void atmegaFinishSegmentBootloaderSession() {
+  g_atmegaBootSessionBlocks = 0;
+  if (!atmegaAvr109ExitToApp()) {
+    atmegaSwitchUartBaud(ATMEGA_APP_BAUD);
+    atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+  } else {
+    atmegaSwitchUartBaud(ATMEGA_APP_BAUD);
+  }
+  delay(ATMEGA_POST_BLOCK_RESET_SETTLE_MS);
+}
+
+static bool atmegaProgramHexSegment(File& file,
+                                    const AtmegaOtaSegment& segment,
+                                    uint16_t blockCap,
+                                    char* errOut,
+                                    size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  if (!file) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_file_invalid");
+    return false;
+  }
+  if (!file.seek(segment.fileStartOffset)) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_seek_failed");
+    return false;
+  }
+
+  uint8_t blockBuf[ATMEGA_AVR109_BLOCK_CAP];
+  uint32_t blockStart = 0;
+  size_t blockLen = 0;
+  uint32_t baseAddr = segment.initialBaseAddr;
+  uint32_t lineNo = 0;
+  char lineBuf[620];
+  AtmegaHexRecord rec;
+  bool sawData = false;
+
+  while ((uint32_t)file.position() < segment.fileEndOffset) {
+    size_t rawLen = file.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1U);
+    if (rawLen == 0 && !file.available()) break;
+    lineBuf[rawLen] = 0;
+    while (rawLen > 0 && (lineBuf[rawLen - 1] == '\r' || lineBuf[rawLen - 1] == '\n')) {
+      lineBuf[--rawLen] = 0;
+    }
+    if (rawLen == 0) continue;
+    lineNo++;
+
+    char parseErr[48];
+    if (!atmegaParseHexLine(lineBuf, rec, parseErr, sizeof(parseErr))) {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "%s@segline%lu", parseErr, (unsigned long)lineNo);
+      return false;
+    }
+
+    if (rec.type == 0x00) {
+      uint32_t absAddr = baseAddr + rec.addr;
+      size_t offset = 0;
+      sawData = true;
+      while (offset < rec.len) {
+        if (blockLen == 0) {
+          blockStart = absAddr;
+        } else if (absAddr != (blockStart + blockLen) || blockLen >= blockCap) {
+          if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
+          blockLen = 0;
+          blockStart = absAddr;
+        }
+
+        size_t room = blockCap - blockLen;
+        size_t chunk = (size_t)(rec.len - offset);
+        if (chunk > room) chunk = room;
+        memcpy(&blockBuf[blockLen], &rec.data[offset], chunk);
+        blockLen += chunk;
+        absAddr += chunk;
+        offset += chunk;
+      }
+    } else if (rec.type == 0x04) {
+      if (blockLen > 0) {
+        if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
+        blockLen = 0;
+      }
+      if (rec.len != 2) {
+        if (errOut && errSz > 0) snprintf(errOut, errSz, "ela_len_invalid@segline%lu", (unsigned long)lineNo);
+        return false;
+      }
+      baseAddr = (uint32_t)((((uint32_t)rec.data[0] << 8) | rec.data[1]) << 16);
+    } else if (rec.type == 0x02) {
+      if (blockLen > 0) {
+        if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
+        blockLen = 0;
+      }
+      if (rec.len != 2) {
+        if (errOut && errSz > 0) snprintf(errOut, errSz, "esa_len_invalid@segline%lu", (unsigned long)lineNo);
+        return false;
+      }
+      baseAddr = (uint32_t)((((uint32_t)rec.data[0] << 8) | rec.data[1]) << 4);
+    } else if (rec.type == 0x01 || rec.type == 0x03 || rec.type == 0x05) {
+      continue;
+    } else {
+      if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_record_type_%02X@segline%lu", (unsigned)rec.type, (unsigned long)lineNo);
+      return false;
+    }
+  }
+
+  if (blockLen > 0) {
+    if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
+  }
+  if (!sawData) {
+    if (errOut && errSz > 0) snprintf(errOut, errSz, "segment_empty");
+    return false;
+  }
+  return true;
+}
+
 static bool atmegaHexFlushBlock(uint32_t blockStartByteAddr,
                                 const uint8_t* blockData,
                                 size_t blockLen,
@@ -3520,139 +3829,74 @@ static bool atmegaProgramHexFile(File& file, const char* sourceLabel, char* errO
     return false;
   }
 
-  char bootDetail[96];
-  uint16_t blockCap = ATMEGA_AVR109_BLOCK_CAP;
-  atmegaOtaSetState(ATMEGA_OTA_ENTERING_BOOT, "entering_bootloader");
-  if (!atmegaBootloaderHandshakeAuto(bootDetail, sizeof(bootDetail), &blockCap)) {
-    if (errOut && errSz > 0) snprintf(errOut, errSz, "%s", bootDetail[0] ? bootDetail : "bootloader_handshake_failed");
+  atmegaOtaSetState(ATMEGA_OTA_ENTERING_BOOT, "building_segment_plan");
+  size_t segmentCount = 0;
+  uint32_t payloadTotal = 0;
+  if (!atmegaHexBuildSegmentPlan(file,
+                                 ATMEGA_AVR109_STREAM_BLOCK_CAP,
+                                 g_atmegaOtaSegments,
+                                 ATMEGA_AVR109_SEGMENT_MAX,
+                                 segmentCount,
+                                 payloadTotal,
+                                 errOut,
+                                 errSz)) {
     return false;
   }
+
   g_atmegaBootSessionBlocks = 0;
-  blockCap = atmegaAvr109HostFlashChunkCap(blockCap);
-  Serial.printf("[ATOTA] bootloader ready %s\n", bootDetail);
-  Serial.printf("[ATOTA] transport session_cap=%u block_cap=%u retries=%u\n",
-                (unsigned)ATMEGA_AVR109_SESSION_BLOCK_CAP,
-                (unsigned)blockCap,
-                (unsigned)ATMEGA_AVR109_BLOCK_RETRIES);
-  Serial.printf("[ATOTA] block tx gap=%lu us\n", (unsigned long)atmegaAvr109BlockTxGapUs());
-  Serial.printf("[ATOTA] host block cap=%u\n", (unsigned)blockCap);
-
-  char eraseDetail[32];
-  if (ATMEGA_AVR109_SKIP_CHIP_ERASE) {
-    Serial.println("[ATOTA] chip erase skipped -> page erase on write");
-  } else {
-    Serial.println("[ATOTA] chip erase start");
-    if (!atmegaAvr109ChipEraseDetailed(eraseDetail, sizeof(eraseDetail))) {
-      if (errOut && errSz > 0) {
-        snprintf(errOut, errSz, "chip_erase_failed_%s", eraseDetail[0] ? eraseDetail : "unknown");
-      }
-      return false;
-    }
-    Serial.println("[ATOTA] chip erase ok");
-  }
-
-  atmegaOtaSetState(ATMEGA_OTA_FLASHING, "flashing");
   g_atmegaOtaBytesDone = 0;
   g_atmegaOtaFlashBlocks = 0;
-  g_atmegaOtaBytesTotal = (uint32_t)file.size();
+  g_atmegaOtaBytesTotal = payloadTotal;
+  atmegaOtaSetState(ATMEGA_OTA_FLASHING, "flashing_segmented");
 
-  uint8_t blockBuf[ATMEGA_AVR109_BLOCK_CAP];
-  uint32_t blockStart = 0;
-  size_t blockLen = 0;
-  uint32_t baseAddr = 0;
-  bool eofSeen = false;
-  char lineBuf[620];
-  AtmegaHexRecord rec;
-  uint32_t lineNo = 0;
+  Serial.printf("[ATOTA] segmented plan segments=%u payload=%lu chunk=%u segment_blocks=%u delay_ms=%lu\n",
+                (unsigned)segmentCount,
+                (unsigned long)payloadTotal,
+                (unsigned)ATMEGA_AVR109_STREAM_BLOCK_CAP,
+                (unsigned)ATMEGA_AVR109_SEGMENT_BLOCK_CAP,
+                (unsigned long)ATMEGA_AVR109_SEGMENT_DELAY_MS);
 
-  while (file.available()) {
-    size_t rawLen = file.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1U);
-    if (rawLen == 0 && !file.available()) break;
-    lineBuf[rawLen] = 0;
-    while (rawLen > 0 && (lineBuf[rawLen - 1] == '\r' || lineBuf[rawLen - 1] == '\n')) {
-      lineBuf[--rawLen] = 0;
-    }
-    if (rawLen == 0) continue;
-    lineNo++;
+  for (size_t segIdx = segmentCount; segIdx > 0; segIdx--) {
+    const AtmegaOtaSegment& segment = g_atmegaOtaSegments[segIdx - 1];
+    uint16_t blockCap = ATMEGA_AVR109_BLOCK_CAP;
+    uint32_t segStartMs = millis();
 
-    char parseErr[48];
-    if (!atmegaParseHexLine(lineBuf, rec, parseErr, sizeof(parseErr))) {
-      if (errOut && errSz > 0) snprintf(errOut, errSz, "%s@line%lu", parseErr, (unsigned long)lineNo);
+    Serial.printf("[ATOTA] segment %u/%u start addr=0x%05lX-0x%05lX payload=%lu\n",
+                  (unsigned)(segmentCount - segIdx + 1U),
+                  (unsigned)segmentCount,
+                  (unsigned long)segment.startAddr,
+                  (unsigned long)segment.endAddr,
+                  (unsigned long)segment.payloadBytes);
+
+    if (!atmegaStartSegmentBootloaderSession(blockCap, errOut, errSz)) {
+      if (errOut && errSz > 0 && errOut[0] == 0) snprintf(errOut, errSz, "segment_start_failed");
       return false;
     }
 
-    if (rec.type == 0x00) {
-      uint32_t absAddr = baseAddr + rec.addr;
-      size_t offset = 0;
-      while (offset < rec.len) {
-        if (blockLen == 0) {
-          blockStart = absAddr;
-        } else if (absAddr != (blockStart + blockLen) || blockLen >= blockCap) {
-          if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
-          blockLen = 0;
-          blockStart = absAddr;
-        }
-
-        size_t room = blockCap - blockLen;
-        size_t chunk = (size_t)(rec.len - offset);
-        if (chunk > room) chunk = room;
-        memcpy(&blockBuf[blockLen], &rec.data[offset], chunk);
-        blockLen += chunk;
-        absAddr += chunk;
-        offset += chunk;
-      }
-    } else if (rec.type == 0x01) {
-      eofSeen = true;
-      break;
-    } else if (rec.type == 0x04) {
-      if (blockLen > 0) {
-        if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
-        blockLen = 0;
-      }
-      if (rec.len != 2) {
-        if (errOut && errSz > 0) snprintf(errOut, errSz, "ela_len_invalid@line%lu", (unsigned long)lineNo);
-        return false;
-      }
-      baseAddr = (uint32_t)((((uint32_t)rec.data[0] << 8) | rec.data[1]) << 16);
-    } else if (rec.type == 0x02) {
-      if (blockLen > 0) {
-        if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
-        blockLen = 0;
-      }
-      if (rec.len != 2) {
-        if (errOut && errSz > 0) snprintf(errOut, errSz, "esa_len_invalid@line%lu", (unsigned long)lineNo);
-        return false;
-      }
-      baseAddr = (uint32_t)((((uint32_t)rec.data[0] << 8) | rec.data[1]) << 4);
-    } else if (rec.type == 0x03 || rec.type == 0x05) {
-      continue;
-    } else {
-      if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_record_type_%02X@line%lu", (unsigned)rec.type, (unsigned long)lineNo);
+    if (!atmegaProgramHexSegment(file, segment, blockCap, errOut, errSz)) {
       return false;
     }
-  }
 
-  if (blockLen > 0) {
-    if (!atmegaHexFlushBlock(blockStart, blockBuf, blockLen, errOut, errSz)) return false;
-  }
+    atmegaOtaSetState(ATMEGA_OTA_REBOOTING, "rebooting_target");
+    atmegaFinishSegmentBootloaderSession();
+    atmegaOtaSetState(ATMEGA_OTA_FLASHING, "flashing_segmented");
 
-  if (!eofSeen) {
-    if (errOut && errSz > 0) snprintf(errOut, errSz, "hex_missing_eof");
-    return false;
+    Serial.printf("[ATOTA] segment %u/%u ok elapsed=%lu ms\n",
+                  (unsigned)(segmentCount - segIdx + 1U),
+                  (unsigned)segmentCount,
+                  (unsigned long)(millis() - segStartMs));
+
+    if (segIdx > 1) {
+      delay(ATMEGA_AVR109_SEGMENT_DELAY_MS);
+    }
   }
 
   atmegaOtaSetState(ATMEGA_OTA_REBOOTING, "rebooting_target");
-  if (!atmegaAvr109ExitToApp()) {
-    atmegaSwitchUartBaud(ATMEGA_APP_BAUD);
-    atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
-  } else {
-    atmegaSwitchUartBaud(ATMEGA_APP_BAUD);
-  }
-  delay(ATMEGA_POST_BLOCK_RESET_SETTLE_MS);
-  Serial.printf("[ATOTA] flash done source=%s blocks=%lu bytes=%lu\n",
+  Serial.printf("[ATOTA] flash done source=%s blocks=%lu bytes=%lu segmented=%u\n",
                 (sourceLabel && sourceLabel[0]) ? sourceLabel : "-",
                 (unsigned long)g_atmegaOtaFlashBlocks,
-                (unsigned long)g_atmegaOtaBytesDone);
+                (unsigned long)g_atmegaOtaBytesDone,
+                (unsigned)segmentCount);
   return true;
 }
 

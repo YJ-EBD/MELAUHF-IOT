@@ -432,3 +432,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `Arduino/ATmega_Web_UART_OTA_Minimal`에서 UART OTA 완주 기준을 확보하고 업로드 설정 문서를 정리하는 작업이었고, `MELAUHF` ATmega 펌웨어 코드는 추가 수정하지 않았다.
   - MELAUHF 디렉토리는 기존 펌웨어 변경 상태를 그대로 유지한 채 `_devList` 기록과 Source Control 정리 기준만 이번 채팅 기준으로 맞췄다.
+
+## 50. Arduino 메인 세그먼트 OTA 이식에 따른 MELAUHF 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `펌웨어/hi-aba_total_rev6_brf/hi-aba/iot_ota.c`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `Arduino/ATmega_Web_UART_OTA_Minimal`의 반복 실기 검증과 `Arduino/ABBAS_ESPbyMELAUHF.ino`에 세그먼트 재진입 OTA 전략을 옮기는 작업이었고, `MELAUHF` ATmega 펌웨어 소스는 추가 수정하지 않았다.
+  - 펌웨어 디렉토리는 기존 `FW|B`, `FW|A`, `OTA|DEC`, `OTA|RST` 연동 구조를 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.

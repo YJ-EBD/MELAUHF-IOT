@@ -794,3 +794,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 기능 구현은 `Arduino/ATmega_Web_UART_OTA_Minimal` 쪽 실기 OTA 검증과 업로드 가이드 정리에 집중했고, `ABBAS_WEB` 디렉토리에는 새 기능을 추가하지 않았다.
   - WEB 디렉토리는 기존 변경 내역을 유지한 채 `_devList` 동기화와 Source Control 정리 기준만 맞췄고, `page_routes.py`는 `python3 -m py_compile`로 최소 문법 검증을 확인했다.
+
+## 76. ABBAS 메인 Arduino 세그먼트 OTA 이식에 따른 WEB 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `router/platform_api.py`, `templates/firmware_manage.html`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `Arduino/ATmega_Web_UART_OTA_Minimal` 재검증과 `Arduino/ABBAS_ESPbyMELAUHF.ino`의 ATmega 세그먼트 OTA 이식에 집중했고, `ABBAS_WEB` 디렉토리의 서버/API/템플릿 코드는 추가 수정하지 않았다.
+  - WEB 디렉토리는 기존 ATmega firmware manage 화면과 OTA 체크 명령 연동 구조를 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 추가했다.
