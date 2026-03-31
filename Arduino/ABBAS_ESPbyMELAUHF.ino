@@ -1,6 +1,7 @@
 
 struct _DwinParser;
 struct _DwinForwardParser;
+struct AtmegaHexRecord;
 struct TeFileStats;
 struct WebLogUploadJob;
 static void melauhfPowerSet(bool on);
@@ -16,11 +17,16 @@ static void melauhfPowerSet(bool on);
 #include <SPI.h>
 #include <SD.h>
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
 #include "mbedtls/sha256.h"
+
+// OTA now runs deep enough through HTTP + SD + HEX parsing that the default
+// 8 KB Arduino loopTask stack can underflow on ESP32-C5.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 #ifndef DWIN_RX_PIN
 #define DWIN_RX_PIN 6
@@ -41,7 +47,15 @@ static void melauhfPowerSet(bool on);
 #define ATMEGA_RESET_ASSERT_LEVEL HIGH
 #endif
 
-static const uint32_t ATMEGA_BAUD = 115200;
+static const size_t USB_CDC_RX_BUFFER_BYTES = 8192;
+static const size_t ATMEGA_UART_RX_BUFFER_BYTES = 1024;
+static const size_t ATMEGA_UART_TX_BUFFER_BYTES = 1024;
+static const uint32_t ATMEGA_APP_BAUD = 115200;
+// The final UART1 fast bootloader is built for 250000, but the verified
+// host-side setting on this ESP32-C5 + board path is 245000.
+static const uint32_t ATMEGA_BOOTLOADER_BAUD = 245000;
+static const uint32_t ATMEGA_BOOTLOADER_FALLBACK_BAUD = 115200;
+static const uint32_t ATMEGA_BOOTLOADER_ALT_BAUD = 38400;
 static const uint32_t DWIN_BAUD   = 115200;
 
 HardwareSerial DWIN(1);
@@ -49,12 +63,37 @@ HardwareSerial ATMEGA(2);
 static volatile bool g_atmegaOtaInProgress = false;
 static const uint32_t ATMEGA_RESET_PULSE_MS = 200;
 static const uint32_t ATMEGA_BOOTLOADER_WAIT_MS = 1500;
-static const uint32_t ATMEGA_AVR109_REPLY_TIMEOUT_MS = 250;
+static const uint32_t ATMEGA_AVR109_REPLY_TIMEOUT_MS = 600;
+static const uint32_t ATMEGA_AVR109_BLOCK_REPLY_TIMEOUT_MS = 5000;
+// Chip erase touches the full application area, so give AVR109 much longer
+// than the normal single-byte command timeout before declaring failure.
+static const uint32_t ATMEGA_AVR109_ERASE_TIMEOUT_MS = 30000;
+static const uint32_t ATMEGA_AVR109_BLOCK_TX_GAP_US = 1500;
+// The patched AVRBT2W bootloader accepts back-to-back bytes in the minimal
+// test harness, but the integrated ESP workload is more bursty. Add a small
+// pacing gap so long flash sessions do not overrun the target UART parser.
+static const uint32_t ATMEGA_AVR109_PATCHED_BLOCK_TX_GAP_US = 250;
+static const uint32_t ATMEGA_AVR109_RETRY_BACKOFF_MS = 12;
+static const uint32_t ATMEGA_AVR109_RESYNC_PRE_DELAY_MS = 250;
+static const uint32_t ATMEGA_AVR109_INTER_CMD_GAP_MS = 0;
 static const uint32_t ATMEGA_HEX_LINE_TIMEOUT_MS = 4000;
 static const uint32_t ATMEGA_OTA_HTTP_IDLE_TIMEOUT_MS = 15000;
 static const uint32_t ATMEGA_BOOT_REPORT_RESYNC_GAP_MS = 3000;
+static const uint32_t ATMEGA_POST_BLOCK_RESET_SETTLE_MS = 100;
+// Use smaller host-side AVR109 blocks to reduce the chance that a single
+// dropped UART byte leaves the bootloader stuck waiting forever mid-block.
+// Some AVRBOOT variants reject short block-write requests and can leave the
+// unread payload bytes queued in their UART RX buffer, so the host-side cap
+// needs to match the bootloader's native maximum block size.
 static const uint16_t ATMEGA_AVR109_BLOCK_CAP = 256;
+static const uint16_t ATMEGA_AVR109_STREAM_BLOCK_CAP = 256;
+// Field verification shows this UART path can sustain long continuous AVR109
+// writes, but mid-update bootloader re-entry is the unstable step. Keep the
+// full flash in a single bootloader session and avoid rollover entirely.
+static const uint16_t ATMEGA_AVR109_SESSION_BLOCK_CAP = 0xFFFF;
+static const uint8_t ATMEGA_AVR109_BLOCK_RETRIES = 3;
 static const char* SD_ATMEGA_OTA_HEX_PATH = "/AtmegaOta.hex";
+static const bool ATMEGA_AVR109_SKIP_CHIP_ERASE = true;
 
 static const uint8_t ATMEGA_OTA_IDLE = 0;
 static const uint8_t ATMEGA_OTA_DOWNLOADING = 1;
@@ -116,6 +155,8 @@ static void urlEncodeValue(const char* src, char* out, size_t outSz);
 static bool atmegaOtaHandleCommand(const String& arg);
 static void atmegaOtaPrintStatus();
 static void atmegaForceStateResync(const char* reason, bool includeEnergy);
+static void atmegaDrainRx();
+static void dwinDrainRx();
 
 static const uint16_t CRC_TABLE[256] PROGMEM = {
   0x0000,0xc0c1,0xc181,0x0140,0xc301,0x03c0,0x0280,0xc241,
@@ -470,6 +511,9 @@ static bool     g_atmegaPendingHaveSsid = false;
 static bool     g_atmegaPendingHavePass = false;
 static volatile bool g_atmegaPendingConnectReq = false;
 static bool     g_atmegaConnectFlowActive = false;
+static uint32_t g_atmegaCurrentBaud = ATMEGA_APP_BAUD;
+static char     g_atmegaBootloaderId[8] = {0};
+static uint16_t g_atmegaBootSessionBlocks = 0;
 // OTA prompt/session state for this boot cycle (driven by ATmega decision).
 static bool     g_webOtaPromptShownThisBoot = false;
 static bool     g_webOtaAwaitingUserDecision = false;
@@ -506,6 +550,40 @@ static void atmegaCopyCredField(char* dst, size_t dstSize, const char* src) {
     n++;
   }
   dst[n] = 0;
+}
+
+static int firmwareVersionCompare(const char* lhs, const char* rhs) {
+  if (!lhs) lhs = "";
+  if (!rhs) rhs = "";
+
+  const char* lp = lhs;
+  const char* rp = rhs;
+  for (uint8_t part = 0; part < 8; part++) {
+    uint32_t lv = 0;
+    uint32_t rv = 0;
+    bool lHave = false;
+    bool rHave = false;
+
+    while (*lp && !isdigit((unsigned char)*lp)) lp++;
+    while (*rp && !isdigit((unsigned char)*rp)) rp++;
+
+    while (isdigit((unsigned char)*lp)) {
+      lHave = true;
+      lv = (lv * 10U) + (uint32_t)(*lp - '0');
+      lp++;
+    }
+    while (isdigit((unsigned char)*rp)) {
+      rHave = true;
+      rv = (rv * 10U) + (uint32_t)(*rp - '0');
+      rp++;
+    }
+
+    if (!lHave && !rHave) return 0;
+    if (lv < rv) return -1;
+    if (lv > rv) return 1;
+  }
+
+  return 0;
 }
 
 static void atmegaQueueConnectIfReady() {
@@ -684,10 +762,12 @@ static bool atmegaHandleAsciiByte(uint8_t b) {
           char newBuildId[sizeof(g_atmegaReportedBuildId)];
           bool changed = false;
           bool rebootLikely = false;
+          bool firstReport = false;
           uint32_t nowMs = millis();
 
           atmegaCopyCredField(newVersion, sizeof(newVersion), versionTxt);
           atmegaCopyCredField(newBuildId, sizeof(newBuildId), buildTxt ? buildTxt : "");
+          firstReport = (g_atmegaReportedAtMs == 0);
           changed = (strcmp(g_atmegaReportedVersion, newVersion) != 0) ||
                     (strcmp(g_atmegaReportedBuildId, newBuildId) != 0);
           rebootLikely = (g_atmegaReportedAtMs != 0) &&
@@ -696,9 +776,11 @@ static bool atmegaHandleAsciiByte(uint8_t b) {
           atmegaCopyCredField(g_atmegaReportedVersion, sizeof(g_atmegaReportedVersion), newVersion);
           atmegaCopyCredField(g_atmegaReportedBuildId, sizeof(g_atmegaReportedBuildId), newBuildId);
           g_atmegaReportedAtMs = nowMs;
-          Serial.printf("[AT->ESP] FW version=%s build=%s\n",
-                        g_atmegaReportedVersion,
-                        g_atmegaReportedBuildId[0] ? g_atmegaReportedBuildId : "-");
+          if (firstReport || changed || rebootLikely) {
+            Serial.printf("[AT->ESP] FW version=%s build=%s\n",
+                          g_atmegaReportedVersion,
+                          g_atmegaReportedBuildId[0] ? g_atmegaReportedBuildId : "-");
+          }
           if (changed || rebootLikely) {
             atmegaForceStateResync(rebootLikely ? "fw_report_reboot" : "fw_report", true);
           }
@@ -900,6 +982,15 @@ static void assist_tick(uint32_t now) {
   }
 }
 
+static void logCurrentTaskStack(const char* tag) {
+  UBaseType_t hwm = uxTaskGetStackHighWaterMark(nullptr);
+  const char* taskName = pcTaskGetName(nullptr);
+  Serial.printf("[STACK] %s task=%s hwm=%u\n",
+                (tag && tag[0]) ? tag : "-",
+                taskName ? taskName : "-",
+                (unsigned)hwm);
+}
+
 static void print_status() {
   const char* subState = "BOOT_WAIT";
   if (g_subGateState == SUB_GATE_ACTIVE) subState = "ACTIVE";
@@ -931,6 +1022,7 @@ static void print_status() {
                 (unsigned long)g_atmegaOtaBytesTotal,
                 (unsigned long)g_atmegaOtaFlashBlocks,
                 g_atmegaOtaSourceText[0] ? g_atmegaOtaSourceText : "-");
+  logCurrentTaskStack("status");
 }
 
 static void atmegaRequestPageChange(uint8_t page) {
@@ -1233,6 +1325,14 @@ static void pump_atmega_to_dwin(uint32_t now) {
 
 
 static void pump_dwin_to_atmega(uint32_t now) {
+  if (g_atmegaOtaInProgress) {
+    _dwinParserReset(g_pDwin2Atmega);
+    while (DWIN.available()) {
+      (void)DWIN.read();
+    }
+    return;
+  }
+
   while (DWIN.available()) {
     int v = DWIN.read();
     if (v < 0) break;
@@ -1245,17 +1345,37 @@ static void pump_dwin_to_atmega(uint32_t now) {
   }
 }
 
+static void dwinDrainRx() {
+  _dwinParserReset(g_pDwin2Atmega);
+  while (DWIN.available()) {
+    (void)DWIN.read();
+  }
+}
+
 
 
 static void mel_bridgeSetup() {
   g_bootMs = millis();
   Serial.println();
   Serial.println("[MEL] bridge init...");
-  Serial.printf("[MEL] ATmega UART2 pins: RX=%d TX=%d @%lu\n", ATMEGA_RX_PIN, ATMEGA_TX_PIN, (unsigned long)ATMEGA_BAUD);
+  Serial.printf("[MEL] ATmega UART2 pins: RX=%d TX=%d @%lu (boot_fast=%lu boot=%lu alt=%lu)\n",
+                ATMEGA_RX_PIN, ATMEGA_TX_PIN,
+                (unsigned long)ATMEGA_APP_BAUD,
+                (unsigned long)ATMEGA_BOOTLOADER_BAUD,
+                (unsigned long)ATMEGA_BOOTLOADER_FALLBACK_BAUD,
+                (unsigned long)ATMEGA_BOOTLOADER_ALT_BAUD);
+  Serial.printf("[MEL] ATOTA profile: block_cap=%u stream_cap=%u session_cap=%u retries=%u\n",
+                (unsigned)ATMEGA_AVR109_BLOCK_CAP,
+                (unsigned)ATMEGA_AVR109_STREAM_BLOCK_CAP,
+                (unsigned)ATMEGA_AVR109_SESSION_BLOCK_CAP,
+                (unsigned)ATMEGA_AVR109_BLOCK_RETRIES);
   Serial.printf("[MEL] DWIN  UART1 pins: RX=%d TX=%d @%lu\n", DWIN_RX_PIN, DWIN_TX_PIN, (unsigned long)DWIN_BAUD);
   pinMode(ATMEGA_RESET_PIN, OUTPUT);
   atmegaResetRelease();
-  ATMEGA.begin(ATMEGA_BAUD, SERIAL_8N1, ATMEGA_RX_PIN, ATMEGA_TX_PIN);
+  ATMEGA.setRxBufferSize(ATMEGA_UART_RX_BUFFER_BYTES);
+  ATMEGA.setTxBufferSize(ATMEGA_UART_TX_BUFFER_BYTES);
+  ATMEGA.begin(ATMEGA_APP_BAUD, SERIAL_8N1, ATMEGA_RX_PIN, ATMEGA_TX_PIN);
+  g_atmegaCurrentBaud = ATMEGA_APP_BAUD;
   DWIN.begin(DWIN_BAUD, SERIAL_8N1, DWIN_RX_PIN, DWIN_TX_PIN);
   if (!g_dwinTxMutex) {
     g_dwinTxMutex = xSemaphoreCreateMutex();
@@ -1293,7 +1413,10 @@ static void mel_bridgeTask(void *param) {
       mel_bridge_ping_timeout_check(now);
     }
 
-    if (DWIN.available()) {
+    // Leave the DWIN UART completely alone during AVR109 traffic. On the
+    // single-core ESP32-C5, draining page/UI chatter here can starve the
+    // OTA loop long enough to miss bootloader replies mid-flash.
+    if (!g_atmegaOtaInProgress && DWIN.available()) {
       pump_dwin_to_atmega(now);
       didWork = true;
     }
@@ -1411,10 +1534,10 @@ static const uint32_t ATMEGA_BOOT_UI_REPUBLISH_WINDOW_MS = 20000;
 #define FIRMWARE_FAMILY "ABBAS_ESP32C5_MELAUHF"
 #endif
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "26.3.13.1"
+#define FIRMWARE_VERSION "26.3.31.1"
 #endif
 #ifndef FIRMWARE_BUILD_ID
-#define FIRMWARE_BUILD_ID "ota-base"
+#define FIRMWARE_BUILD_ID "atota-u1fast"
 #endif
 #ifndef ATMEGA_FIRMWARE_FAMILY
 #define ATMEGA_FIRMWARE_FAMILY "ABBAS_ATMEGA128_MELAUHF"
@@ -2596,6 +2719,20 @@ static void atmegaResetPulse(uint32_t pulseMs) {
   atmegaResetRelease();
 }
 
+static void atmegaSwitchUartBaud(uint32_t baud) {
+  if (baud == 0 || g_atmegaCurrentBaud == baud) return;
+  // ESP32-C5 UART2 has been aborting intermittently during updateBaudRate()
+  // in the ATmega OTA path, so re-open the UART with the target baud instead.
+  ATMEGA.flush();
+  ATMEGA.end();
+  delay(2);
+  ATMEGA.begin(baud, SERIAL_8N1, ATMEGA_RX_PIN, ATMEGA_TX_PIN);
+  g_atmegaCurrentBaud = baud;
+  delay(10);
+  atmegaDrainRx();
+  Serial.printf("[ATOTA] host uart baud=%lu\n", (unsigned long)baud);
+}
+
 static void atmegaDrainRx() {
   while (ATMEGA.available()) {
     (void)ATMEGA.read();
@@ -2626,22 +2763,320 @@ static bool atmegaReadExpectByte(uint8_t expected, uint32_t timeoutMs) {
   return b == expected;
 }
 
+static bool atmegaReadExpectByteDetailed(uint8_t expected,
+                                         uint32_t timeoutMs,
+                                         char* detailOut,
+                                         size_t detailSz) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+
+  uint8_t b = 0;
+  if (!atmegaReadExact(&b, 1, timeoutMs)) {
+    if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "timeout");
+    return false;
+  }
+
+  if (b != expected) {
+    if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "reply_%02X", (unsigned)b);
+    return false;
+  }
+
+  if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "ok");
+  return true;
+}
+
+static bool atmegaReadExpectByteTolerantDetailed(uint8_t expected,
+                                                 uint32_t timeoutMs,
+                                                 char* detailOut,
+                                                 size_t detailSz) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+
+  uint8_t firstNoise = 0;
+  uint8_t lastNoise = 0;
+  uint16_t noiseCount = 0;
+  uint32_t startMs = millis();
+  uint32_t deadline = startMs + timeoutMs;
+
+  while ((int32_t)(millis() - deadline) < 0) {
+    while (ATMEGA.available()) {
+      int v = ATMEGA.read();
+      if (v < 0) break;
+
+      uint8_t b = (uint8_t)v;
+      if (b == expected) {
+        uint32_t elapsedMs = (uint32_t)(millis() - startMs);
+        if (detailOut && detailSz > 0) {
+          if (noiseCount == 0) snprintf(detailOut, detailSz, "ok_%lums", (unsigned long)elapsedMs);
+          else snprintf(detailOut,
+                        detailSz,
+                        "ok_%lums_noise_%u_%02X_%02X",
+                        (unsigned long)elapsedMs,
+                        (unsigned)noiseCount,
+                        (unsigned)firstNoise,
+                        (unsigned)lastNoise);
+        }
+        return true;
+      }
+
+      if (noiseCount == 0) firstNoise = b;
+      lastNoise = b;
+      noiseCount++;
+    }
+    delay(1);
+  }
+
+  if (detailOut && detailSz > 0) {
+    uint32_t elapsedMs = (uint32_t)(millis() - startMs);
+    if (noiseCount == 0) snprintf(detailOut, detailSz, "timeout_%lums", (unsigned long)elapsedMs);
+    else snprintf(detailOut,
+                  detailSz,
+                  "timeout_%lums_noise_%u_%02X_%02X",
+                  (unsigned long)elapsedMs,
+                  (unsigned)noiseCount,
+                  (unsigned)firstNoise,
+                  (unsigned)lastNoise);
+  }
+  return false;
+}
+
+static bool atmegaReadExpectByteIgnoringNoiseDetailed(uint8_t expected,
+                                                      uint8_t failFast,
+                                                      uint32_t timeoutMs,
+                                                      char* detailOut,
+                                                      size_t detailSz) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+
+  uint8_t firstNoise = 0;
+  uint8_t lastNoise = 0;
+  uint16_t noiseCount = 0;
+  uint32_t startMs = millis();
+  uint32_t deadline = startMs + timeoutMs;
+
+  while ((int32_t)(millis() - deadline) < 0) {
+    while (ATMEGA.available()) {
+      int v = ATMEGA.read();
+      if (v < 0) break;
+
+      uint8_t b = (uint8_t)v;
+      if (b == expected) {
+        uint32_t elapsedMs = (uint32_t)(millis() - startMs);
+        if (detailOut && detailSz > 0) {
+          if (noiseCount == 0) snprintf(detailOut, detailSz, "ok_%lums", (unsigned long)elapsedMs);
+          else snprintf(detailOut,
+                        detailSz,
+                        "ok_%lums_noise_%u_%02X_%02X",
+                        (unsigned long)elapsedMs,
+                        (unsigned)noiseCount,
+                        (unsigned)firstNoise,
+                        (unsigned)lastNoise);
+        }
+        return true;
+      }
+
+      if (b == failFast) {
+        if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "reply_%02X", (unsigned)b);
+        return false;
+      }
+
+      if (noiseCount == 0) firstNoise = b;
+      lastNoise = b;
+      noiseCount++;
+    }
+    delay(1);
+  }
+
+  if (detailOut && detailSz > 0) {
+    uint32_t elapsedMs = (uint32_t)(millis() - startMs);
+    if (noiseCount == 0) snprintf(detailOut, detailSz, "timeout_%lums", (unsigned long)elapsedMs);
+    else snprintf(detailOut,
+                  detailSz,
+                  "timeout_%lums_noise_%u_%02X_%02X",
+                  (unsigned long)elapsedMs,
+                  (unsigned)noiseCount,
+                  (unsigned)firstNoise,
+                  (unsigned)lastNoise);
+  }
+  return false;
+}
+
+static void atmegaAvr109FlushTx() {
+  ATMEGA.flush();
+}
+
+static void atmegaAvr109InterCmdDelay() {
+  delay(ATMEGA_AVR109_INTER_CMD_GAP_MS);
+}
+
+static uint32_t atmegaAvr109ProbeSendDelayMs() {
+  if (g_atmegaCurrentBaud == ATMEGA_BOOTLOADER_BAUD) return 200;
+  return 80;
+}
+
+static uint32_t atmegaAvr109BlockTxGapUs() {
+  if (strncmp(g_atmegaBootloaderId, "AVRBT", 5) == 0) return ATMEGA_AVR109_PATCHED_BLOCK_TX_GAP_US;
+  return ATMEGA_AVR109_BLOCK_TX_GAP_US;
+}
+
+static void atmegaWritePaced(const uint8_t* data, size_t len, uint32_t gapUs) {
+  if (!data || len == 0) return;
+  for (size_t i = 0; i < len; i++) {
+    ATMEGA.write(data[i]);
+    if (gapUs > 0 && (i + 1U) < len) delayMicroseconds(gapUs);
+  }
+}
+
 static bool atmegaAvr109ReadSignature(uint8_t sig[3]) {
   uint8_t cmd = 's';
   ATMEGA.write(&cmd, 1);
+  atmegaAvr109FlushTx();
   return atmegaReadExact(sig, 3, ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+}
+
+static bool atmegaAvr109ReadSignatureTolerantDetailed(uint8_t sig[3],
+                                                      uint32_t timeoutMs,
+                                                      char* detailOut,
+                                                      size_t detailSz) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+  if (!sig) return false;
+
+  uint8_t cmd = 's';
+  uint8_t hist[3] = {0};
+  uint8_t histCount = 0;
+  uint8_t firstNoise = 0;
+  uint8_t lastNoise = 0;
+  uint16_t noiseCount = 0;
+  uint32_t startMs = millis();
+
+  ATMEGA.write(&cmd, 1);
+  atmegaAvr109FlushTx();
+
+  while ((uint32_t)(millis() - startMs) <= timeoutMs) {
+    while (ATMEGA.available()) {
+      int v = ATMEGA.read();
+      if (v < 0) break;
+
+      uint8_t b = (uint8_t)v;
+      if (histCount < sizeof(hist)) {
+        hist[histCount++] = b;
+      } else {
+        hist[0] = hist[1];
+        hist[1] = hist[2];
+        hist[2] = b;
+      }
+
+      if (histCount >= 3 && hist[0] == 0x1E && hist[1] == 0x97 && hist[2] == 0x02) {
+        sig[0] = hist[0];
+        sig[1] = hist[1];
+        sig[2] = hist[2];
+        if (detailOut && detailSz > 0) {
+          snprintf(detailOut,
+                   detailSz,
+                   "sig=%02X%02X%02X_%lums_noise_%u",
+                   (unsigned)sig[0],
+                   (unsigned)sig[1],
+                   (unsigned)sig[2],
+                   (unsigned long)(millis() - startMs),
+                   (unsigned)noiseCount);
+        }
+        return true;
+      }
+
+      if (noiseCount == 0) firstNoise = b;
+      lastNoise = b;
+      noiseCount++;
+    }
+    delay(1);
+  }
+
+  if (detailOut && detailSz > 0) {
+    if (noiseCount == 0) {
+      snprintf(detailOut, detailSz, "timeout");
+    } else {
+      snprintf(detailOut,
+               detailSz,
+               "timeout_noise_%u_%02X_%02X",
+               (unsigned)noiseCount,
+               (unsigned)firstNoise,
+               (unsigned)lastNoise);
+    }
+  }
+  return false;
 }
 
 static bool atmegaAvr109EnterProgMode() {
   uint8_t cmd = 'P';
+  char detail[32];
   ATMEGA.write(&cmd, 1);
-  return atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+  atmegaAvr109FlushTx();
+  if (!atmegaReadExpectByteIgnoringNoiseDetailed('\r',
+                                                 '?',
+                                                 ATMEGA_AVR109_REPLY_TIMEOUT_MS,
+                                                 detail,
+                                                 sizeof(detail))) {
+    return false;
+  }
+  atmegaAvr109InterCmdDelay();
+  return true;
 }
 
 static bool atmegaAvr109LeaveProgMode() {
   uint8_t cmd = 'L';
+  char detail[32];
   ATMEGA.write(&cmd, 1);
-  return atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+  atmegaAvr109FlushTx();
+  if (!atmegaReadExpectByteIgnoringNoiseDetailed('\r',
+                                                 '?',
+                                                 ATMEGA_AVR109_REPLY_TIMEOUT_MS,
+                                                 detail,
+                                                 sizeof(detail))) {
+    return false;
+  }
+  atmegaAvr109InterCmdDelay();
+  return true;
+}
+
+static bool atmegaAvr109ExitToApp() {
+  uint8_t cmd = 'E';
+  ATMEGA.write(&cmd, 1);
+  atmegaAvr109FlushTx();
+  delay(20);
+  atmegaDrainRx();
+  return true;
+}
+
+static bool atmegaAvr109ChipEraseDetailed(char* detailOut, size_t detailSz) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+
+  uint8_t cmd = 'e';
+  ATMEGA.write(&cmd, 1);
+  atmegaAvr109FlushTx();
+  return atmegaReadExpectByteTolerantDetailed('\r',
+                                              ATMEGA_AVR109_ERASE_TIMEOUT_MS,
+                                              detailOut,
+                                              detailSz);
+}
+
+static bool atmegaAvr109ReadProgrammerId(char out[8]) {
+  uint8_t cmd = 'S';
+  uint8_t reply[7] = {0};
+  if (!out) return false;
+  out[0] = 0;
+  ATMEGA.write(&cmd, 1);
+  atmegaAvr109FlushTx();
+  if (!atmegaReadExact(reply, sizeof(reply), ATMEGA_AVR109_REPLY_TIMEOUT_MS)) return false;
+  memcpy(out, reply, sizeof(reply));
+  out[7] = 0;
+  atmegaAvr109InterCmdDelay();
+  return true;
+}
+
+static bool atmegaAvr109ReadLockBits(uint8_t& lockBitsOut) {
+  uint8_t cmd = 'r';
+  lockBitsOut = 0xFF;
+  ATMEGA.write(&cmd, 1);
+  atmegaAvr109FlushTx();
+  if (!atmegaReadExact(&lockBitsOut, 1, ATMEGA_AVR109_REPLY_TIMEOUT_MS)) return false;
+  atmegaAvr109InterCmdDelay();
+  return true;
 }
 
 static bool atmegaAvr109QueryBlockSize(uint16_t& blockSizeOut) {
@@ -2649,12 +3084,14 @@ static bool atmegaAvr109QueryBlockSize(uint16_t& blockSizeOut) {
   uint8_t reply[3] = {0};
   blockSizeOut = ATMEGA_AVR109_BLOCK_CAP;
   ATMEGA.write(&cmd, 1);
+  atmegaAvr109FlushTx();
   if (!atmegaReadExact(reply, sizeof(reply), ATMEGA_AVR109_REPLY_TIMEOUT_MS)) return false;
   if (reply[0] != 'Y') return false;
   uint16_t remoteSize = (uint16_t)(((uint16_t)reply[1] << 8) | reply[2]);
   if (remoteSize == 0) return false;
   if (remoteSize > ATMEGA_AVR109_BLOCK_CAP) remoteSize = ATMEGA_AVR109_BLOCK_CAP;
   blockSizeOut = remoteSize;
+  atmegaAvr109InterCmdDelay();
   return true;
 }
 
@@ -2664,7 +3101,24 @@ static bool atmegaAvr109SetWordAddress(uint16_t wordAddr) {
   cmd[1] = (uint8_t)(wordAddr >> 8);
   cmd[2] = (uint8_t)(wordAddr & 0xFF);
   ATMEGA.write(cmd, sizeof(cmd));
-  return atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+  atmegaAvr109FlushTx();
+  if (!atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS)) return false;
+  atmegaAvr109InterCmdDelay();
+  return true;
+}
+
+static bool atmegaAvr109SetWordAddressDetailed(uint16_t wordAddr, char* detailOut, size_t detailSz) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+
+  uint8_t cmd[3];
+  cmd[0] = 'A';
+  cmd[1] = (uint8_t)(wordAddr >> 8);
+  cmd[2] = (uint8_t)(wordAddr & 0xFF);
+  ATMEGA.write(cmd, sizeof(cmd));
+  atmegaAvr109FlushTx();
+  if (!atmegaReadExpectByteDetailed('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS, detailOut, detailSz)) return false;
+  atmegaAvr109InterCmdDelay();
+  return true;
 }
 
 static bool atmegaAvr109BlockLoadFlash(const uint8_t* data, uint16_t len) {
@@ -2676,7 +3130,45 @@ static bool atmegaAvr109BlockLoadFlash(const uint8_t* data, uint16_t len) {
   hdr[3] = 'F';
   ATMEGA.write(hdr, sizeof(hdr));
   ATMEGA.write(data, len);
+  atmegaAvr109FlushTx();
   return atmegaReadExpectByte('\r', ATMEGA_AVR109_REPLY_TIMEOUT_MS);
+}
+
+static bool atmegaAvr109BlockLoadFlashDetailed(const uint8_t* data,
+                                               uint16_t len,
+                                               char* detailOut,
+                                               size_t detailSz) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+  if (!data || len == 0) {
+    if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "invalid_len");
+    return false;
+  }
+
+  uint8_t hdr[4];
+  hdr[0] = 'B';
+  hdr[1] = (uint8_t)(len >> 8);
+  hdr[2] = (uint8_t)(len & 0xFF);
+  hdr[3] = 'F';
+  uint32_t gapUs = atmegaAvr109BlockTxGapUs();
+  atmegaWritePaced(hdr, sizeof(hdr), gapUs);
+  atmegaWritePaced(data, len, gapUs);
+  atmegaAvr109FlushTx();
+  if (!atmegaReadExpectByteIgnoringNoiseDetailed('\r',
+                                                 '?',
+                                                 ATMEGA_AVR109_BLOCK_REPLY_TIMEOUT_MS,
+                                                 detailOut,
+                                                 detailSz)) {
+    return false;
+  }
+  atmegaAvr109InterCmdDelay();
+  return true;
+}
+
+static uint16_t atmegaAvr109HostFlashChunkCap(uint16_t remoteCap) {
+  uint16_t cap = remoteCap;
+  if (cap == 0 || cap > ATMEGA_AVR109_BLOCK_CAP) cap = ATMEGA_AVR109_BLOCK_CAP;
+  if (cap > ATMEGA_AVR109_STREAM_BLOCK_CAP) cap = ATMEGA_AVR109_STREAM_BLOCK_CAP;
+  return cap;
 }
 
 static bool atmegaBootloaderHandshake(char* detailOut, size_t detailSz, uint16_t* blockSizeOut = nullptr) {
@@ -2685,23 +3177,20 @@ static bool atmegaBootloaderHandshake(char* detailOut, size_t detailSz, uint16_t
 
   atmegaDrainRx();
   atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
-  delay(40);
+  delay(atmegaAvr109ProbeSendDelayMs());
 
   uint8_t sig[3] = {0};
-  bool found = false;
-  uint32_t deadline = millis() + ATMEGA_BOOTLOADER_WAIT_MS;
-  while ((int32_t)(millis() - deadline) < 0) {
-    atmegaDrainRx();
-    if (atmegaAvr109ReadSignature(sig) &&
-        sig[0] == 0x1E && sig[1] == 0x97 && sig[2] == 0x02) {
-      found = true;
-      break;
+  char sigDetail[48];
+  if (!atmegaAvr109ReadSignatureTolerantDetailed(sig,
+                                                 ATMEGA_BOOTLOADER_WAIT_MS,
+                                                 sigDetail,
+                                                 sizeof(sigDetail))) {
+    if (detailOut && detailSz > 0) {
+      snprintf(detailOut,
+               detailSz,
+               "bootloader_signature_timeout_%s",
+               sigDetail[0] ? sigDetail : "unknown");
     }
-    delay(25);
-  }
-
-  if (!found) {
-    if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "bootloader_signature_timeout");
     return false;
   }
 
@@ -2715,12 +3204,143 @@ static bool atmegaBootloaderHandshake(char* detailOut, size_t detailSz, uint16_t
     if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "block_size_query_failed");
     return false;
   }
+  if (blockSize > ATMEGA_AVR109_BLOCK_CAP) blockSize = ATMEGA_AVR109_BLOCK_CAP;
+
+  char programmerId[8] = {0};
+  uint8_t lockBits = 0xFF;
+  bool haveProgrammerId = atmegaAvr109ReadProgrammerId(programmerId);
+  bool haveLockBits = atmegaAvr109ReadLockBits(lockBits);
+  if (haveProgrammerId) memcpy(g_atmegaBootloaderId, programmerId, sizeof(g_atmegaBootloaderId));
+  else memset(g_atmegaBootloaderId, 0, sizeof(g_atmegaBootloaderId));
+
+  // A locked application section can let the basic handshake succeed but still
+  // reject the first flash block, which matches the observed field failure.
+  if (haveLockBits && lockBits == 0xC0) {
+    if (detailOut && detailSz > 0) {
+      snprintf(detailOut, detailSz,
+               "lockbits_%02X_chip_erase_required",
+               (unsigned)lockBits);
+    }
+    return false;
+  }
 
   if (blockSizeOut) *blockSizeOut = blockSize;
   if (detailOut && detailSz > 0) {
-    snprintf(detailOut, detailSz, "sig=%02X%02X%02X block=%u",
-             (unsigned)sig[0], (unsigned)sig[1], (unsigned)sig[2], (unsigned)blockSize);
+    snprintf(detailOut, detailSz, "sig=%02X%02X%02X blk=%u id=%s lock=%s%02X",
+             (unsigned)sig[0],
+             (unsigned)sig[1],
+             (unsigned)sig[2],
+             (unsigned)blockSize,
+             haveProgrammerId ? programmerId : "?",
+             haveLockBits ? "" : "?",
+             (unsigned)lockBits);
   }
+  return true;
+}
+
+static bool atmegaBootloaderHandshakeAuto(char* detailOut, size_t detailSz, uint16_t* blockSizeOut = nullptr) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+  if (blockSizeOut) *blockSizeOut = ATMEGA_AVR109_BLOCK_CAP;
+
+  const uint32_t candidates[] = {
+    ATMEGA_BOOTLOADER_BAUD,
+    ATMEGA_BOOTLOADER_FALLBACK_BAUD,
+    ATMEGA_BOOTLOADER_ALT_BAUD
+  };
+  char lastDetail[96] = {0};
+
+  for (size_t i = 0; i < (sizeof(candidates) / sizeof(candidates[0])); i++) {
+    if (i > 0 && candidates[i] == candidates[i - 1]) continue;
+
+    atmegaSwitchUartBaud(candidates[i]);
+    if (atmegaBootloaderHandshake(lastDetail, sizeof(lastDetail), blockSizeOut)) {
+      if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "%s", lastDetail);
+      return true;
+    }
+
+    Serial.printf("[ATOTA] boot baud miss=%lu detail=%s\n",
+                  (unsigned long)candidates[i],
+                  lastDetail[0] ? lastDetail : "unknown");
+  }
+
+  if (detailOut && detailSz > 0) {
+    snprintf(detailOut, detailSz, "%s", lastDetail[0] ? lastDetail : "bootloader_signature_timeout");
+  }
+  return false;
+}
+
+static bool atmegaBootloaderHandshakeAtBaud(uint32_t baud,
+                                            char* detailOut,
+                                            size_t detailSz,
+                                            uint16_t* blockSizeOut = nullptr) {
+  if (detailOut && detailSz > 0) detailOut[0] = 0;
+  if (blockSizeOut) *blockSizeOut = ATMEGA_AVR109_BLOCK_CAP;
+  if (baud == 0) baud = ATMEGA_BOOTLOADER_ALT_BAUD;
+
+  char lastDetail[96] = {0};
+  for (uint8_t attempt = 0; attempt < 3; attempt++) {
+    atmegaSwitchUartBaud(baud);
+    if (atmegaBootloaderHandshake(lastDetail, sizeof(lastDetail), blockSizeOut)) {
+      if (detailOut && detailSz > 0) snprintf(detailOut, detailSz, "%s", lastDetail);
+      return true;
+    }
+  }
+
+  if (detailOut && detailSz > 0) {
+    snprintf(detailOut, detailSz, "%s", lastDetail[0] ? lastDetail : "bootloader_signature_timeout");
+  }
+  return false;
+}
+
+static bool atmegaBootloaderResyncForRetry(uint32_t blockStartByteAddr,
+                                           uint8_t attempt,
+                                           const char* reason,
+                                           char* errOut,
+                                           size_t errSz) {
+  char bootDetail[96];
+  uint16_t blockSize = ATMEGA_AVR109_BLOCK_CAP;
+  Serial.printf("[ATOTA] retry resync addr=0x%05lX attempt=%u/%u reason=%s\n",
+                (unsigned long)blockStartByteAddr,
+                (unsigned)attempt,
+                (unsigned)ATMEGA_AVR109_BLOCK_RETRIES,
+                (reason && reason[0]) ? reason : "unknown");
+  delay(ATMEGA_AVR109_RESYNC_PRE_DELAY_MS);
+  if (!atmegaBootloaderHandshakeAtBaud(ATMEGA_BOOTLOADER_BAUD, bootDetail, sizeof(bootDetail), &blockSize) &&
+      !atmegaBootloaderHandshakeAuto(bootDetail, sizeof(bootDetail), &blockSize)) {
+    if (errOut && errSz > 0) {
+      snprintf(errOut, errSz, "retry_resync_failed_%s", bootDetail[0] ? bootDetail : "unknown");
+    }
+    return false;
+  }
+  Serial.printf("[ATOTA] retry resync ok addr=0x%05lX blk=%u detail=%s\n",
+                (unsigned long)blockStartByteAddr,
+                (unsigned)blockSize,
+                bootDetail);
+  g_atmegaBootSessionBlocks = 0;
+  return true;
+}
+
+static bool atmegaRolloverBootloaderSessionIfNeeded(char* errOut, size_t errSz) {
+  if (errOut && errSz > 0) errOut[0] = 0;
+  if (g_atmegaBootSessionBlocks < ATMEGA_AVR109_SESSION_BLOCK_CAP) return true;
+
+  char bootDetail[96];
+  uint16_t blockSize = ATMEGA_AVR109_BLOCK_CAP;
+  Serial.printf("[ATOTA] session rollover blocks=%u\n", (unsigned)g_atmegaBootSessionBlocks);
+  (void)atmegaAvr109LeaveProgMode();
+  delay(20);
+  if (!atmegaBootloaderHandshakeAtBaud(ATMEGA_BOOTLOADER_BAUD, bootDetail, sizeof(bootDetail), &blockSize) &&
+      !atmegaBootloaderHandshakeAuto(bootDetail, sizeof(bootDetail), &blockSize)) {
+    if (errOut && errSz > 0) {
+      snprintf(errOut, errSz, "session_rollover_failed_%s", bootDetail[0] ? bootDetail : "unknown");
+    }
+    return false;
+  }
+
+  g_atmegaBootSessionBlocks = 0;
+  Serial.printf("[ATOTA] session rollover ok blk=%u detail=%s\n",
+                (unsigned)blockSize,
+                bootDetail);
   return true;
 }
 
@@ -2815,6 +3435,7 @@ static bool atmegaHexFlushBlock(uint32_t blockStartByteAddr,
     if (errOut && errSz > 0) snprintf(errOut, errSz, "flash_addr_out_of_range");
     return false;
   }
+  if (!atmegaRolloverBootloaderSessionIfNeeded(errOut, errSz)) return false;
 
   uint8_t tmp[ATMEGA_AVR109_BLOCK_CAP + 1];
   size_t writeLen = blockLen;
@@ -2832,15 +3453,55 @@ static bool atmegaHexFlushBlock(uint32_t blockStartByteAddr,
   }
 
   uint16_t wordAddr = (uint16_t)(blockStartByteAddr >> 1);
-  if (!atmegaAvr109SetWordAddress(wordAddr)) {
-    if (errOut && errSz > 0) snprintf(errOut, errSz, "set_address_failed");
-    return false;
-  }
-  if (!atmegaAvr109BlockLoadFlash(tmp, (uint16_t)writeLen)) {
-    if (errOut && errSz > 0) snprintf(errOut, errSz, "block_load_failed");
-    return false;
+  char avr109Detail[32];
+  for (uint8_t attempt = 1; attempt <= ATMEGA_AVR109_BLOCK_RETRIES; attempt++) {
+    if (!atmegaAvr109SetWordAddressDetailed(wordAddr, avr109Detail, sizeof(avr109Detail))) {
+      if (attempt >= ATMEGA_AVR109_BLOCK_RETRIES) {
+        if (errOut && errSz > 0) {
+          snprintf(errOut, errSz, "set_address_failed_%s", avr109Detail[0] ? avr109Detail : "unknown");
+        }
+        return false;
+      }
+      Serial.printf("[ATOTA] set address retry addr=0x%05lX attempt=%u/%u detail=%s\n",
+                    (unsigned long)blockStartByteAddr,
+                    (unsigned)attempt,
+                    (unsigned)ATMEGA_AVR109_BLOCK_RETRIES,
+                    avr109Detail[0] ? avr109Detail : "unknown");
+      delay(ATMEGA_AVR109_RETRY_BACKOFF_MS * attempt);
+      if (!atmegaBootloaderResyncForRetry(blockStartByteAddr, attempt, avr109Detail, errOut, errSz)) {
+        return false;
+      }
+      continue;
+    }
+
+    if (atmegaAvr109BlockLoadFlashDetailed(tmp, (uint16_t)writeLen, avr109Detail, sizeof(avr109Detail))) {
+      break;
+    }
+
+    if (attempt >= ATMEGA_AVR109_BLOCK_RETRIES) {
+      if (errOut && errSz > 0) {
+        snprintf(errOut, errSz, "block_load_failed_%s", avr109Detail[0] ? avr109Detail : "unknown");
+      }
+      Serial.printf("[ATOTA] block load fail addr=0x%05lX len=%u detail=%s\n",
+                    (unsigned long)blockStartByteAddr,
+                    (unsigned)writeLen,
+                    avr109Detail[0] ? avr109Detail : "unknown");
+      return false;
+    }
+
+    Serial.printf("[ATOTA] block load retry addr=0x%05lX len=%u attempt=%u/%u detail=%s\n",
+                  (unsigned long)blockStartByteAddr,
+                  (unsigned)writeLen,
+                  (unsigned)attempt,
+                  (unsigned)ATMEGA_AVR109_BLOCK_RETRIES,
+                  avr109Detail[0] ? avr109Detail : "unknown");
+    delay(ATMEGA_AVR109_RETRY_BACKOFF_MS * attempt);
+    if (!atmegaBootloaderResyncForRetry(blockStartByteAddr, attempt, avr109Detail, errOut, errSz)) {
+      return false;
+    }
   }
 
+  g_atmegaBootSessionBlocks++;
   g_atmegaOtaFlashBlocks++;
   g_atmegaOtaBytesDone += (uint32_t)blockLen;
   if ((g_atmegaOtaFlashBlocks & 0x07U) == 0U) {
@@ -2859,14 +3520,36 @@ static bool atmegaProgramHexFile(File& file, const char* sourceLabel, char* errO
     return false;
   }
 
-  char bootDetail[64];
+  char bootDetail[96];
   uint16_t blockCap = ATMEGA_AVR109_BLOCK_CAP;
   atmegaOtaSetState(ATMEGA_OTA_ENTERING_BOOT, "entering_bootloader");
-  if (!atmegaBootloaderHandshake(bootDetail, sizeof(bootDetail), &blockCap)) {
+  if (!atmegaBootloaderHandshakeAuto(bootDetail, sizeof(bootDetail), &blockCap)) {
     if (errOut && errSz > 0) snprintf(errOut, errSz, "%s", bootDetail[0] ? bootDetail : "bootloader_handshake_failed");
     return false;
   }
+  g_atmegaBootSessionBlocks = 0;
+  blockCap = atmegaAvr109HostFlashChunkCap(blockCap);
   Serial.printf("[ATOTA] bootloader ready %s\n", bootDetail);
+  Serial.printf("[ATOTA] transport session_cap=%u block_cap=%u retries=%u\n",
+                (unsigned)ATMEGA_AVR109_SESSION_BLOCK_CAP,
+                (unsigned)blockCap,
+                (unsigned)ATMEGA_AVR109_BLOCK_RETRIES);
+  Serial.printf("[ATOTA] block tx gap=%lu us\n", (unsigned long)atmegaAvr109BlockTxGapUs());
+  Serial.printf("[ATOTA] host block cap=%u\n", (unsigned)blockCap);
+
+  char eraseDetail[32];
+  if (ATMEGA_AVR109_SKIP_CHIP_ERASE) {
+    Serial.println("[ATOTA] chip erase skipped -> page erase on write");
+  } else {
+    Serial.println("[ATOTA] chip erase start");
+    if (!atmegaAvr109ChipEraseDetailed(eraseDetail, sizeof(eraseDetail))) {
+      if (errOut && errSz > 0) {
+        snprintf(errOut, errSz, "chip_erase_failed_%s", eraseDetail[0] ? eraseDetail : "unknown");
+      }
+      return false;
+    }
+    Serial.println("[ATOTA] chip erase ok");
+  }
 
   atmegaOtaSetState(ATMEGA_OTA_FLASHING, "flashing");
   g_atmegaOtaBytesDone = 0;
@@ -2958,9 +3641,14 @@ static bool atmegaProgramHexFile(File& file, const char* sourceLabel, char* errO
     return false;
   }
 
-  (void)atmegaAvr109LeaveProgMode();
   atmegaOtaSetState(ATMEGA_OTA_REBOOTING, "rebooting_target");
-  atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+  if (!atmegaAvr109ExitToApp()) {
+    atmegaSwitchUartBaud(ATMEGA_APP_BAUD);
+    atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+  } else {
+    atmegaSwitchUartBaud(ATMEGA_APP_BAUD);
+  }
+  delay(ATMEGA_POST_BLOCK_RESET_SETTLE_MS);
   Serial.printf("[ATOTA] flash done source=%s blocks=%lu bytes=%lu\n",
                 (sourceLabel && sourceLabel[0]) ? sourceLabel : "-",
                 (unsigned long)g_atmegaOtaFlashBlocks,
@@ -3112,6 +3800,7 @@ static bool atmegaOtaDownloadUrlToSd(const char* sourcePathOrUrl, const char* ex
 
 static bool atmegaOtaRunFromFilePath(const char* path, char* errOut, size_t errSz) {
   if (errOut && errSz > 0) errOut[0] = 0;
+  logCurrentTaskStack("atota_file_enter");
   if (!path || !path[0]) {
     if (errOut && errSz > 0) snprintf(errOut, errSz, "file_path_missing");
     return false;
@@ -3129,24 +3818,44 @@ static bool atmegaOtaRunFromFilePath(const char* path, char* errOut, size_t errS
     return false;
   }
 
+  Serial.printf("[ATOTA] open file path=%s\n", path);
   File file = SD.open(path, FILE_READ);
   if (!file) {
     if (errOut && errSz > 0) snprintf(errOut, errSz, "file_open_failed");
     return false;
   }
+  Serial.printf("[ATOTA] file open ok size=%llu\n", (unsigned long long)file.size());
+  logCurrentTaskStack("atota_file_opened");
 
-  g_atmegaOtaLastBridgeEnabled = g_bridgeEnabled;
-  g_bridgeEnabled = false;
-  g_atmegaOtaInProgress = true;
-  g_atmegaOtaStartedAtMs = millis();
+  bool ownsSession = !g_atmegaOtaInProgress;
+  if (ownsSession) {
+    g_atmegaOtaLastBridgeEnabled = g_bridgeEnabled;
+    g_bridgeEnabled = false;
+    g_atmegaOtaInProgress = true;
+    g_atmegaOtaStartedAtMs = millis();
+  }
+  if (g_atmegaOtaInProgress) dwinDrainRx();
   snprintf(g_atmegaOtaSourceText, sizeof(g_atmegaOtaSourceText), "%s", path);
   atmegaOtaSetState(ATMEGA_OTA_ENTERING_BOOT, "starting");
+  Serial.println("[ATOTA] switching host uart -> boot baud");
+  atmegaSwitchUartBaud(ATMEGA_BOOTLOADER_BAUD);
+  logCurrentTaskStack("atota_boot_baud");
 
   bool ok = atmegaProgramHexFile(file, path, errOut, errSz);
   file.close();
 
-  g_atmegaOtaInProgress = false;
-  g_bridgeEnabled = g_atmegaOtaLastBridgeEnabled;
+  Serial.println("[ATOTA] switching host uart -> app baud");
+  atmegaSwitchUartBaud(ATMEGA_APP_BAUD);
+  logCurrentTaskStack("atota_app_baud");
+  if (!ok && g_atmegaOtaFlashBlocks == 0) {
+    Serial.println("[ATOTA] ota failed before flash commit -> reset target back to app");
+    atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+  }
+  if (g_atmegaOtaInProgress) dwinDrainRx();
+  if (ownsSession) {
+    g_atmegaOtaInProgress = false;
+    g_bridgeEnabled = g_atmegaOtaLastBridgeEnabled;
+  }
   if (ok) {
     atmegaOtaSetState(ATMEGA_OTA_OK, "flash_complete");
   } else {
@@ -3157,6 +3866,7 @@ static bool atmegaOtaRunFromFilePath(const char* path, char* errOut, size_t errS
 
 static bool atmegaOtaRunFromUrl(const char* sourcePathOrUrl, const char* expectedSha256, char* errOut, size_t errSz) {
   if (errOut && errSz > 0) errOut[0] = 0;
+  logCurrentTaskStack("atota_url_enter");
   if (g_runActive) {
     if (errOut && errSz > 0) snprintf(errOut, errSz, "device_run_active");
     return false;
@@ -3167,13 +3877,33 @@ static bool atmegaOtaRunFromUrl(const char* sourcePathOrUrl, const char* expecte
   snprintf(g_atmegaOtaSourceText, sizeof(g_atmegaOtaSourceText), "%s",
            (sourcePathOrUrl && sourcePathOrUrl[0]) ? sourcePathOrUrl : "-");
 
+  bool ownsSession = !g_atmegaOtaInProgress;
+  if (ownsSession) {
+    g_atmegaOtaLastBridgeEnabled = g_bridgeEnabled;
+    g_bridgeEnabled = false;
+    g_atmegaOtaInProgress = true;
+    g_atmegaOtaStartedAtMs = millis();
+  }
+
   atmegaOtaSetState(ATMEGA_OTA_DOWNLOADING, "downloading_hex");
   if (!atmegaOtaDownloadUrlToSd(sourcePathOrUrl, expectedSha256, errOut, errSz)) {
+    if (ownsSession) {
+      dwinDrainRx();
+      g_atmegaOtaInProgress = false;
+      g_bridgeEnabled = g_atmegaOtaLastBridgeEnabled;
+    }
     atmegaOtaSetState(ATMEGA_OTA_FAIL, (errOut && errOut[0]) ? errOut : "download_failed");
     return false;
   }
 
-  return atmegaOtaRunFromFilePath(SD_ATMEGA_OTA_HEX_PATH, errOut, errSz);
+  logCurrentTaskStack("atota_download_complete");
+  bool ok = atmegaOtaRunFromFilePath(SD_ATMEGA_OTA_HEX_PATH, errOut, errSz);
+  if (ownsSession) {
+    dwinDrainRx();
+    g_atmegaOtaInProgress = false;
+    g_bridgeEnabled = g_atmegaOtaLastBridgeEnabled;
+  }
+  return ok;
 }
 
 static bool atmegaOtaProbeBootloader(bool rebootToApp) {
@@ -3185,12 +3915,19 @@ static bool atmegaOtaProbeBootloader(bool rebootToApp) {
   g_atmegaOtaInProgress = true;
   atmegaOtaSetState(ATMEGA_OTA_ENTERING_BOOT, "probing_bootloader");
 
-  bool ok = atmegaBootloaderHandshake(detail, sizeof(detail), &blockSize);
+  bool ok = atmegaBootloaderHandshakeAuto(detail, sizeof(detail), &blockSize);
   if (rebootToApp) {
-    (void)atmegaAvr109LeaveProgMode();
-    atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+    if (ok) {
+      if (!atmegaAvr109ExitToApp()) {
+        atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+      }
+    } else {
+      atmegaResetPulse(ATMEGA_RESET_PULSE_MS);
+    }
+    delay(ATMEGA_POST_BLOCK_RESET_SETTLE_MS);
   }
 
+  atmegaSwitchUartBaud(ATMEGA_APP_BAUD);
   g_atmegaOtaInProgress = false;
   g_bridgeEnabled = g_atmegaOtaLastBridgeEnabled;
 
@@ -4097,6 +4834,26 @@ static void webFirmwareCheckTick(bool force) {
     webPostOtaReport("failed", releaseId, "family_mismatch");
     return;
   }
+  if (targetIsAtmega && !forceUpdate && g_atmegaReportedVersion[0] && g_otaTargetVersion[0]) {
+    int versionCmp = firmwareVersionCompare(g_atmegaReportedVersion, g_otaTargetVersion);
+    if (versionCmp > 0) {
+      Serial.printf("[OTA] skipped older ATmega target current=%s target=%s\n",
+                    g_atmegaReportedVersion,
+                    g_otaTargetVersion);
+      webPostOtaReport("skipped", releaseId, "older_than_current_atmega");
+      return;
+    }
+    if (versionCmp == 0 &&
+        g_atmegaReportedBuildId[0] &&
+        g_otaTargetBuildId[0] &&
+        strcmp(g_atmegaReportedBuildId, g_otaTargetBuildId) == 0) {
+      Serial.printf("[OTA] skipped same ATmega build version=%s build=%s\n",
+                    g_atmegaReportedVersion,
+                    g_atmegaReportedBuildId);
+      webPostOtaReport("skipped", releaseId, "already_current_atmega");
+      return;
+    }
+  }
   if (g_webOtaSessionSkipUntilReboot && forceUpdate) {
     g_webOtaSessionSkipUntilReboot = false;
     Serial.printf("[OTA] force update overrides session skip release=%llu\n",
@@ -4215,6 +4972,7 @@ static void webFirmwareDecisionTick() {
     g_webOtaSessionSkipUntilReboot = true;
     if (targetIsAtmega) {
       atmegaPublishOtaSessionReset();
+      atmegaForceStateResync("atota_apply_failed", true);
     }
     atmegaRequestPageChange(DWIN_PAGE_DEVICE_READY);
     return;
@@ -4379,6 +5137,15 @@ static bool webSendLogUploadChunk(WebLogUploadJob& job, uint32_t now) {
     }
 
     uint32_t offset = job.chunkIndex * (uint32_t)WEB_LOG_UPLOAD_CHUNK_BYTES;
+    if (offset >= job.fileSize) {
+      f.close();
+      Serial.printf("[WEB] log upload offset past snapshot kind=%s offset=%lu size=%u\n",
+                    job.kind,
+                    (unsigned long)offset,
+                    (unsigned)job.fileSize);
+      webLogUploadReset(job, WEB_LOG_UPLOAD_RETRY_MS);
+      return false;
+    }
     if (!f.seek(offset)) {
       f.close();
       Serial.printf("[WEB] log upload seek fail kind=%s offset=%lu\n", job.kind, (unsigned long)offset);
@@ -4386,7 +5153,10 @@ static bool webSendLogUploadChunk(WebLogUploadJob& job, uint32_t now) {
       return false;
     }
 
-    chunkLen = f.read(chunkBuf, sizeof(chunkBuf));
+    size_t remaining = job.fileSize - offset;
+    size_t maxRead = sizeof(chunkBuf);
+    if (maxRead > remaining) maxRead = remaining;
+    chunkLen = f.read(chunkBuf, maxRead);
     f.close();
   }
 
@@ -4443,6 +5213,7 @@ static bool webSendLogUploadChunk(WebLogUploadJob& job, uint32_t now) {
 }
 
 static void webLogUploadTick() {
+  if (g_atmegaOtaInProgress) return;
   if (WiFi.status() != WL_CONNECTED) return;
   if (g_webDeviceRegisteredKnown && !g_webDeviceRegistered) return;
 
@@ -7265,6 +8036,7 @@ static void stopPortal() {
 
 
 void setup() {
+  Serial.setRxBufferSize(USB_CDC_RX_BUFFER_BYTES);
   Serial.begin(115200);
   delay(150);
   melauhfPowerInit();

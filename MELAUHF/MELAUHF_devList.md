@@ -424,3 +424,11 @@
 - 간단한 설명
   - ATmega 펌웨어 쪽에서는 `@FW|B` 부트 알림과 버전 리포트 재전송, page68 부트 대기시간/조건 보정, page71 ATmega 버전 표기, page61·62·73 복귀 흐름 안정화, `OTA|RST` 수신 시 page74에서 확실히 빠져나오는 복구 로직을 추가했다.
   - 동시에 ESP에서 들어오는 `PAGE|`, `P63|M|`, `OTA|` 계열을 우선 큐로 보강해 초기 부트와 OTA 실패 직후 중요한 제어 라인이 slot 렌더링에 밀리지 않게 했고, 부팅 직후 에너지/등록 상태가 늦게 와도 UI가 오류 페이지로 빠지지 않도록 가드했다.
+
+## 49. 이번 채팅 기준 MELAUHF 디렉토리 무변경 및 Source Control 동기화 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `Arduino/ATmega_Web_UART_OTA_Minimal`에서 UART OTA 완주 기준을 확보하고 업로드 설정 문서를 정리하는 작업이었고, `MELAUHF` ATmega 펌웨어 코드는 추가 수정하지 않았다.
+  - MELAUHF 디렉토리는 기존 펌웨어 변경 상태를 그대로 유지한 채 `_devList` 기록과 Source Control 정리 기준만 이번 채팅 기준으로 맞췄다.

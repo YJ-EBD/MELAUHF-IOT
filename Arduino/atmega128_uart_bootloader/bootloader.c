@@ -12,45 +12,103 @@
 #define F_CPU 16000000UL
 #endif
 
-#define UART_UBRR_VALUE 16U
+#ifndef BOOT_UART_NUM
+#define BOOT_UART_NUM 0
+#endif
+
+#ifndef BOOT_UART_BAUD
+#define BOOT_UART_BAUD 115200UL
+#endif
+
+#define UART_UBRR_VALUE ((uint16_t)(((F_CPU + (BOOT_UART_BAUD * 4UL)) / (BOOT_UART_BAUD * 8UL)) - 1UL))
+#ifndef BOOT_WAIT_MS
 #define BOOT_WAIT_MS 1500U
-#define COMMAND_IDLE_TIMEOUT_MS 1000U
+#endif
+
+#ifndef COMMAND_IDLE_TIMEOUT_MS
+#define COMMAND_IDLE_TIMEOUT_MS 15000U
+#endif
+
+#ifndef BLOCK_RX_TIMEOUT_MS
+#define BLOCK_RX_TIMEOUT_MS 500U
+#endif
+
+#ifndef POST_BLOCK_WRITE_DELAY_MS
+#define POST_BLOCK_WRITE_DELAY_MS 1U
+#endif
 #define FLASH_BLOCK_CAP 256U
 #define BOOT_START_BYTE 0x1F000UL
 #define APP_LAST_BYTE (BOOT_START_BYTE - 1UL)
+
+#if BOOT_UART_NUM == 0
+#define UART_UCSRA UCSR0A
+#define UART_UCSRB UCSR0B
+#define UART_UCSRC UCSR0C
+#define UART_UBRRH UBRR0H
+#define UART_UBRRL UBRR0L
+#define UART_UDR UDR0
+#define UART_BIT_U2X U2X0
+#define UART_BIT_RXEN RXEN0
+#define UART_BIT_TXEN TXEN0
+#define UART_BIT_UCSZ1 UCSZ01
+#define UART_BIT_UCSZ0 UCSZ00
+#define UART_BIT_UDRE UDRE0
+#define UART_BIT_RXC RXC0
+#elif BOOT_UART_NUM == 1
+#define UART_UCSRA UCSR1A
+#define UART_UCSRB UCSR1B
+#define UART_UCSRC UCSR1C
+#define UART_UBRRH UBRR1H
+#define UART_UBRRL UBRR1L
+#define UART_UDR UDR1
+#define UART_BIT_U2X U2X1
+#define UART_BIT_RXEN RXEN1
+#define UART_BIT_TXEN TXEN1
+#define UART_BIT_UCSZ1 UCSZ11
+#define UART_BIT_UCSZ0 UCSZ10
+#define UART_BIT_UDRE UDRE1
+#define UART_BIT_RXC RXC1
+#else
+#error "BOOT_UART_NUM must be 0 or 1"
+#endif
 
 static uint8_t g_pageBuffer[SPM_PAGESIZE];
 static uint8_t g_blockBuffer[FLASH_BLOCK_CAP];
 static uint32_t g_wordAddress = 0;
 
 static void uartInit(void) {
-  UCSR0A = _BV(U2X0);
-  UCSR0B = _BV(RXEN0) | _BV(TXEN0);
-  UCSR0C = _BV(UCSZ01) | _BV(UCSZ00);
-  UBRR0H = 0;
-  UBRR0L = UART_UBRR_VALUE;
+  UART_UCSRA = _BV(UART_BIT_U2X);
+  UART_UCSRB = _BV(UART_BIT_RXEN) | _BV(UART_BIT_TXEN);
+  UART_UCSRC = _BV(UART_BIT_UCSZ1) | _BV(UART_BIT_UCSZ0);
+  UART_UBRRH = 0;
+  UART_UBRRL = UART_UBRR_VALUE;
 }
 
 static void uartPutc(uint8_t value) {
-  while ((UCSR0A & _BV(UDRE0)) == 0) {
+  while ((UART_UCSRA & _BV(UART_BIT_UDRE)) == 0) {
   }
-  UDR0 = value;
+  UART_UDR = value;
 }
 
 static uint8_t uartGetcBlocking(void) {
-  while ((UCSR0A & _BV(RXC0)) == 0) {
+  while ((UART_UCSRA & _BV(UART_BIT_RXC)) == 0) {
   }
-  return UDR0;
+  return UART_UDR;
 }
 
 static bool uartGetcTimeout(uint8_t* out, uint16_t timeoutMs) {
   if (!out) return false;
   while (timeoutMs-- > 0U) {
-    if (UCSR0A & _BV(RXC0)) {
-      *out = UDR0;
-      return true;
+    // Poll at microsecond granularity so block-mode RX does not overrun the
+    // single-byte UART data register at 38400 baud.
+    for (uint16_t i = 0; i < 1000U; i++) {
+      if ((i & 0x3FU) == 0U) wdt_reset();
+      if (UART_UCSRA & _BV(UART_BIT_RXC)) {
+        *out = UART_UDR;
+        return true;
+      }
+      _delay_us(1);
     }
-    _delay_ms(1);
   }
   return false;
 }
@@ -61,9 +119,9 @@ static bool appPresent(void) {
 
 __attribute__((noreturn)) static void jumpToApp(void) {
   cli();
-  UCSR0A = 0;
-  UCSR0B = 0;
-  UCSR0C = 0;
+  UART_UCSRA = 0;
+  UART_UCSRB = 0;
+  UART_UCSRC = 0;
 #if defined(RAMPZ)
   RAMPZ = 0;
 #endif
@@ -80,6 +138,7 @@ static void flashReadPage(uint32_t pageAddr) {
 
 static void flashWritePage(uint32_t pageAddr) {
   eeprom_busy_wait();
+  wdt_reset();
   boot_page_erase_safe(pageAddr);
   for (uint16_t i = 0; i < SPM_PAGESIZE; i += 2U) {
     uint16_t word = (uint16_t)g_pageBuffer[i] | ((uint16_t)g_pageBuffer[i + 1U] << 8);
@@ -117,13 +176,19 @@ static bool flashWriteBytes(uint32_t byteAddr, const uint8_t* data, uint16_t len
 
 static void eraseApplication(void) {
   for (uint32_t pageAddr = 0UL; pageAddr < BOOT_START_BYTE; pageAddr += SPM_PAGESIZE) {
+    wdt_reset();
     boot_page_erase_safe(pageAddr);
   }
   boot_rww_enable_safe();
 }
 
 static void sendProgrammerId(void) {
-  static const char kId[] = "AVRBOOT";
+  // 7-byte AVR109 ID so we can tell patched bootloaders apart in the field.
+#if BOOT_UART_NUM == 0
+  static const char kId[] = "AVRBT0W";
+#else
+  static const char kId[] = "AVRBT2W";
+#endif
   for (uint8_t i = 0; i < (sizeof(kId) - 1U); i++) {
     uartPutc((uint8_t)kId[i]);
   }
@@ -137,9 +202,18 @@ static void handleSetAddress(void) {
 }
 
 static void handleBlockLoad(void) {
-  uint16_t len = ((uint16_t)uartGetcBlocking() << 8);
-  len |= uartGetcBlocking();
-  uint8_t memType = uartGetcBlocking();
+  uint8_t lenHi = 0;
+  uint8_t lenLo = 0;
+  uint8_t memType = 0;
+
+  if (!uartGetcTimeout(&lenHi, BLOCK_RX_TIMEOUT_MS) ||
+      !uartGetcTimeout(&lenLo, BLOCK_RX_TIMEOUT_MS) ||
+      !uartGetcTimeout(&memType, BLOCK_RX_TIMEOUT_MS)) {
+    uartPutc('?');
+    return;
+  }
+
+  uint16_t len = ((uint16_t)lenHi << 8) | lenLo;
 
   if (len > FLASH_BLOCK_CAP) {
     for (uint16_t i = 0; i < len; i++) {
@@ -150,7 +224,10 @@ static void handleBlockLoad(void) {
   }
 
   for (uint16_t i = 0; i < len; i++) {
-    g_blockBuffer[i] = uartGetcBlocking();
+    if (!uartGetcTimeout(&g_blockBuffer[i], BLOCK_RX_TIMEOUT_MS)) {
+      uartPutc('?');
+      return;
+    }
   }
 
   if (memType != 'F') {
@@ -165,6 +242,9 @@ static void handleBlockLoad(void) {
   }
 
   g_wordAddress += (uint32_t)((len + 1U) / 2U);
+  for (uint8_t i = 0; i < POST_BLOCK_WRITE_DELAY_MS; i++) {
+    _delay_ms(1);
+  }
   uartPutc('\r');
 }
 
@@ -277,6 +357,11 @@ static void handleCommand(uint8_t cmd) {
 
 int main(void) {
   cli();
+#if defined(MCUSR)
+  MCUSR = 0;
+#elif defined(MCUCSR)
+  MCUCSR = 0;
+#endif
   wdt_disable();
   uartInit();
 

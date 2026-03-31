@@ -333,3 +333,13 @@
 - 간단한 설명
   - ESP32-C5 스케치에 ATmega128A 대상 UART OTA 흐름을 정리해 HEX 다운로드, SHA-256 검증, AVR109 부트로더 핸드셰이크, 플래시 진행 상태 관리, OTA 승인/실패 복귀, `FW|B` 부트 알림 기반 상태 재동기화까지 한 번에 연결했다.
   - 실기 이슈였던 `74 Rebooting...` 잔류, ATmega 단독 재부팅 시 page68 `ERR68-22`, OTA 중 부트로더 응답을 브리지 태스크가 먹어버리던 경쟁 상태를 함께 보정했고, GPIO24 RESET 테스트 스케치·부트로더 테스트 스케치·빌드 스크립트·회로/운영 문서까지 같이 정리했다.
+
+## 42. ATmega_Web_UART_OTA_Minimal 실기 OTA 완주 검증 및 업로드 가이드 정리
+- 수정코드
+  - `ATmega_Web_UART_OTA_Minimal/ATmega_Web_UART_OTA_Minimal.ino`
+  - `ATmega_Web_UART_OTA_Minimal/flashblk_segment_uploader.py`
+  - `ATmega_Web_UART_OTA_Minimal/flashusb_segment_uploader.py`
+  - `ATmega_Web_UART_OTA_Minimal/ATmega_UART_OTA_UPLOAD_SETTINGS.md`
+- 간단한 설명
+  - 이번 채팅에서는 `ATmega_Web_UART_OTA_Minimal`에서만 ATmega UART OTA를 끝까지 실기 검증했고, `flashblk` 블록 스트리밍 경로와 시작 재시도/세그먼트 지연 설정을 정리해 `hi-aba.hex` 84,514B 전체를 `ping/probe/peek` 검증까지 포함해 완주하는 기준선을 확보했다.
+  - 최종적으로 검증된 안전 경로는 `chunk=256`, `segment_blocks=12`, `window_blocks=6`, `gap=250us`, `settle=100ms`, `segment_delay=1.0s`이며, full run 실측은 `93.887s`였다. 단일 bootloader 세션 기반 50초대 단축 실험도 병행했지만 아직 완전히 안정화되지는 않아 메인 스케치 적용은 보류하고, 업로드 설정/명령/검증 절차를 별도 MD로 문서화했다.

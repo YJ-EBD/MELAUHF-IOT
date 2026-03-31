@@ -1,8 +1,10 @@
 MCU := atmega128a
 F_CPU := 16000000UL
 BOOT_START_BYTE := 0x1F000
+BOOT_UART_NUM := 0
+BOOT_UART_BAUD := 115200UL
 OUT_DIR := build
-TARGET := atmega128_uart_avr109
+TARGET := atmega128_uart0_avr109
 
 CC := avr-gcc
 OBJCOPY := avr-objcopy
@@ -11,6 +13,8 @@ SIZE := avr-size
 CFLAGS := \
 	-mmcu=$(MCU) \
 	-DF_CPU=$(F_CPU) \
+	-DBOOT_UART_NUM=$(BOOT_UART_NUM) \
+	-DBOOT_UART_BAUD=$(BOOT_UART_BAUD) \
 	-Os \
 	-std=gnu99 \
 	-ffunction-sections \

@@ -69,5 +69,6 @@ done
 "$OBJCOPY" -O ihex -R .eeprom "$OUT_DIR/hi-aba.elf" "$OUT_DIR/hi-aba.hex"
 "$OBJCOPY" -O ihex -j .eeprom --change-section-lma .eeprom=0 "$OUT_DIR/hi-aba.elf" "$OUT_DIR/hi-aba.eep" 2>/dev/null || true
 "$SIZE" -A --format=avr --mcu=atmega128a "$OUT_DIR/hi-aba.elf"
+rm -f "$OUT_DIR"/*.o "$OUT_DIR"/*.d "$OUT_DIR"/hi-aba.elf "$OUT_DIR"/hi-aba.eep "$OUT_DIR"/hi-aba.map
 
 echo "app_hex=$OUT_DIR/hi-aba.hex"

@@ -786,3 +786,11 @@
 - 간단한 설명
   - 기존 ESP32용 펌웨어 관리 화면을 일반화해 `/firmware-manage-atmega` 페이지를 추가하고, ATmega 전용 family filter, HEX 업로드 허용, 요약/릴리스/디바이스 payload 분리, 관리자 네비게이션 진입점을 함께 붙였다.
   - 서버에서는 ATmega 릴리스 업로드 API와 장비 일괄 명령 큐 API를 추가해 배정 직후 `CHECK_OTA`를 바로 넣을 수 있게 했고, 프론트 JS도 payload/upload/즉시실행 경로를 data attribute 기반으로 재사용하도록 정리해 ESP32/ATmega 관리 화면을 같은 템플릿으로 운용할 수 있게 맞췄다.
+
+## 75. 이번 채팅 기준 WEB 디렉토리 소스컨트롤 정리 및 무영향 동기화 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `router/page_routes.py`, `templates/firmware_manage.html`
+- 간단한 설명
+  - 이번 채팅의 실제 기능 구현은 `Arduino/ATmega_Web_UART_OTA_Minimal` 쪽 실기 OTA 검증과 업로드 가이드 정리에 집중했고, `ABBAS_WEB` 디렉토리에는 새 기능을 추가하지 않았다.
+  - WEB 디렉토리는 기존 변경 내역을 유지한 채 `_devList` 동기화와 Source Control 정리 기준만 맞췄고, `page_routes.py`는 `python3 -m py_compile`로 최소 문법 검증을 확인했다.
