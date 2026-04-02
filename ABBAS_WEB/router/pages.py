@@ -14,6 +14,7 @@ import json
 import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -633,10 +634,18 @@ def _livekit_public_ws_url() -> str:
     raw = str(LIVEKIT_URL or "").strip()
     if not raw:
         return ""
-    if raw.startswith("https://"):
-        return "wss://" + raw[len("https://"):]
-    if raw.startswith("http://"):
-        return "ws://" + raw[len("http://"):]
+    parsed = urlsplit(raw)
+    scheme = parsed.scheme.lower()
+    target_scheme = scheme
+    if scheme == "https":
+        target_scheme = "wss"
+    elif scheme == "http":
+        target_scheme = "ws"
+    normalized_path = parsed.path or ""
+    if normalized_path and not normalized_path.endswith("/"):
+        normalized_path += "/"
+    if target_scheme in {"ws", "wss"}:
+        return urlunsplit((target_scheme, parsed.netloc, normalized_path, parsed.query, parsed.fragment))
     return raw
 
 

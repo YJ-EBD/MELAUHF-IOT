@@ -351,3 +351,11 @@
 - 간단한 설명
   - 이번 채팅에서는 `ATmega_Web_UART_OTA_Minimal`에서 같은 검증 조건으로 `flashblk` 전체 OTA를 여러 차례 다시 실행해 `hi-aba.hex` 완주와 `ping/probe/peek` 후속 검증이 반복 재현되는지 확인했고, 실측 총 시간은 다시 `93.881s`, `93.893s` 수준으로 안정적으로 수렴했다.
   - 그 기준을 바탕으로 `ABBAS_ESPbyMELAUHF.ino`의 ATmega OTA 경로를 단일 장시간 세션 방식에서 `chunk=256`, `segment_blocks=12`, `start_retries=3`, `retry_delay=1500ms`, `segment_delay=1000ms`, high-to-low 세그먼트 재진입 방식으로 옮겼다. 다만 메인 스케치는 현재 ESP32-C5 플래시 사용량이 `105%`라 실제 업로드 전에는 용량 정리가 추가로 필요하다.
+
+## 44. ABBA-S 메일/ASCORD LiveKit 복구에 따른 Arduino 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `ABBAS_ESPbyMELAUHF.ino`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 이메일 인증 메일 HTML 템플릿, 브랜드명 정리, ASCORD LiveKit/WSS 경로와 서버 복구를 진행한 작업이었고 Arduino(ESP32) 코드는 수정하지 않았다.
+  - Arduino 디렉토리는 기존 `@OTA|`, `@SUB|`, `@ENG|`, `@WIFI|` UART 연동 구조와 장비 OTA 동작을 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.

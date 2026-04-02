@@ -33,6 +33,7 @@ _LOGIN_LOCK_SEC = 300
 _EMAIL_SEND_WINDOW_SEC = 600
 _EMAIL_SEND_LIMIT = 5
 _EMAIL_SEND_COOLDOWN_SEC = 60
+_EMAIL_CODE_EXPIRE_SEC = 300
 _EMAIL_VERIFY_FAIL_WINDOW_SEC = 900
 _EMAIL_VERIFY_FAIL_LIMIT = 8
 _EMAIL_VERIFY_LOCK_SEC = 600
@@ -346,7 +347,7 @@ def api_send_email_code(request: Request, payload: dict = Body(default={})):  # 
 
     # 5분 유효
     try:
-        r.set(f"email:code:{email.lower()}", f"{code}|{now}", ex=300)
+        r.set(f"email:code:{email.lower()}", f"{code}|{now}", ex=_EMAIL_CODE_EXPIRE_SEC)
     except Exception as e:
         print(f"[AUTH] email code cache failed: {e}")
         return JSONResponse(
@@ -355,7 +356,7 @@ def api_send_email_code(request: Request, payload: dict = Body(default={})):  # 
         )
 
     try:
-        send_naver_verification_email(email, code)
+        send_naver_verification_email(email, code, expires_minutes=max(_EMAIL_CODE_EXPIRE_SEC // 60, 1))
     except Exception as e:
         print(f"[AUTH] email code send failed: {e}")
         return JSONResponse(

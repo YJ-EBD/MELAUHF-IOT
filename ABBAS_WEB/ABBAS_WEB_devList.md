@@ -802,3 +802,13 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `Arduino/ATmega_Web_UART_OTA_Minimal` 재검증과 `Arduino/ABBAS_ESPbyMELAUHF.ino`의 ATmega 세그먼트 OTA 이식에 집중했고, `ABBAS_WEB` 디렉토리의 서버/API/템플릿 코드는 추가 수정하지 않았다.
   - WEB 디렉토리는 기존 ATmega firmware manage 화면과 OTA 체크 명령 연동 구조를 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 추가했다.
+
+## 77. 이메일 인증 HTML 템플릿/브랜드명 정리와 ASCORD LiveKit 복구
+- 수정코드
+  - `ABBAS_WEB_devList.md`
+  - `router/auth.py`
+  - `router/pages.py`
+  - `services/smtp_utils.py`
+- 간단한 설명
+  - 회원가입 인증 메일을 plain text + HTML 멀티파트 구조로 정리하고, 제목을 `[ ABBA-S ] 이메일 인증 코드`로 통일했다. 인증 코드 TTL도 Redis 저장과 메일 안내 문구가 같은 5분 기준을 쓰도록 맞췄다.
+  - ASCORD 음성 채널 장애는 LiveKit 서버 바이너리 누락, 구버전 길이의 API secret, 내부 `ws://192.168.0.12:7880` 주소 노출이 겹친 문제로 확인했다. WEB은 `wss://yjcooperation.com/livekit/` 공개 경로를 내려주도록 정리했고, 이번 채팅 기준 검증은 `python3 -m py_compile`, `curl /login`, `curl /livekit/`, `abbas-web.service`/`abbas-livekit.service` active 확인까지 완료했다.

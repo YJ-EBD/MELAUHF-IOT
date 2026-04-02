@@ -440,3 +440,11 @@
 - 간단한 설명
   - 이번 채팅의 실제 구현은 `Arduino/ATmega_Web_UART_OTA_Minimal`의 반복 실기 검증과 `Arduino/ABBAS_ESPbyMELAUHF.ino`에 세그먼트 재진입 OTA 전략을 옮기는 작업이었고, `MELAUHF` ATmega 펌웨어 소스는 추가 수정하지 않았다.
   - 펌웨어 디렉토리는 기존 `FW|B`, `FW|A`, `OTA|DEC`, `OTA|RST` 연동 구조를 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.
+
+## 51. ABBA-S 메일/ASCORD LiveKit 복구에 따른 MELAUHF 디렉토리 무변경 메모
+- 수정코드
+  - 코드 수정 없음
+  - 확인 파일: `펌웨어/hi-aba_total_rev6_brf/hi-aba/IOT_mode.c`
+- 간단한 설명
+  - 이번 채팅의 실제 구현은 `ABBAS_WEB`에서 이메일 인증 메일 HTML 템플릿, 브랜드명 정리, ASCORD LiveKit/WSS 경로와 서버 복구를 진행한 작업이었고 MELAUHF ATmega 펌웨어 코드는 수정하지 않았다.
+  - MELAUHF 디렉토리는 기존 페이지 제어와 ESP UART 수신/OTA 연동 구조를 그대로 유지한 채 `_devList` 기록만 이번 채팅 기준으로 갱신했다.
